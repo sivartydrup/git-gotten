@@ -1,0 +1,22 @@
+# Rust
+target/
+*.rs.bk
+
+# Web / Node
+node_modules/
+dist/
+src/node_modules/
+
+# ts-rs generated bindings
+gen/
+
+# Logs & OS noise
+*.log
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+
+# Keep Cargo.lock (this is an app, not a library).
