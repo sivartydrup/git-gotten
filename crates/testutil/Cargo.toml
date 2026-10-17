@@ -1,0 +1,12 @@
+[package]
+name = "git-gotten-testutil"
+description = "Temporary real-git-repo fixtures for GitGotten tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Deliberately zero dependencies: the fixtures shell out to the real `git` CLI
+# (the very binary the app uses for writes, SPEC §8), so they have the exact
+# on-disk shape the `gix` read-model must understand.

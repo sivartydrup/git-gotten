@@ -17,6 +17,13 @@ tauri-build = { workspace = true }
 
 [dependencies]
 tauri = { workspace = true }
+thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+parking_lot = { workspace = true }
 git-gotten-protocol = { workspace = true }
+gitcore = { workspace = true }
+notify = { workspace = true }
+
+[dev-dependencies]
+git-gotten-testutil = { workspace = true }

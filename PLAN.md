@@ -191,9 +191,9 @@ git push -u origin main
 **Commit & push:** `git add -A && git commit -m "stage-01: gix read-model open+status" && git push origin main`
 
 **Acceptance criteria:**
-- [ ] `open` + `status` correct on the fixture (counts, kinds, ahead/behind, merge/rebase flags).
-- [ ] UI reflects a real repo and updates on file change (debounced).
-- [ ] Detached HEAD + in-merge fixtures asserted.
+- [x] `open` + `status` correct on the fixture (counts, kinds, ahead/behind, merge/rebase flags).
+- [x] UI reflects a real repo and updates on file change (debounced).
+- [x] Detached HEAD + in-merge fixtures asserted.
 
 ---
 

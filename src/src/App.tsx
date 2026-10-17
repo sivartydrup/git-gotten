@@ -1,48 +1,44 @@
 import { useEffect } from "react";
-import { useBuildInfo } from "./store";
+import { useBuildInfo, useRepoStore } from "./store";
+import { onStatusChanged } from "./api";
+import { TopBar } from "./components/TopBar";
+import { RepoNav } from "./components/RepoNav";
+import { StatusView } from "./components/StatusView";
 
 /**
  * GitGotten app shell.
  *
- * Stage 0: a top bar (product name + build identity) over a content area. The build
- * identity comes from the Rust core over IPC, which proves the Rust -> web bridge.
- * Stage 1 replaces the content area with the repo workspace.
+ * Stage 1: a top bar (brand + active repo state) over the workspace — the
+ * open-repo nav on the left, the active repo's live status on the right. The
+ * Rust file watcher keeps the status fresh via `status_changed` (SPEC §13).
  */
 export default function App() {
-  const { info, loading, error, load } = useBuildInfo();
+  const { load } = useBuildInfo();
 
   useEffect(() => {
     void load();
   }, [load]);
 
+  // Live status updates from the Rust core (SPEC §13). No-op outside Tauri.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    void onStatusChanged((payload) => {
+      useRepoStore.getState().applyStatus(payload);
+    }).then((u) => {
+      unlisten = u;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
   return (
     <main className="shell">
-      <header className="topbar">
-        <h1 className="brand">GitGotten</h1>
-        {info && (
-          <span className="version">
-            {info.name} {info.version} · {info.arch}
-          </span>
-        )}
-      </header>
-
-      <section className="content">
-        {loading ? (
-          <p>Connecting to the Rust core…</p>
-        ) : error ? (
-          <p className="error">{error}</p>
-        ) : info ? (
-          <p>
-            Connected to the Rust core. Stage 1 opens a repository and reads its live
-            status.
-          </p>
-        ) : (
-          <p>
-            Running outside Tauri (plain web preview). Start with <code>pnpm tauri dev</code>{" "}
-            to connect to the Rust core.
-          </p>
-        )}
-      </section>
+      <TopBar />
+      <div className="workspace">
+        <RepoNav />
+        <StatusView />
+      </div>
     </main>
   );
 }

@@ -65,3 +65,248 @@ code {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 0.9em;
 }
+/* ── Stage 1 workspace ─────────────────────────────────────────────── */
+
+.workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.topbar {
+  flex-wrap: wrap;
+}
+
+.topbar-repo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.topbar-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.topbar-branch {
+  color: var(--accent);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 13px;
+}
+
+.topbar-sync {
+  display: flex;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.topbar-sync .ahead {
+  color: var(--success, #7ee0a0);
+}
+
+.topbar-sync .behind {
+  color: var(--warning, #e0b07e);
+}
+
+.topbar-sync .synced {
+  color: var(--muted);
+}
+
+.repo-nav {
+  width: 260px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+}
+
+.open-form {
+  display: flex;
+  gap: 6px;
+}
+
+.open-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.open-input:focus {
+  outline: 1px solid var(--accent);
+}
+
+.open-btn {
+  background: var(--accent);
+  color: #0f1115;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.open-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.open-error {
+  color: var(--error);
+  font-size: 12px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.repo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.repo-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  color: var(--fg);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.repo-item:hover {
+  background: var(--border);
+}
+
+.repo-item.active {
+  border-color: var(--accent);
+}
+
+.repo-name {
+  font-weight: 600;
+}
+
+.repo-branch {
+  color: var(--muted);
+  font-size: 12px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-hint {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0;
+}
+
+.badge {
+  display: inline-block;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.badge.dirty {
+  background: var(--accent);
+  color: #0f1115;
+}
+
+.badge.state {
+  background: var(--warning, #e0b07e);
+  color: #0f1115;
+}
+
+.badge.staged {
+  background: var(--border);
+  color: var(--fg);
+}
+
+.badge.binary {
+  background: var(--border);
+  color: var(--muted);
+}
+
+.badge.kind {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  min-width: 22px;
+  text-align: center;
+  background: var(--border);
+}
+
+.badge.kind-modified {
+  color: var(--warning, #e0b07e);
+}
+
+.badge.kind-added,
+.badge.kind-untracked {
+  color: var(--success, #7ee0a0);
+}
+
+.badge.kind-deleted,
+.badge.kind-conflicted {
+  color: var(--error);
+}
+
+.status-view {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.status-summary {
+  margin-top: 0;
+  color: var(--fg);
+  font-size: 14px;
+}
+
+.status-summary .clean {
+  color: var(--muted);
+}
+
+.changes {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.change {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.change:hover {
+  background: var(--border);
+}
+
+.change-path {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  overflow-wrap: anywhere;
+}
