@@ -1,0 +1,50 @@
+# GitGotten — Rust workspace.
+#
+# Members (see SPEC §14):
+#   protocol  — shared Rust <-> TypeScript types (serde + ts-rs)
+#   gitcore   — git engine: `gix` read-model + `git` CLI executor + CommandPlan + op queue
+#   graph     — commit DAG + lane layout (pure, unit-testable logic)
+#   app       — the Tauri v2 application (thin shell)
+[workspace]
+resolver = "2"
+members = [
+    "crates/protocol",
+    "crates/gitcore",
+    "crates/graph",
+    "crates/app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["sivartydrup"]
+license = "MIT"
+repository = "git@github.com:sivartydrup/git-gotten.git"
+
+[workspace.dependencies]
+# Internal crates
+git-gotten-protocol = { path = "crates/protocol" }
+gitcore = { path = "crates/gitcore" }
+graph = { path = "crates/graph" }
+
+# External crates (versions resolved to the latest stable as of stage-00)
+tauri = { version = "2.12", features = ["wry"] }
+tauri-build = { version = "2.7" }
+gix = { version = "0.89" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+ts-rs = { version = "12" }
+clap = { version = "4", features = ["derive"] }
+thiserror = { version = "2" }
+anyhow = { version = "1" }
+notify = { version = "8" }
+
+# Small, fast release binary (Tauri-recommended size tuning). Applied to the whole
+# workspace; only the `app` crate ships a binary, so this mainly affects that build.
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

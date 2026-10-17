@@ -45,6 +45,7 @@ and an interactive lane-DAG branch graph as the centerpiece.
 - The planning docs (`SPEC.md`, `PLAN.md`) are committed in the baseline (Stage 0).
 
 ### Run / test commands (canonical)
+All run from the repo **root** (the root `package.json` orchestrates the web in `src/`). For a live dev loop use `pnpm tauri dev`; `cargo run -p git-gotten-app` alone needs the web dev server up on :1420.
 ```bash
 cargo test                                   # all Rust tests (unit + integration, incl. fixtures)
 pnpm test                                    # web tests (Vitest)
@@ -105,26 +106,31 @@ Stages that can **parallelize** (independent once their inputs exist): `{3, 5, 6
 ```
 git-gotten/
   .gitignore
-  SPEC.md  PLAN.md            # already present — commit them
+  SPEC.md  PLAN.md            # already present — committed in baseline
+  package.json                # root: @tauri-apps/cli (dev) + build/test/tauri:build/tauri:dev scripts
+  pnpm-lock.yaml
   Cargo.toml                  # [workspace] members = crates/*
   Cargo.lock
   crates/
     protocol/                 # shared serde types + ts-rs
     gitcore/                  # gix read-model + git CLI executor + CommandPlan
     graph/                    # DAG + lane layout (pure logic)
-    app/                      # Tauri app: main.rs, tauri.conf.json, IPC commands
+    app/                      # Tauri app: main.rs, build.rs, tauri.conf.json, capabilities/, icons/
       tauri.conf.json
-      src/main.rs
-  src/                        # React + TS web (Vite root)
+      build.rs
+      src/main.rs  src/lib.rs
+  src/                        # React + TS web (Vite root); package "git-gotten-web"
     package.json
+    pnpm-workspace.yaml       # allowBuilds esbuild (pnpm 10+ build-script approval)
+    pnpm-lock.yaml
     tsconfig.json
     vite.config.ts
     index.html
     src/main.tsx  src/App.tsx
 ```
-- Tauri `tauri.conf.json` (in `crates/app`): `productName: "GitGotten"`, `identifier: "com.sivartydrup.gitgotten"`, `frontendDist: "../../dist"`, `frontendDevUrl: "http://localhost:1420"`, window 1280×800.
-- Web root (`src/`): React 18 + TypeScript + Vite + Zustand; Vite `build.outDir: "../dist"` (so `dist/` lands at repo root for Tauri). Deps: `react`, `react-dom`, `zustand`; dev: `typescript`, `vite`, `@vitejs/plugin-react`, `vitest`, `@tauri-apps/api`, `@tauri-apps/cli`, `@tauri-apps/plugin-store` (later), `@tauri-apps/plugin-updater` (Stage 14).
-- Rust deps (workspace): `tauri` (v2, `wry`+`objc-embed` features), `gix`, `tokio` (full), `serde`(derive), `serde_json`, `ts-rs`, `clap`, `thiserror`, `anyhow`, `notify`.
+- Tauri `tauri.conf.json` (in `crates/app`): `productName: "GitGotten"`, `identifier: "com.sivartydrup.gitgotten"`, `build.frontendDist: "../../dist"`, `build.devUrl: "http://localhost:1420"` (v2 field names — v1's `distDir`/`devPath` were renamed), `build.beforeDevCommand`/`beforeBuildCommand` = `cd src && pnpm dev|build`, window 1280×800.
+- Web root (`src/`): package `git-gotten-web`; React 18 + TypeScript + Vite + Zustand; Vite `build.outDir: "../dist"` (so `dist/` lands at repo root for Tauri). Deps: `react`, `react-dom`, `zustand`; dev: `typescript`, `vite`, `@vitejs/plugin-react`, `vitest`, `@tauri-apps/api`, `@tauri-apps/plugin-store` (later), `@tauri-apps/plugin-updater` (Stage 14). **`@tauri-apps/cli` lives in the *root* `package.json`** (the web package omits it); the CLI's default config lookup is `<cwd>/src-tauri`, which the non-standard `crates/app` layout does not satisfy, so the `tauri:build`/`tauri:dev` scripts pass `--config ../../crates/app/tauri.conf.json`.
+- Rust deps added in Stage 0: `tauri` (v2; default features incl. `wry`), `serde`(derive), `thiserror`. The heavier ones — `gix`, `tokio`, `clap`, `notify`, `ts-rs` — are added in the stages that first need them, to keep Stage 0's build light.
 
 **Tests (write first):**
 - Rust: a trivial `#[test]` in each crate asserting the crate links (`protocol` exports a type; `app` compiles a `build_info()`).

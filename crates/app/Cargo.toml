@@ -1,0 +1,22 @@
+[package]
+name = "git-gotten-app"
+description = "GitGotten — the Tauri application"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# `main.rs` is a thin wrapper; the app logic lives in the lib so it is unit-testable and
+# could later be embedded on mobile. Desktop is the v1 target (SPEC §1), so `rlib` only.
+[lib]
+name = "git_gotten_app"
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[dependencies]
+tauri = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+git-gotten-protocol = { workspace = true }

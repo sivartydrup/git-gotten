@@ -1,0 +1,15 @@
+{
+  "name": "git-gotten",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "tauri:dev": "tauri dev --config crates/app/tauri.conf.json",
+    "tauri:build": "tauri build --config crates/app/tauri.conf.json",
+    "dev": "pnpm --dir src dev",
+    "build": "pnpm --dir src build",
+    "test": "pnpm --dir src test"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

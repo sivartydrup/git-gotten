@@ -1,0 +1,11 @@
+[package]
+name = "graph"
+description = "Commit DAG + lane layout for the GitGotten branching graph (pure logic)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
