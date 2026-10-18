@@ -26,4 +26,5 @@ gitcore = { workspace = true }
 notify = { workspace = true }
 
 [dev-dependencies]
+tokio = { workspace = true }
 git-gotten-testutil = { workspace = true }

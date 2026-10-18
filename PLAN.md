@@ -233,10 +233,10 @@ git push -u origin main
 **Commit & push:** `git add -A && git commit -m "stage-02: command-plan + git executor + activity log + preview" && git push origin main`
 
 **Acceptance criteria:**
-- [ ] Every op is expressible as a `CommandPlan` and is displayed identically in hint/preview/log.
-- [ ] Executor runs real git, captures output, classifies risk; writes serialize per repo.
-- [ ] Force-push triggers type-to-confirm.
-- [ ] Activity log shows a live, correct command stream.
+- [x] Every op is expressible as a `CommandPlan` and is displayed identically in hint/preview/log.
+- [x] Executor runs real git, captures output, classifies risk; writes serialize per repo.
+- [x] Force-push triggers type-to-confirm.
+- [x] Activity log shows a live, correct command stream.
 
 ---
 

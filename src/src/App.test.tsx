@@ -1,16 +1,25 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import App from "./App";
-import { useRepoStore } from "./store";
+import { useActivityStore, useRepoStore } from "./store";
 import type { RepoMeta, Status } from "./types";
 
-// Mock the IPC layer: non-Tauri behavior (all calls resolve `null`), so the app
-// renders its plain-web fallback exactly as it does outside Tauri.
+// `planOp` / `runOp` are hoisted so tests can drive per-test IPC behavior.
+const { planOp, runOp } = vi.hoisted(() => ({
+  planOp: vi.fn().mockResolvedValue(null),
+  runOp: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock("./api", () => ({
   fetchBuildInfo: vi.fn().mockResolvedValue(null),
   openRepo: vi.fn().mockResolvedValue(null),
   loadStatus: vi.fn().mockResolvedValue(null),
   onStatusChanged: vi.fn().mockResolvedValue(null),
+  planOp,
+  runOp,
+  loadLog: vi.fn().mockResolvedValue(null),
+  onOpStarted: vi.fn().mockResolvedValue(null),
+  onOpFinished: vi.fn().mockResolvedValue(null),
 }));
 
 afterEach(() => {
@@ -21,6 +30,14 @@ afterEach(() => {
     status: {},
     opening: false,
     error: null,
+  });
+  useActivityStore.setState({
+    activities: [],
+    running: false,
+    runningDisplay: null,
+    preview: null,
+    error: null,
+    busy: false,
   });
 });
 
@@ -103,4 +120,116 @@ test("shows a clean tree for a repo with no changes", async () => {
   const body = document.body.textContent ?? "";
   expect(body).toContain("Working tree clean");
   expect(body).toContain("REBASE"); // in-rebase state badge
+});
+
+test("shows the activity panel with its empty state", async () => {
+  render(<App />);
+  await act(async () => {});
+  const body = document.body.textContent ?? "";
+  expect(body).toContain("Activity");
+  expect(body).toContain("No commands run yet.");
+});
+
+test("commit flow: preview shows the exact command, confirm runs and records it", async () => {
+  const meta: RepoMeta = {
+    id: "/repo/alpha",
+    name: "alpha",
+    path: "/repo/alpha",
+    branch: "main",
+    ahead: 0,
+    behind: 0,
+    dirty_count: 1,
+  };
+  useRepoStore.setState({
+    repos: [meta],
+    activeId: meta.id,
+    status: {
+      [meta.id]: {
+        branch: "main",
+        detached_head: null,
+        ahead: 0,
+        behind: 0,
+        upstream: null,
+        changes: [
+          { path: "src/a.ts", kind: "Modified", staged: true, binary: false },
+        ],
+        in_merge: false,
+        in_rebase: false,
+      },
+    },
+  });
+
+  const commitPlan = {
+    display: 'git commit -m "fix: thing"',
+    steps: [
+      {
+        argv: ["git", "commit", "-m", "fix: thing"],
+        summary: "Commit the staged changes.",
+        risk: "Mutating",
+        effect: null,
+      },
+    ],
+    preview: {
+      headline: "Commit 1 staged file",
+      lines: ["M src/a.ts"],
+      requires_type_to_confirm: false,
+    },
+  };
+  // Persistent: the debounced CmdHint re-plans, and confirm re-plans again.
+  planOp.mockResolvedValue(commitPlan);
+  runOp.mockResolvedValueOnce({
+    plan: commitPlan,
+    exit: 0,
+    ok: true,
+    stdout: "[main abc1234] fix: thing",
+    stderr: "",
+    duration_ms: 12,
+  });
+
+  render(<App />);
+  await act(async () => {});
+
+  // The commit action with its live CmdHint is present; the button is
+  // disabled until a message is typed.
+  const input = screen.getByPlaceholderText("Commit message");
+  expect((screen.getByRole("button", { name: "Commit" }) as HTMLButtonElement).disabled).toBe(true);
+
+  fireEvent.change(input, { target: { value: "fix: thing" } });
+  // The CmdHint is Rust-compiled: wait out the 300 ms debounce.
+  const delay = new Promise((resolve) => setTimeout(resolve, 350));
+  await act(async () => {
+    await delay;
+  });
+  expect((screen.getByRole("button", { name: "Commit" }) as HTMLButtonElement).disabled).toBe(false);
+  expect(document.body.textContent).toContain('git commit -m "fix: thing"');
+
+  fireEvent.click(screen.getByRole("button", { name: "Commit" }));
+  await act(async () => {});
+
+  // The preview/confirm dialog shows the exact command and its risk class.
+  const dialog = screen.getByRole("dialog", { name: "Confirm command" });
+  expect(dialog.textContent).toContain('git commit -m "fix: thing"');
+  expect(dialog.textContent).toContain("mutates the repo");
+  expect(planOp).toHaveBeenCalledWith(
+    meta.id,
+    { kind: "commit", message: "fix: thing", amend: false },
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: /Run git commit/ }));
+  await act(async () => {});
+
+  // Confirmed: the dialog closes, the op is recorded in the activity log.
+  expect(runOp).toHaveBeenCalledWith(meta.id, {
+    kind: "commit",
+    message: "fix: thing",
+    amend: false,
+  });
+  expect(screen.queryByRole("dialog")).toBeNull();
+  const log = useActivityStore.getState();
+  expect(log.activities).toHaveLength(1);
+  expect(log.activities[0]).toMatchObject({
+    repo: meta.id,
+    display: 'git commit -m "fix: thing"',
+    ok: true,
+  });
 });

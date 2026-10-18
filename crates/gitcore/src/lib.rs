@@ -7,8 +7,11 @@
 //! Stage 1 implements the read model: [`Repo::open`] (validate + canonicalize a
 //! repository) and [`Repo::status`] (map the `gix` status iterator to the shared
 //! [`Status`] shape: ahead/behind vs the upstream ref, merge/rebase state detection,
-//! and per-file change kinds with binary sniffing). Later stages add the
-//! `CommandPlan`/executor and the per-repo operation queue.
+//! and per-file change kinds with binary sniffing).
+//!
+//! Stage 2 implements the command layer: [`Repo::plan`] (compile an [`Op`] into a
+//! visible [`CommandPlan`]) and the executor ([`GitExecutor`] runs plans through the
+//! real git binary, serialized per repo by [`OpQueue`]).
 
 use std::collections::HashSet;
 use std::io::Read;
@@ -16,8 +19,15 @@ use std::path::{Path, PathBuf};
 
 use gix::hash::ObjectId;
 
+mod exec;
+mod plan;
+
 /// Shared read-model types, re-exported so `gitcore::Status` etc. read naturally.
-pub use git_gotten_protocol::{ChangeKind, FileChange, RepoMeta, RepoId, Status};
+pub use git_gotten_protocol::{
+    ChangeKind, CommandPlan, FileChange, GitStep, Op, OpResult, Preview, RepoMeta, RepoId, Risk,
+    Status,
+};
+pub use exec::{GitExecutor, OpQueue};
 
 /// Errors surfaced by the git engine.
 ///
@@ -44,6 +54,26 @@ pub enum GitError {
     /// A low-level I/O failure while touching the working tree or the index.
     #[error("git i/o error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// No working `git` binary was found (PATH search + `git --version` failed).
+    #[error("git binary not found on PATH")]
+    GitNotFound,
+
+    /// A commit was requested with an empty (or blank) message.
+    #[error("commit message is empty")]
+    EmptyCommitMessage,
+
+    /// A switch/checkout was requested with an empty target.
+    #[error("switch target is empty")]
+    EmptyTarget,
+
+    /// A push was requested while HEAD is detached (there is no branch to push).
+    #[error("cannot push: no branch checked out (detached HEAD)")]
+    DetachedHead,
+
+    /// The named remote does not exist in the repository.
+    #[error("unknown remote: {name}")]
+    UnknownRemote { name: String },
 }
 
 /// Serialize an error for the web shell as its (transparency-contract) display string.
@@ -203,23 +233,18 @@ fn sniff_binary(
 ) -> bool {
     const LIMIT: usize = 8 * 1024;
 
-    if let Some(path) = worktree_file {
-        if path.is_file() {
-            if let Ok(file) = std::fs::File::open(path) {
-                let mut buf = Vec::with_capacity(LIMIT + 1);
-                let _ = file.take(LIMIT as u64).read_to_end(&mut buf);
-                return buf.contains(&0);
-            }
+    if let Some(path) = worktree_file && path.is_file()
+        && let Ok(file) = std::fs::File::open(path) {
+            let mut buf = Vec::with_capacity(LIMIT + 1);
+            let _ = file.take(LIMIT as u64).read_to_end(&mut buf);
+            return buf.contains(&0);
         }
-    }
 
-    if let Some(oid) = blob {
-        if let Ok(object) = repo.find_object(oid) {
-            if object.kind == gix::objs::Kind::Blob {
+    if let Some(oid) = blob
+        && let Ok(object) = repo.find_object(oid)
+            && object.kind == gix::objs::Kind::Blob {
                 return object.data.iter().take(LIMIT).any(|b| *b == 0);
             }
-        }
-    }
 
     false
 }

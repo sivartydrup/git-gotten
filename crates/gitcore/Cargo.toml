@@ -12,6 +12,7 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 git-gotten-protocol = { workspace = true }
 gix = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }

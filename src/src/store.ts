@@ -1,6 +1,26 @@
 import { create } from "zustand";
-import { fetchBuildInfo, loadStatus, openRepo } from "./api";
-import type { BuildInfo, RepoId, RepoMeta, Status, StatusChanged } from "./types";
+import {
+  fetchBuildInfo,
+  loadLog,
+  loadStatus,
+  openRepo,
+  planOp,
+  runOp,
+} from "./api";
+import type {
+  BuildInfo,
+  CommandPlan,
+  LogEntry,
+  Op,
+  OpFinished,
+  OpResult,
+  OpStarted,
+  RepoId,
+  Risk,
+  RepoMeta,
+  Status,
+  StatusChanged,
+} from "./types";
 
 interface BuildInfoState {
   info: BuildInfo | null;
@@ -119,3 +139,155 @@ function upsertRepo(repos: RepoMeta[], meta: RepoMeta): RepoMeta[] {
   next[index] = meta;
   return next;
 }
+
+/** One plan awaiting user confirmation in the preview dialog (SPEC §9). */
+interface PreviewState {
+  repo: RepoId;
+  op: Op;
+  plan: CommandPlan;
+}
+
+interface ActivityState {
+  /** Activity log entries, newest first (SPEC §11, bounded). */
+  activities: LogEntry[];
+  /** `true` while an op is in flight (`op_started` → `op_finished`). */
+  running: boolean;
+  /** Display line of the command currently running (live CmdHint state). */
+  runningDisplay: string | null;
+  /** Risk of the command currently running (from `op_started`). */
+  runningRisk: Risk | null;
+  /** The plan awaiting confirmation, or `null` when the dialog is closed. */
+  preview: PreviewState | null;
+  /** Last plan/run failure (transparency contract: the Rust error string). */
+  error: string | null;
+  /** `true` while a `plan_op` / `run_op` round-trip is in flight. */
+  busy: boolean;
+  /** Load the retained history into the ring (oldest→newest, reversed here). */
+  loadHistory: (repo: RepoId | null) => Promise<void>;
+  /** Compile `op` into its plan and open the preview dialog (SPEC §9). */
+  requestPreview: (repo: RepoId, op: Op) => Promise<void>;
+  /** Run the pending plan (confirm) and record the result. */
+  confirmPreview: () => Promise<void>;
+  /** Close the preview dialog without running. */
+  dismissPreview: () => void;
+  /** Record a finished op as a new activity entry. */
+  record: (repo: RepoId, result: OpResult) => void;
+  /** Fold an `op_started` event in (Rust → web, SPEC §13). */
+  applyStarted: (payload: OpStarted) => void;
+  /** Fold an `op_finished` event in (Rust → web, SPEC §13). */
+  applyFinished: (payload: OpFinished) => void;
+  clearError: () => void;
+}
+
+/** Maximum retained entries (mirrors the Rust ring, SPEC §11 "last 500"). */
+const ACTIVITY_CAP = 500;
+
+/** Monotonic id for web-recorded entries (Rust assigns ids to its own). */
+let nextEntryId = 1;
+
+/** Client state for the activity log + preview dialog (SPEC §11 / §9). */
+export const useActivityStore = create<ActivityState>((set, get) => ({
+  activities: [],
+  running: false,
+  runningDisplay: null,
+  runningRisk: null,
+  preview: null,
+  error: null,
+  busy: false,
+
+  loadHistory: async (repo) => {
+    try {
+      const all = await loadLog();
+      if (!all) {
+        return; // not inside Tauri
+      }
+      const entries = repo ? all.filter((e) => e.repo === repo) : all;
+      const reversed = [...entries].reverse(); // rust returns oldest first
+      nextEntryId = all.reduce((max, e) => Math.max(max, e.id), 0) + 1;
+      set({ activities: reversed.slice(0, ACTIVITY_CAP) });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  requestPreview: async (repo, op) => {
+    if (get().busy) {
+      return;
+    }
+    set({ busy: true, error: null, preview: null });
+    try {
+      const plan = await planOp(repo, op);
+      if (!plan) {
+        // Not inside Tauri: nothing to preview, no error to surface.
+        set({ busy: false });
+        return;
+      }
+      set({ busy: false, preview: { repo, op, plan } });
+    } catch (e) {
+      set({ busy: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  confirmPreview: async () => {
+    const { preview, running, busy } = get();
+    if (!preview || running || busy) {
+      return;
+    }
+    set({ busy: true, error: null });
+    try {
+      const result = await runOp(preview.repo, preview.op);
+      if (result) {
+        get().record(preview.repo, result);
+      }
+      set({ preview: null, busy: false });
+    } catch (e) {
+      // Keep the dialog open: the user can retry or cancel.
+      set({ busy: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  dismissPreview: () => set({ preview: null, error: null }),
+
+  record: (repo, result) => {
+    const entry: LogEntry = {
+      id: nextEntryId++,
+      repo,
+      display: result.plan.display,
+      ok: result.ok,
+      duration_ms: result.duration_ms,
+      ts: Date.now(),
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
+    set((s) => ({ activities: [entry, ...s.activities].slice(0, ACTIVITY_CAP) }));
+  },
+
+  applyStarted: ({ display, risk }) => {
+    set({
+      running: true,
+      runningDisplay: display,
+      runningRisk: risk,
+      preview: null,
+      error: null,
+    });
+  },
+
+  applyFinished: (entry) => {
+    // The `run_op` promise and this event carry the same Rust data; whichever
+    // lands first wins, and the other is a no-op or a refresh of the newest
+    // entry for that repo (keep the web-assigned id, take the authoritative
+    // timing + output from the Rust record).
+    set((s) => ({
+      running: false,
+      runningDisplay: null,
+      runningRisk: null,
+      activities: s.activities.map((a) =>
+        a.repo === entry.repo && a.display === entry.display
+          ? { ...a, ok: entry.ok, duration_ms: entry.duration_ms, ts: entry.ts, stdout: entry.stdout, stderr: entry.stderr }
+          : a,
+      ),
+    }));
+  },
+
+  clearError: () => set({ error: null }),
+}));

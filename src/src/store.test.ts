@@ -11,6 +11,11 @@ vi.mock("./api", () => ({
   openRepo,
   loadStatus,
   onStatusChanged: vi.fn().mockResolvedValue(null),
+  planOp: vi.fn().mockResolvedValue(null),
+  runOp: vi.fn().mockResolvedValue(null),
+  loadLog: vi.fn().mockResolvedValue(null),
+  onOpStarted: vi.fn().mockResolvedValue(null),
+  onOpFinished: vi.fn().mockResolvedValue(null),
 }));
 
 import { useRepoStore } from "./store";

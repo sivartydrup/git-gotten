@@ -5,14 +5,23 @@
 //! [`RepoRegistry`] of open [`gitcore::Repo`]s, and a `notify` file-watcher that
 //! re-derives status (debounced) and emits `status_changed` so the left nav and
 //! top bar track a real repository live.
+//!
+//! Stage 2 is the command layer (SPEC §8/§9): `plan_op` compiles an [`Op`] into a
+//! visible `CommandPlan`, `run_op` executes it through the git CLI (serialized
+//! per repo) and records it in the bounded in-memory activity log ([`LogBuffer`]),
+//! emitting `op_started` / `op_finished` so the web can show the command stream.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use git_gotten_protocol::{RepoId, RepoMeta, Status, StatusChanged};
-use gitcore::GitError;
+use git_gotten_protocol::{
+    CommandPlan, LogEntry, Op, OpResult, OpStarted, RepoId, RepoMeta, Risk, Status,
+    StatusChanged,
+};
+use gitcore::{GitError, GitExecutor};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::{Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -88,12 +97,17 @@ impl RepoRegistry {
     }
 }
 
-/// The application backend: the open-repo registry plus the file watcher that keeps
-/// the UI live. Managed by Tauri (`Send + Sync`) and reached from commands.
+/// The application backend: the open-repo registry, the file watcher, the git
+/// [`GitExecutor`] (per-repo serialized ops), and the bounded in-memory activity
+/// log. Managed by Tauri (`Send + Sync`) and reached from commands.
 pub struct Backend {
     registry: RepoRegistry,
     /// The `notify` watcher (must be kept alive for events to arrive).
     watcher: Mutex<Option<RecommendedWatcher>>,
+    /// Runs `CommandPlan`s through the real git binary, serialized per repo (SPEC §8).
+    executor: GitExecutor,
+    /// The activity log (bounded ring, SPEC §11).
+    log: LogBuffer,
 }
 
 impl Backend {
@@ -113,6 +127,8 @@ impl Backend {
             Self {
                 registry: RepoRegistry::new(),
                 watcher: Mutex::new(watcher),
+                executor: GitExecutor::new(),
+                log: LogBuffer::new(),
             },
             event_rx,
         )
@@ -139,6 +155,48 @@ impl Backend {
         Ok(repo.status()?)
     }
 
+    /// Compile `op` into its visible `CommandPlan` for an open repository.
+    ///
+    /// Read-only (gix state only) — the web calls this for the inline hints and the
+    /// preview dialog, so the displayed command is always the Rust-side source of truth.
+    pub fn plan(&self, id: &str, op: &Op) -> Result<CommandPlan, AppError> {
+        let repos = self.registry.lock_repos();
+        let repo = repos
+            .get(id)
+            .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
+        let plan = repo.plan(op)?;
+        drop(repos);
+        Ok(plan)
+    }
+
+    /// Run a planned op: execute it (serialized per repo) and record it in the
+    /// activity log. A non-zero git exit is a *successful* return value with
+    /// `ok: false` — the exact output is data for the UI (safe failure, SPEC §8).
+    pub async fn run_op(&self, id: &str, plan: &CommandPlan) -> Result<OpResult, AppError> {
+        // The registry lock is a `parking_lot` guard, which is `!Send`: extract the
+        // data the executor needs (id + cwd) and drop the guard *before* awaiting.
+        let (repo_id, repo_path) = {
+            let repos = self.registry.lock_repos();
+            let repo = repos
+                .get(id)
+                .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
+            (repo.id.clone(), repo.path.clone())
+        };
+        let result = self.executor.run_plan(&repo_id, &repo_path, plan).await;
+        self.log.record(id, &result);
+        Ok(result)
+    }
+
+    /// The most recent recorded log entry for `repo` (backs the `op_finished` event).
+    pub fn last_entry(&self, id: &str) -> Option<LogEntry> {
+        self.log.last(id)
+    }
+
+    /// The activity log (exposed for the `load_log` command and tests).
+    pub fn log(&self) -> &LogBuffer {
+        &self.log
+    }
+
     /// Re-derive an open repository's status (`None` if it is not open).
     pub fn refresh_status(&self, id: &str) -> Option<Status> {
         self.registry.refresh_status(id)
@@ -159,6 +217,69 @@ impl RepoRegistry {
     /// The inner repo map (package-private accessor for `Backend`).
     fn lock_repos(&self) -> MutexGuard<'_, HashMap<RepoId, gitcore::Repo>> {
         self.repos.lock()
+    }
+}
+
+/// In-memory activity log: a bounded ring of the most recent [`LogEntry`]s
+/// (SPEC §11 — the command stream; JSON file persistence lands with the
+/// workspace persistence in Stage 12).
+#[derive(Default)]
+pub struct LogBuffer {
+    next_id: AtomicU64,
+    entries: Mutex<VecDeque<LogEntry>>,
+}
+
+/// Maximum number of entries retained (SPEC §11: "last 500").
+const LOG_CAP: usize = 500;
+
+impl LogBuffer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Append a finished op to the ring, returning the entry with its id.
+    pub fn record(&self, repo: &str, result: &OpResult) -> LogEntry {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let entry = LogEntry {
+            id: self.next_id.fetch_add(1, Ordering::Relaxed) + 1,
+            repo: repo.to_string(),
+            display: result.plan.display.clone(),
+            ok: result.ok,
+            duration_ms: result.duration_ms,
+            ts,
+            stdout: result.stdout.clone(),
+            stderr: result.stderr.clone(),
+        };
+        let mut ring = self.entries.lock();
+        ring.push_back(entry.clone());
+        if ring.len() > LOG_CAP {
+            let overflow = ring.len() - LOG_CAP;
+            ring.drain(0..overflow);
+        }
+        entry
+    }
+
+    /// The retained entries (oldest first), optionally filtered to one repo.
+    pub fn snapshot(&self, repo: Option<&str>) -> Vec<LogEntry> {
+        self.entries
+            .lock()
+            .iter()
+            .filter(|e| repo.is_none_or(|r| e.repo == *r))
+            .cloned()
+            .collect()
+    }
+
+    /// The most recent entry for `repo`, if any.
+    pub fn last(&self, repo: &str) -> Option<LogEntry> {
+        self.entries
+            .lock()
+            .iter()
+            .rev()
+            .find(|e| e.repo == *repo)
+            .cloned()
     }
 }
 
@@ -188,8 +309,60 @@ fn load_status(repo: RepoId, state: State<'_, Backend>) -> Result<Status, AppErr
     state.load_status(&repo)
 }
 
+/// Compile an operation into its visible `CommandPlan` without running it (IPC
+/// `plan_op`): drives the inline command hints and the preview dialog, so the
+/// displayed command is always the Rust-side source of truth (SPEC §8).
+#[tauri::command]
+fn plan_op(repo: RepoId, op: Op, state: State<'_, Backend>) -> Result<CommandPlan, AppError> {
+    state.plan(&repo, &op)
+}
+
+/// Run an operation (IPC `run_op`): plan → `op_started` → execute (serialized
+/// per repo) → record in the activity log → `op_finished`. The result always
+/// carries the exact command and its output, success or failure (SPEC §8/§18).
+#[tauri::command]
+async fn run_op(
+    repo: RepoId,
+    op: Op,
+    app: AppHandle,
+    state: State<'_, Backend>,
+) -> Result<OpResult, AppError> {
+    let plan = state.plan(&repo, &op)?;
+    let risk = plan
+        .steps
+        .iter()
+        .map(|s| s.risk)
+        .max()
+        .unwrap_or(Risk::ReadOnly);
+    let _ = app.emit(
+        OP_STARTED,
+        OpStarted {
+            repo: repo.clone(),
+            display: plan.display.clone(),
+            risk,
+        },
+    );
+    let result = state.run_op(&repo, &plan).await?;
+    if let Some(entry) = state.last_entry(&repo) {
+        let _ = app.emit(OP_FINISHED, entry);
+    }
+    Ok(result)
+}
+
+/// The session's activity log (oldest first) — backfills the web's log panel.
+#[tauri::command]
+fn load_log(state: State<'_, Backend>) -> Vec<LogEntry> {
+    state.log().snapshot(None)
+}
+
 /// The `status_changed` event name (Rust → web, SPEC §13).
 pub const STATUS_CHANGED: &str = "status_changed";
+
+/// The `op_started` event name (Rust → web, SPEC §13).
+pub const OP_STARTED: &str = "op_started";
+
+/// The `op_finished` event name (Rust → web, SPEC §13).
+pub const OP_FINISHED: &str = "op_finished";
 
 /// Debounce window for coalescing bursts of file-watch events into one status refresh.
 const DEBOUNCE: Duration = Duration::from_millis(250);
@@ -246,7 +419,14 @@ pub fn run() {
     let (backend, events) = Backend::new();
     tauri::Builder::default()
         .manage(backend)
-        .invoke_handler(tauri::generate_handler![build_info, open_repo, load_status])
+        .invoke_handler(tauri::generate_handler![
+            build_info,
+            open_repo,
+            load_status,
+            plan_op,
+            run_op,
+            load_log
+        ])
         .setup(move |app| {
             let handle = app.handle().clone();
             std::thread::spawn(move || watcher_loop(handle, events));
@@ -384,4 +564,129 @@ mod tests {
         }
         assert!(seen, "expected a notify event for a.txt");
     }
+    // ── Stage 2: activity log + run_op ─────────────────────────────────────
+
+    fn noop_plan(display: &str) -> CommandPlan {
+        CommandPlan {
+            steps: Vec::new(),
+            display: display.to_string(),
+            preview: None,
+        }
+    }
+
+    fn result_with(plan: &CommandPlan, ok: bool) -> OpResult {
+        OpResult {
+            plan: plan.clone(),
+            ok,
+            exit: i32::from(ok),
+            stdout: String::new(),
+            stderr: String::new(),
+            duration_ms: 1,
+        }
+    }
+
+    #[test]
+    fn log_buffer_records_and_caps_at_500() {
+        let log = LogBuffer::new();
+        let plan = noop_plan("git commit -m \"x\"");
+        let result = result_with(&plan, true);
+
+        for _ in 0..LOG_CAP + 2 {
+            log.record("repo", &result);
+        }
+
+        let entries = log.snapshot(None);
+        assert_eq!(entries.len(), LOG_CAP);
+        // The two oldest entries were evicted; ids stay monotonic.
+        assert_eq!(entries.first().unwrap().id, 3);
+        assert_eq!(entries.last().unwrap().id, (LOG_CAP + 2) as u64);
+    }
+
+    #[test]
+    fn log_snapshot_filters_by_repo() {
+        let log = LogBuffer::new();
+        let plan_a = noop_plan("git commit -m \"a\"");
+        let plan_b = noop_plan("git commit -m \"b\"");
+        log.record("repo-a", &result_with(&plan_a, true));
+        log.record("repo-b", &result_with(&plan_b, false));
+
+        let a = log.snapshot(Some("repo-a"));
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].display, "git commit -m \"a\"");
+        assert_eq!(log.snapshot(Some("repo-b"))[0].display, "git commit -m \"b\"");
+        assert_eq!(log.snapshot(None).len(), 2);
+    }
+
+    #[test]
+    fn plan_op_on_unknown_repo_errors() {
+        let (backend, _rx) = Backend::new();
+        let err = backend
+            .plan(
+                "/does/not/exist",
+                &Op::Checkout {
+                    target: "x".into(),
+                    force: false,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, AppError::RepoNotOpen(_)), "got {err}");
+    }
+
+    #[test]
+    fn plan_op_surfaces_git_errors() {
+        let (backend, _rx) = Backend::new();
+        let fx = testutil::Fixture::new("plan-err");
+        fx.commit_file("a.txt", "x\n", "c1");
+        backend.open(fx.id()).unwrap();
+
+        let err = backend
+            .plan(
+                fx.id(),
+                &Op::Commit {
+                    message: "   ".into(),
+                    amend: false,
+                },
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, AppError::Git(GitError::EmptyCommitMessage)),
+            "got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_op_commits_and_records_the_activity_log() {
+        let (backend, _rx) = Backend::new();
+        let fx = testutil::status_fixture(); // has a staged c.txt
+        backend.open(fx.id()).unwrap();
+
+        let op = Op::Commit {
+            message: "add c".into(),
+            amend: false,
+        };
+        let plan = backend.plan(fx.id(), &op).unwrap();
+        assert_eq!(plan.display, r#"git commit -m "add c""#);
+
+        let result = backend.run_op(fx.id(), &plan).await.unwrap();
+        assert!(result.ok, "stderr: {}", result.stderr);
+
+        let entry = backend.last_entry(fx.id()).unwrap();
+        assert!(entry.ok);
+        assert_eq!(entry.display, plan.display);
+        assert!(entry.id >= 1);
+        assert_eq!(backend.log().snapshot(Some(fx.id())).len(), 1);
+
+        // The commit actually landed: the staged c.txt is gone from the status.
+        let status = backend.refresh_status(fx.id()).unwrap();
+        assert!(!status.changes.iter().any(|c| c.path == "c.txt"));
+    }
+
+    #[tokio::test]
+    async fn run_op_unknown_repo_errors() {
+        let (backend, _rx) = Backend::new();
+        let plan = noop_plan("git noop");
+        let err = backend.run_op("/does/not/exist", &plan).await.unwrap_err();
+        assert!(matches!(err, AppError::RepoNotOpen(_)), "got {err}");
+    }
+
 }

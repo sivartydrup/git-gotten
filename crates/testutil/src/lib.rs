@@ -294,9 +294,9 @@ mod tests {
         let lines: Vec<&str> = porcelain.lines().collect();
         // Exact XY columns: b is worktree-modified (` M`), c staged-added (`A  `),
         // d untracked (`??`).
-        assert!(lines.iter().any(|l| *l == " M b.txt"), "b.txt: {porcelain}");
-        assert!(lines.iter().any(|l| *l == "A  c.txt"), "c.txt: {porcelain}");
-        assert!(lines.iter().any(|l| *l == "?? d.txt"), "d.txt: {porcelain}");
+        assert!(lines.contains(&" M b.txt"), "b.txt: {porcelain}");
+        assert!(lines.contains(&"A  c.txt"), "c.txt: {porcelain}");
+        assert!(lines.contains(&"?? d.txt"), "d.txt: {porcelain}");
         assert_eq!(lines.len(), 3, "exactly three changes: {porcelain}");
     }
 }

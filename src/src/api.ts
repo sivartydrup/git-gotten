@@ -1,6 +1,18 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { BuildInfo, RepoId, RepoMeta, Status, StatusChanged } from "./types";
+import type {
+  BuildInfo,
+  CommandPlan,
+  LogEntry,
+  Op,
+  OpFinished,
+  OpResult,
+  OpStarted,
+  RepoId,
+  RepoMeta,
+  Status,
+  StatusChanged,
+} from "./types";
 
 /**
  * Thin wrapper over the Rust IPC bridge.
@@ -51,6 +63,82 @@ export async function onStatusChanged(
     return null;
   }
   const unlisten = await listen<StatusChanged>("status_changed", (event) => {
+    cb(event.payload);
+  });
+  return () => {
+    unlisten();
+  };
+}
+
+/**
+ * Compile `op` into its visible [`CommandPlan`] (Rust `plan_op` command) without
+ * running it. Returns `null` outside Tauri.
+ */
+export async function planOp(
+  repo: RepoId,
+  op: Op,
+): Promise<CommandPlan | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<CommandPlan>("plan_op", { repo, op });
+}
+
+/**
+ * Run an op (Rust `run_op` command): the core re-plans from `op`, executes the
+ * exact git command (serialized per repo), and returns the result — including
+ * captured output. Returns `null` outside Tauri.
+ */
+export async function runOp(
+  repo: RepoId,
+  op: Op,
+): Promise<OpResult | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<OpResult>("run_op", { repo, op });
+}
+
+/**
+ * Read the session's activity log (Rust `load_log` command), oldest first.
+ * Returns `null` outside Tauri.
+ */
+export async function loadLog(): Promise<LogEntry[] | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<LogEntry[]>("load_log");
+}
+
+/**
+ * Subscribe to the Rust `op_started` event (SPEC §13): an op is beginning.
+ * Returns an unlisten function, or `null` outside Tauri.
+ */
+export async function onOpStarted(
+  cb: (payload: OpStarted) => void,
+): Promise<(() => void) | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  const unlisten = await listen<OpStarted>("op_started", (event) => {
+    cb(event.payload);
+  });
+  return () => {
+    unlisten();
+  };
+}
+
+/**
+ * Subscribe to the Rust `op_finished` event (SPEC §13): an op completed.
+ * Returns an unlisten function, or `null` outside Tauri.
+ */
+export async function onOpFinished(
+  cb: (payload: OpFinished) => void,
+): Promise<(() => void) | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  const unlisten = await listen<OpFinished>("op_finished", (event) => {
     cb(event.payload);
   });
   return () => {
