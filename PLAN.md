@@ -271,9 +271,9 @@ git push -u origin main
 **Commit & push:** `git add -A && git commit -m "stage-03: graph dag + lane layout" && git push origin main`
 
 **Acceptance criteria:**
-- [ ] All layout unit tests pass (linear, branch/merge, octopus, long-lane routing, refs, no overlap).
-- [ ] Layout is deterministic and runs < 300ms on a 10k-commit fixture (measure with a test bench, non-failing).
-- [ ] SVG dump of a real repo looks correct by eye.
+- [x] All layout unit tests pass (linear, branch/merge, octopus, long-lane routing, refs, no overlap).
+- [x] Layout is deterministic and runs < 300ms on a 10k-commit fixture (measure with a test bench, non-failing).
+- [x] SVG dump of a real repo looks correct by eye.
 
 ---
 

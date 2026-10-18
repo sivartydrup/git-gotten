@@ -9,6 +9,9 @@
 //! Stage 2 adds the command-transparency shapes (SPEC §8/§9): [`Risk`], [`GitStep`],
 //! [`Preview`], [`CommandPlan`], [`Op`], [`OpResult`], [`LogEntry`], and the
 //! [`OpStarted`] event payload.
+//! Stage 3 adds the branching-graph shapes (SPEC §10.1): [`Graph`], [`Node`],
+//! [`Edge`], [`Line`], [`LineSegment`], [`RefLabel`], [`RefKind`], and the
+//! [`BRANCH_PALETTE`] color indices they reference.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -244,6 +247,148 @@ pub struct OpStarted {
     pub risk: Risk,
 }
 
+// ── Branching graph (SPEC §10.1, computed by `crates/graph`) ─────────────────
+
+/// The default branch-lane palette: packed `0xRRGGBB` colors, in assignment
+/// order. `crates/graph` assigns each line an index into this palette (a line's
+/// `color` field is an index, not an RGB value), so the web can map indices to
+/// theme tokens (SPEC §12) in light/dark without the layout knowing about theming.
+///
+/// Chosen for pairwise distinguishability: hue rotations with alternating
+/// lightness so adjacent lanes read as distinct at small sizes.
+pub const BRANCH_PALETTE: [u32; 20] = [
+    0x4C8BF5, // 0  blue (mainline first)
+    0xE05252, // 1  red
+    0x58B368, // 2  green
+    0xE89A3C, // 3  orange
+    0x9B6BD4, // 4  purple
+    0x4CC9C0, // 5  teal
+    0xD65FA3, // 6  pink
+    0x8E9C3C, // 7  olive
+    0x5F6EF0, // 8  indigo
+    0xC75C2E, // 9  vermillion
+    0x2FB56B, // 10 emerald
+    0x7E5BC0, // 11 violet
+    0xB0893B, // 12 gold
+    0x3FA8C4, // 13 cyan
+    0xB4589E, // 14 fuchsia
+    0x6FA332, // 15 lime
+    0x9E4F4F, // 16 brick
+    0x5472D6, // 17 royal blue
+    0x8C6BA8, // 18 mauve
+    0x4A9E8C, // 19 sea green
+];
+
+/// A line's stable identity within a [`Graph`].
+pub type LineId = u32;
+
+/// A commit's object id, as a hex string.
+pub type Hash = String;
+
+/// What kind of ref a [`RefLabel`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub enum RefKind {
+    /// A local branch (`refs/heads/*`).
+    Branch,
+    /// A remote-tracking ref (`refs/remotes/*/*`); `name` is `remote/branch`.
+    Remote,
+    /// A tag (annotated tags are peeled to their commit).
+    Tag,
+    /// A worktree checkout (added in Stage 10).
+    Worktree,
+}
+
+/// A ref pinned to a node, rendered as a colored label in the graph (SPEC §10.1).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RefLabel {
+    /// Display name (e.g. `main`, `origin/main`, `v1.0`).
+    pub name: String,
+    /// The ref kind.
+    pub kind: RefKind,
+    /// Palette index of the line this ref sits on (same value space as [`Line::color`]).
+    pub color: u32,
+}
+
+/// One span of a [`Line`] in a fixed lane: the rows it is alive there, inclusive.
+///
+/// A line's lane can change over its lifetime (compaction when lanes to its left
+/// die), so its geometry is a sequence of segments, not a single lane.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct LineSegment {
+    /// The lane (x index, 0 = leftmost) the line occupies in this span.
+    pub lane: i32,
+    /// First row (y index, 0 = top/newest) of the span.
+    pub from_row: u32,
+    /// Last row of the span (inclusive): the row where the line dies or moves lanes.
+    pub to_row: u32,
+}
+
+/// A line of history (SPEC §10.1): a lane lineage with a stable color.
+///
+/// A line opens when a commit is placed in a lane no live line owns (a tip, or a
+/// merge's additional parent) and dies when its frontier commit is emitted
+/// (converging into another line, or reaching a root). Its [`LineSegment`]s are its
+/// lane over time; the web draws them as the vertical lane strokes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Line {
+    /// Stable identity within the graph.
+    pub id: LineId,
+    /// Palette index into [`BRANCH_PALETTE`] (theme-mapped by the web).
+    pub color: u32,
+    /// The branch name at the line's opener, when one exists (e.g. `feature`);
+    /// `None` for lines that open at an unnamed commit.
+    pub name: Option<String>,
+    /// The line's lane over time, in row order (contiguous spans).
+    pub segments: Vec<LineSegment>,
+}
+
+/// One commit in the laid-out graph (SPEC §10.1).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Node {
+    /// The commit's full object id (hex).
+    pub hash: Hash,
+    /// First line of the commit message.
+    pub subject: String,
+    /// Author name.
+    pub author: String,
+    /// Author date, unix seconds (for display).
+    pub date: u64,
+    /// Row (y index, 0 = newest; one commit per row, newest-first topological).
+    pub row: u32,
+    /// Lane (x index, 0 = leftmost).
+    pub lane: i32,
+    /// `true` for the node HEAD points at (the graph emphasizes it).
+    pub is_head: bool,
+    /// Refs pointing at this commit (branches, remote-tracking, tags).
+    pub refs: Vec<RefLabel>,
+    /// The lines alive at this node's row, in lane order — the vertical strokes
+    /// the renderer draws through the row (including the line of the node itself).
+    pub lines: Vec<LineId>,
+}
+
+/// A commit→parent edge. Merge commits have ≥2; the renderer draws each as a
+/// curve from the child's (lane, row) to the parent's, routed around live lanes.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+pub struct Edge {
+    /// The child commit (the merge commit, or the newer side of a normal edge).
+    pub from: Hash,
+    /// The parent commit.
+    pub to: Hash,
+}
+
+/// The laid-out commit graph for one repository (SPEC §10.1): what the canvas
+/// renderer draws. `nodes` are in row order (newest first); `lines` carry the
+/// lane geometry + colors; `edges` connect every commit to its parents.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Graph {
+    /// All commits reachable from the walked refs, laid out.
+    pub nodes: Vec<Node>,
+    /// Every commit→parent edge in the DAG.
+    pub edges: Vec<Edge>,
+    /// All lines, in creation order.
+    pub lines: Vec<Line>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,6 +617,97 @@ mod tests {
         _assert_ts::<OpResult>();
         _assert_ts::<LogEntry>();
         _assert_ts::<OpStarted>();
+    }
+
+    fn sample_graph() -> Graph {
+        Graph {
+            nodes: vec![
+                Node {
+                    hash: "a".repeat(40),
+                    subject: "Merge branch 'feature'".into(),
+                    author: "Test User".into(),
+                    date: 1_700_000_100,
+                    row: 0,
+                    lane: 0,
+                    is_head: true,
+                    refs: vec![RefLabel {
+                        name: "main".into(),
+                        kind: RefKind::Branch,
+                        color: 0,
+                    }],
+                    lines: vec![0],
+                },
+                Node {
+                    hash: "b".repeat(40),
+                    subject: "feature: work".into(),
+                    author: "Test User".into(),
+                    date: 1_700_000_090,
+                    row: 1,
+                    lane: 1,
+                    is_head: false,
+                    refs: vec![RefLabel {
+                        name: "feature".into(),
+                        kind: RefKind::Branch,
+                        color: 1,
+                    }],
+                    lines: vec![0, 1],
+                },
+            ],
+            edges: vec![
+                Edge {
+                    from: "a".repeat(40),
+                    to: "b".repeat(40),
+                },
+                Edge {
+                    from: "b".repeat(40),
+                    to: "c".repeat(40),
+                },
+            ],
+            lines: vec![
+                Line {
+                    id: 0,
+                    color: 0,
+                    name: Some("main".into()),
+                    segments: vec![LineSegment { lane: 0, from_row: 0, to_row: 5 }],
+                },
+                Line {
+                    id: 1,
+                    color: 1,
+                    name: Some("feature".into()),
+                    segments: vec![LineSegment { lane: 1, from_row: 1, to_row: 4 }],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn graph_round_trips_through_serde() {
+        let g = sample_graph();
+        let json = serde_json::to_string(&g).unwrap();
+        assert!(json.contains(r#""is_head":true"#));
+        assert!(json.contains(r#""from_row":1"#));
+        let back: Graph = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, g);
+    }
+
+    #[test]
+    fn graph_types_are_ts_types() {
+        _assert_ts::<Graph>();
+        _assert_ts::<Node>();
+        _assert_ts::<Edge>();
+        _assert_ts::<Line>();
+        _assert_ts::<LineSegment>();
+        _assert_ts::<RefLabel>();
+        _assert_ts::<RefKind>();
+    }
+
+    #[test]
+    fn branch_palette_is_distinguishable() {
+        let mut distinct = std::collections::HashSet::new();
+        for c in BRANCH_PALETTE {
+            assert!(distinct.insert(c), "duplicate palette color {c:#x}");
+        }
+        assert_eq!(distinct.len(), 20);
     }
 
 }

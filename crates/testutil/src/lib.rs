@@ -80,6 +80,15 @@ impl Fixture {
         }
     }
 
+    /// Wrap an existing repository directory. Unlike [`new`], the directory must
+    /// already exist and be a git repo; the fixture's drop still deletes the tree.
+    pub fn from_path(path: PathBuf) -> Self {
+        Self {
+            path,
+            remotes: Vec::new(),
+        }
+    }
+
     /// Create a bare `origin`, add it to this fixture, and push `branch` with an upstream.
     /// The bare remote stays alive as long as the fixture does.
     pub fn add_origin(&mut self, branch: &str) -> PathBuf {
@@ -133,6 +142,51 @@ impl Fixture {
         self.write_file(rel, content);
         self.git(&["add", rel]);
         self.git(&["commit", "-m", message]);
+    }
+
+    /// Run `git <args>` inside this fixture with additional environment
+    /// variables, allowing non-zero exits.
+    pub fn git_env_run(
+        &self,
+        env: &[(&str, &str)],
+        args: &[&str],
+    ) -> (i32, String, String) {
+        let out = Command::new("git")
+            .envs(env.iter().copied())
+            .args(args)
+            .current_dir(&self.path)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to spawn git {:?}: {e}", args));
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    /// Write + `git add` + `git commit` a file with a pinned timestamp: both
+    /// the author and committer dates are set to `ts` (unix seconds, UTC).
+    ///
+    /// Deterministic commit dates make the `git log --graph` ordering
+    /// (committer-date driven) reproducible — the graph crate's oracle tests
+    /// rely on it.
+    pub fn commit_file_at(&self, rel: &str, content: &str, message: &str, ts: i64) {
+        self.write_file(rel, content);
+        self.git(&["add", rel]);
+        let date = format!("@{ts} +0000");
+        let (code, stdout, stderr) = self.git_env_run(
+            &[
+                ("GIT_AUTHOR_DATE", date.as_str()),
+                ("GIT_COMMITTER_DATE", date.as_str()),
+            ],
+            &["commit", "-m", message],
+        );
+        if code != 0 {
+            panic!(
+                "git commit failed (exit {code}) in {:?}\nstdout: {stdout}\nstderr: {stderr}",
+                self.path
+            );
+        }
     }
 
     /// `git add` the path (staging it).

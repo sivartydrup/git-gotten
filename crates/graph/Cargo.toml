@@ -9,3 +9,9 @@ repository.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+serde = { workspace = true }
+gix = { workspace = true }
+git-gotten-protocol = { workspace = true }
+
+[dev-dependencies]
+git-gotten-testutil = { workspace = true }
