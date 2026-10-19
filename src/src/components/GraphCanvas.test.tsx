@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import {
   GraphCanvas,
   hitTest,
@@ -8,10 +8,27 @@ import {
   type CanvasCtx,
   type Viewport,
 } from "./GraphCanvas";
+import { InspectDrawer } from "./InspectDrawer";
 import { useGraphStore, useRepoStore } from "../store";
-import type { Graph, Node } from "../types";
+import type { CommitDetail, Graph, Node } from "../types";
 
-// Mock the IPC layer (the store imports it); the tests drive the store directly.
+// `loadCommit` is hoisted so interaction tests can drive its result.
+const { loadCommit } = vi.hoisted(() => ({
+  loadCommit: vi.fn().mockResolvedValue(null),
+}));
+
+// jsdom has no `PointerEvent` constructor: testing-library's createEvent
+// would fall back to a plain Event and silently drop clientX/clientY.
+// Polyfill it over MouseEvent so pointer interactions carry their coordinates.
+if (window.PointerEvent === undefined) {
+  Object.assign(window, {
+    PointerEvent: (class PointerEvent extends MouseEvent {
+      constructor(type: string, params: PointerEventInit = {}) {
+        super(type, params);
+      }
+    }) as typeof PointerEvent,
+  });
+}
 vi.mock("../api", () => ({
   fetchBuildInfo: vi.fn().mockResolvedValue(null),
   openRepo: vi.fn().mockResolvedValue(null),
@@ -23,7 +40,7 @@ vi.mock("../api", () => ({
   onOpStarted: vi.fn().mockResolvedValue(null),
   onOpFinished: vi.fn().mockResolvedValue(null),
   loadGraph: vi.fn().mockResolvedValue(null),
-  loadCommit: vi.fn().mockResolvedValue(null),
+  loadCommit,
 }));
 
 afterEach(() => {
@@ -276,4 +293,95 @@ test("GraphCanvas renders the toolbar, a canvas, and the commit count", () => {
 test("GraphCanvas renders the open-repo prompt when nothing is active", () => {
   render(<GraphCanvas />);
   expect(screen.getByText("Open a repository to see its history")).toBeTruthy();
+});
+
+// ── Component interactions (canvas event → store → drawer / menu) ──────────
+
+const detailFixture: CommitDetail = {
+  hash: "d4e5f6",
+  subject: "mid",
+  message: "mid",
+  author_name: "Bo",
+  author_email: "bo@example.com",
+  author_date: 1690000000,
+  committer_name: "Bo",
+  committer_email: "bo@example.com",
+  committer_date: 1690000000,
+  parents: ["a7b8c9"],
+  refs: [],
+  is_head: false,
+  stat: [],
+  diff: [],
+};
+
+/** Deterministic microtask flush (no wall-clock timers). */
+async function flush(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+test("clicking a commit selects it and opens the inspect drawer", async () => {
+  useGraphStore.setState({ graph: threeNodeGraph(), loading: false });
+  useRepoStore.setState({ activeId: "/repo/alpha" });
+  loadCommit.mockResolvedValueOnce(detailFixture);
+  render(
+    <>
+      <GraphCanvas />
+      <InspectDrawer />
+    </>,
+  );
+  // jsdom rects are zero-sized, so screen coordinates are canvas-local:
+  // lane 0 center x = 18, row 1 center y = 55 → node "d4e5f6".
+  fireEvent.pointerUp(document.querySelector("canvas.graph-canvas")!, {
+    clientX: 18,
+    clientY: 55,
+  });
+  expect(useGraphStore.getState().selected).toBe("d4e5f6");
+  expect(loadCommit).toHaveBeenCalledWith("/repo/alpha", "d4e5f6");
+  await flush();
+  expect(useGraphStore.getState().detail).toBe(detailFixture);
+  expect(screen.getByText("mid")).toBeTruthy();
+});
+
+test("clicking empty space clears the selection", () => {
+  useGraphStore.setState({
+    graph: threeNodeGraph(),
+    loading: false,
+    selected: "a1b2c3",
+  });
+  useRepoStore.setState({ activeId: "/repo/alpha" });
+  render(<GraphCanvas />);
+  // y = 4 is above the first row → the hit-test finds nothing.
+  fireEvent.pointerUp(document.querySelector("canvas.graph-canvas")!, {
+    clientX: 90,
+    clientY: 4,
+  });
+  expect(useGraphStore.getState().selected).toBeNull();
+});
+
+test("right-clicking a commit opens the context menu with the graph actions", () => {
+  useGraphStore.setState({ graph: threeNodeGraph(), loading: false });
+  useRepoStore.setState({ activeId: "/repo/alpha" });
+  render(<GraphCanvas />);
+  fireEvent.contextMenu(document.querySelector("canvas.graph-canvas")!, {
+    clientX: 18,
+    clientY: 55,
+  });
+  expect(screen.getByText("Create branch…")).toBeTruthy();
+  expect(screen.getByText("Cherry-pick")).toBeTruthy();
+  expect(screen.getByText("Reset branch to here (hard) — discards changes")).toBeTruthy();
+  expect(screen.getByText("View diff")).toBeTruthy();
+  expect(screen.getByText("Copy hash")).toBeTruthy();
+});
+
+test("hovering a commit shows the tooltip and hover state", () => {
+  useGraphStore.setState({ graph: threeNodeGraph(), loading: false });
+  useRepoStore.setState({ activeId: "/repo/alpha" });
+  render(<GraphCanvas />);
+  fireEvent.pointerMove(document.querySelector("canvas.graph-canvas")!, {
+    clientX: 18,
+    clientY: 55,
+  });
+  expect(useGraphStore.getState().hovered).toBe("d4e5f6");
+  expect(document.querySelector(".graph-tooltip")).toBeTruthy();
 });
