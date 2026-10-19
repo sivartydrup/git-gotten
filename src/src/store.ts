@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import {
   fetchBuildInfo,
+  loadCommit,
+  loadGraph,
   loadLog,
   loadStatus,
   openRepo,
@@ -10,6 +12,8 @@ import {
 import type {
   BuildInfo,
   CommandPlan,
+  CommitDetail,
+  Graph,
   LogEntry,
   Op,
   OpFinished,
@@ -290,4 +294,106 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
   },
 
   clearError: () => set({ error: null }),
+}));
+
+// ── Branching graph + inspect drawer (SPEC §10.1) ───────────────────────────
+
+interface GraphState {
+  /** The laid-out graph of the active repo (`null` = none / outside Tauri). */
+  graph: Graph | null;
+  /** True while a `loadGraph` round-trip is in flight. */
+  loading: boolean;
+  /** Last graph-load failure (the Rust error string). */
+  error: string | null;
+  /** The selected node's hash (`null` = none). */
+  selected: string | null;
+  /** The hovered node's hash (drives the tooltip). */
+  hovered: string | null;
+  /** The search box text; non-matching nodes render dimmed. */
+  query: string;
+  /** The inspect drawer's content for `selected`. */
+  detail: CommitDetail | null;
+  /** True while a `loadCommit` round-trip is in flight. */
+  detailLoading: boolean;
+  /** Last `loadCommit` failure. */
+  detailError: string | null;
+  /** Load the graph of `repo`, clearing the selection (SPEC §10.1). */
+  load: (repo: RepoId) => Promise<void>;
+  /** Select a node (and open the inspect drawer for it), or clear the selection. */
+  select: (hash: string | null) => void;
+  hover: (hash: string | null) => void;
+  setQuery: (query: string) => void;
+  closeDetail: () => void;
+}
+
+/** Client state for the branching graph + inspect drawer (SPEC §10.1). */
+export const useGraphStore = create<GraphState>((set, get) => ({
+  graph: null,
+  loading: false,
+  error: null,
+  selected: null,
+  hovered: null,
+  query: "",
+  detail: null,
+  detailLoading: false,
+  detailError: null,
+
+  load: async (repo) => {
+    set({
+      loading: true,
+      error: null,
+      selected: null,
+      detail: null,
+      detailError: null,
+    });
+    try {
+      const graph = await loadGraph(repo);
+      if (!graph) {
+        // Outside Tauri: nothing to draw, no error.
+        set({ graph: null, loading: false });
+        return;
+      }
+      set({ graph, loading: false });
+    } catch (e) {
+      set({
+        graph: null,
+        loading: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+
+  select: (hash) => {
+    set({ selected: hash, detail: null, detailError: null, detailLoading: false });
+    if (!hash) {
+      return;
+    }
+    const repo = useRepoStore.getState().activeId;
+    if (!repo) {
+      return;
+    }
+    set({ detailLoading: true });
+    void loadCommit(repo, hash)
+      .then((detail) => {
+        if (get().selected !== hash) {
+          return; // stale response (the selection moved on)
+        }
+        set({ detail, detailLoading: false });
+      })
+      .catch((e: unknown) => {
+        if (get().selected !== hash) {
+          return;
+        }
+        set({
+          detail: null,
+          detailLoading: false,
+          detailError: e instanceof Error ? e.message : String(e),
+        });
+      });
+  },
+
+  hover: (hash) => set({ hovered: hash }),
+  setQuery: (query) => set({ query }),
+  closeDetail: () =>
+    set({ selected: null, detail: null, detailError: null, detailLoading: false }),
 }));

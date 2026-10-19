@@ -1,21 +1,24 @@
 import { useEffect } from "react";
-import { useActivityStore, useBuildInfo, useRepoStore } from "./store";
+import { useActivityStore, useBuildInfo, useGraphStore, useRepoStore } from "./store";
 import { onOpFinished, onOpStarted, onStatusChanged } from "./api";
 import { TopBar } from "./components/TopBar";
 import { RepoNav } from "./components/RepoNav";
 import { StatusView } from "./components/StatusView";
 import { ActivityLog } from "./components/ActivityLog";
 import { PreviewDialog } from "./components/PreviewDialog";
+import { GraphCanvas } from "./components/GraphCanvas";
+import { InspectDrawer } from "./components/InspectDrawer";
 
 /**
  * GitGotten app shell.
  *
- * Stage 2: a top bar (brand + active repo state) over the workspace — the
- * open-repo nav on the left, the active repo's live status (with the first
- * mutating action: commit) on the right, and the activity log (the command
- * stream, SPEC §11) along the bottom. The Rust core keeps everything fresh:
- * `status_changed` for the read model, `op_started`/`op_finished` for the
- * command stream (SPEC §13).
+ * Stage 4: a top bar (brand + active repo state) over the workspace — the
+ * open-repo nav on the left, the active repo's live status (commit/switch/
+ * push) and the branching graph (SPEC §10.1) in the main area, the inspect
+ * drawer on the right, and the activity log (the command stream, SPEC §11)
+ * along the bottom. The Rust core keeps everything fresh: `status_changed`
+ * for the read model, `op_started`/`op_finished` for the command stream
+ * (SPEC §13) — a finished op also reloads the graph.
  */
 export default function App() {
   const { load } = useBuildInfo();
@@ -49,6 +52,10 @@ export default function App() {
     });
     void onOpFinished((payload) => {
       useActivityStore.getState().applyFinished(payload);
+      const activeId = useRepoStore.getState().activeId;
+      if (payload.repo === activeId) {
+        void useGraphStore.getState().load(activeId);
+      }
     }).then((u) => {
       unlistenFinished = u;
     });
@@ -58,8 +65,17 @@ export default function App() {
     };
   }, []);
 
-  // The activity log follows the active repo (its command stream).
   const activeId = useRepoStore((s) => s.activeId);
+  // The branching graph follows the active repo and reloads after a finished
+  // op (the graph may have changed: branch, reset, cherry-pick, …).
+  useEffect(() => {
+    if (activeId) {
+      void useGraphStore.getState().load(activeId);
+    } else {
+      useGraphStore.getState().closeDetail();
+    }
+  }, [activeId]);
+  // The activity log follows the active repo (its command stream).
   useEffect(() => {
     void useActivityStore.getState().loadHistory(activeId);
   }, [activeId]);
@@ -69,7 +85,9 @@ export default function App() {
       <TopBar />
       <div className="workspace">
         <RepoNav />
+        <GraphCanvas />
         <StatusView />
+        <InspectDrawer />
       </div>
       <ActivityLog />
       <PreviewDialog />

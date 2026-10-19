@@ -1277,6 +1277,7 @@ dependencies = [
  "git-gotten-protocol",
  "git-gotten-testutil",
  "gix",
+ "graph",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

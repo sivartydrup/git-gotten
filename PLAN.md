@@ -306,9 +306,9 @@ git push -u origin main
 **Commit & push:** `git add -A && git commit -m "stage-04: graph canvas render + interaction" && git push origin main`
 
 **Acceptance criteria:**
-- [ ] Graph renders a real multi-branch repo with correct lanes/colors/refs.
-- [ ] Pan/zoom/select/context/hover/search all work; virtualized (no perf cliff on large repos).
-- [ ] Click → inspect drawer with accurate commit details.
+- [x] Graph renders a real multi-branch repo with correct lanes/colors/refs.
+- [x] Pan/zoom/select/context/hover/search all work; virtualized (no perf cliff on large repos).
+- [x] Click → inspect drawer with accurate commit details.
 
 ---
 

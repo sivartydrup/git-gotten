@@ -3,6 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   BuildInfo,
   CommandPlan,
+  CommitDetail,
+  Graph,
   LogEntry,
   Op,
   OpFinished,
@@ -50,6 +52,31 @@ export async function loadStatus(repo: RepoId): Promise<Status | null> {
     return null;
   }
   return await invoke<Status>("load_status", { repo });
+}
+
+/**
+ * Load the laid-out commit graph of an open repository (Rust `load_graph`
+ * command, SPEC §10.1). Returns the graph, or `null` outside Tauri.
+ */
+export async function loadGraph(repo: RepoId): Promise<Graph | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<Graph>("load_graph", { repo });
+}
+
+/**
+ * Load the full details of one commit (Rust `load_commit` command, the
+ * inspect drawer, SPEC §10.1). Returns the details, or `null` outside Tauri.
+ */
+export async function loadCommit(
+  repo: RepoId,
+  hash: string,
+): Promise<CommitDetail | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<CommitDetail>("load_commit", { repo, hash });
 }
 
 /**

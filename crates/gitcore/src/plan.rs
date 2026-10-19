@@ -8,7 +8,7 @@
 //! `display` is the single source of truth for the UI (inline hint, preview dialog,
 //! activity log, SPEC §8/§9): it is the exact argv, quoted only where necessary.
 
-use git_gotten_protocol::{ChangeKind, CommandPlan, GitStep, Op, Preview, Risk, Status};
+use git_gotten_protocol::{ChangeKind, CommandPlan, GitStep, Op, Preview, ResetMode, Risk, Status};
 
 use crate::{GitError, Repo};
 
@@ -56,6 +56,13 @@ impl Repo {
                 branch,
                 force,
             } => plan_push(&self.inner, &status, remote, branch.as_deref(), *force),
+            Op::BranchCreate {
+                name,
+                from,
+                checkout,
+            } => plan_branch_create(self, name, from, *checkout),
+            Op::Reset { mode, target } => plan_reset(self, &status, *mode, target),
+            Op::CherryPick { hashes } => plan_cherry_pick(self, &status, hashes),
         }
     }
 }
@@ -273,7 +280,243 @@ fn short_oid(oid: &Option<String>) -> String {
         .map(|o| o.chars().take(12).collect())
         .unwrap_or_default()
 }
+/// Ref-name characters git rejects in a branch name (a leading `-` is checked
+/// separately; a name may not be empty or contain whitespace/control chars).
+fn invalid_branch_name(name: &str) -> bool {
+    if name.is_empty()
+        || name.starts_with('-')
+        || name.ends_with('.')
+        || name.contains("//")
+        || name.chars().any(|c| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    ':' | '~' | '^' | '?' | '*' | '[' | '\\' | '@' | '{' | '}'
+                )
+        })
+    {
+        return true;
+    }
+    // Path traversal or dot components are not valid refname segments.
+    name.split('/').any(|component| {
+        component.is_empty() || component == "." || component == ".." || component.starts_with('.')
+    })
+}
 
+/// First 12 hex digits of a hash (the human display form).
+fn short_hash(hash: &str) -> String {
+    hash.chars().take(12).collect()
+}
+
+/// The checked-out branch, or a `detached <short-oid>` label (preview lines).
+fn from_label(status: &Status) -> String {
+    status
+        .branch
+        .clone()
+        .unwrap_or_else(|| format!("detached {}", short_oid(&status.detached_head)))
+}
+
+/// `git branch <name> <from>` (+ optional `git switch <name>`) — `Mutating`.
+///
+/// The commit the branch points at must exist (a graph context-menu pick always
+/// does; a stale hash would only fail at run time). If the branch name is taken,
+/// the preview says so — git still refuses with a clear error.
+fn plan_branch_create(
+    repo: &Repo,
+    name: &str,
+    from: &str,
+    checkout: bool,
+) -> Result<CommandPlan, GitError> {
+    if invalid_branch_name(name) {
+        return Err(GitError::BadBranchName {
+            name: name.to_string(),
+        });
+    }
+    let from_commit = repo.commit_at(from)?;
+    let from_subject = from_commit
+        .message()
+        .map_err(|e| GitError::Object(e.to_string()))?
+        .summary()
+        .to_string();
+
+    let mut steps = vec![GitStep {
+        argv: vec![
+            "git".to_string(),
+            "branch".to_string(),
+            name.to_string(),
+            from.to_string(),
+        ],
+        summary: format!("create branch {name} at {}", short_hash(from)),
+        risk: Risk::Mutating,
+        effect: None,
+    }];
+    if checkout {
+        steps.push(GitStep {
+            argv: vec!["git".to_string(), "switch".to_string(), name.to_string()],
+            summary: format!("switch to {name}"),
+            risk: Risk::Mutating,
+            effect: None,
+        });
+    }
+
+    let mut lines = vec![format!("at {}: {from_subject}", short_hash(from))];
+    if checkout {
+        lines.push("then switch to the new branch".to_string());
+    }
+    let exists_name = format!("refs/heads/{name}");
+    let exists = repo
+        .inner
+        .find_reference(exists_name.as_str())
+        .is_ok();
+    if exists {
+        lines.push(format!("branch `{name}` already exists — git will fail"));
+    }
+    let display = if steps.len() == 1 {
+        format_argv(&steps[0].argv)
+    } else {
+        format!(
+            "{} && {}",
+            format_argv(&steps[0].argv),
+            format_argv(&steps[1].argv)
+        )
+    };
+
+    Ok(CommandPlan {
+        steps,
+        display,
+        preview: Some(Preview {
+            headline: format!("Create branch {name}"),
+            lines,
+            requires_type_to_confirm: false,
+        }),
+    })
+}
+
+/// `git reset --<mode> <target>` — `Mutating` for `soft`/`mixed`, `Dangerous`
+/// (type-to-confirm) for `hard`: only the hard variant destroys uncommitted work.
+fn plan_reset(
+    repo: &Repo,
+    status: &Status,
+    mode: ResetMode,
+    target: &str,
+) -> Result<CommandPlan, GitError> {
+    let head_id = repo.inner.head().ok().and_then(|h| h.id());
+    if head_id.is_none() {
+        return Err(GitError::NoCommits);
+    }
+    let target_commit = repo.commit_at(target)?;
+    let target_subject = target_commit
+        .message()
+        .map_err(|e| GitError::Object(e.to_string()))?
+        .summary()
+        .to_string();
+
+    let (flag, risk, mode_note) = match mode {
+        ResetMode::Soft => (
+            "--soft",
+            Risk::Mutating,
+            "moves the branch pointer; the index and working tree are untouched",
+        ),
+        ResetMode::Mixed => (
+            "--mixed",
+            Risk::Mutating,
+            "moves the branch pointer; the difference reappears unstaged",
+        ),
+        ResetMode::Hard => (
+            "--hard",
+            Risk::Dangerous,
+            "moves the branch pointer; the index and working tree are discarded",
+        ),
+    };
+
+    let argv = vec![
+        "git".to_string(),
+        "reset".to_string(),
+        flag.to_string(),
+        target.to_string(),
+    ];
+    let mut lines = vec![format!(
+        "from {} to {}: {target_subject}",
+        from_label(status),
+        short_hash(target)
+    )];
+    lines.push(mode_note.to_string());
+    let hard = matches!(mode, ResetMode::Hard);
+    let effect = hard.then(|| "uncommitted changes will be discarded".to_string());
+
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary: format!("reset to {target}"),
+            risk,
+            effect,
+        }],
+        display: format_argv(&[
+            "git".to_string(),
+            "reset".to_string(),
+            flag.to_string(),
+            target.to_string(),
+        ]),
+        preview: Some(Preview {
+            headline: format!("Reset to {}", short_hash(target)),
+            lines,
+            requires_type_to_confirm: hard,
+        }),
+    })
+}
+
+/// `git cherry-pick <hash>…` — `Mutating`, applied onto the current branch.
+///
+/// Every hash must exist. A conflicting pick fails at run time with git's
+/// output (safe failure, SPEC §8); the in-app conflict flow lands in Stage 8.
+fn plan_cherry_pick(
+    repo: &Repo,
+    status: &Status,
+    hashes: &[String],
+) -> Result<CommandPlan, GitError> {
+    if hashes.is_empty() {
+        return Err(GitError::EmptySelection);
+    }
+    let mut lines = Vec::new();
+    let mut argv = vec!["git".to_string(), "cherry-pick".to_string()];
+    for hash in hashes {
+        let commit = repo.commit_at(hash)?;
+        let subject = commit
+            .message()
+            .map_err(|e| GitError::Object(e.to_string()))?
+            .summary()
+            .to_string();
+        lines.push(format!("  {}: {subject}", short_hash(hash)));
+        argv.push(hash.clone());
+    }
+    lines.push(format!(
+        "onto {}",
+        status
+            .branch
+            .clone()
+            .unwrap_or_else(|| "the detached HEAD".to_string())
+    ));
+    let display = format_argv(&argv);
+    let count = hashes.len();
+
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary: "cherry-pick onto the current branch".to_string(),
+            risk: Risk::Mutating,
+            effect: None,
+        }],
+        display,
+        preview: Some(Preview {
+            headline: format!(
+                "Cherry-pick {count} commit{}",
+                if count == 1 { "" } else { "s" }
+            ),
+            lines,
+            requires_type_to_confirm: false,
+        }),
+    })
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,5 +825,260 @@ mod tests {
             .risk,
             Risk::Dangerous
         );
+
+        // The Stage 4 graph context-menu ops dispatch and classify.
+        let head = fx.git(&["rev-parse", "HEAD"]);
+        assert_eq!(
+            repo.plan(&Op::BranchCreate {
+                name: "feature".into(),
+                from: head.clone(),
+                checkout: false
+            }).unwrap()
+            .steps[0]
+            .risk,
+            Risk::Mutating
+        );
+        assert_eq!(
+            repo.plan(&Op::Reset {
+                mode: ResetMode::Hard,
+                target: head.clone()
+            }).unwrap()
+            .steps[0]
+            .risk,
+            Risk::Dangerous
+        );
+        assert_eq!(
+            repo.plan(&Op::CherryPick {
+                hashes: vec![head]
+            })
+            .unwrap()
+            .steps[0]
+            .risk,
+            Risk::Mutating
+        );
+    }
+
+    // ── branch_create ──────────────────────────────────────────────────────
+
+    fn branch_fixture() -> (testutil::Fixture, Repo) {
+        let fx = testutil::Fixture::new("plan-branch");
+        fx.commit_file("a.txt", "one\n", "c1");
+        fx.commit_file("b.txt", "two\n", "c2");
+        let repo = Repo::open(&fx.path).unwrap();
+        (fx, repo)
+    }
+
+    #[test]
+    fn plan_branch_create_has_the_exact_display() {
+        let (fx, repo) = branch_fixture();
+        let head = fx.git(&["rev-parse", "HEAD"]);
+        let plan = repo
+            .plan(&Op::BranchCreate {
+                name: "feature".into(),
+                from: head.clone(),
+                checkout: false,
+            })
+            .unwrap();
+
+        assert_eq!(plan.display, format!("git branch feature {head}"));
+        assert_eq!(
+            plan.steps[0].argv,
+            vec![
+                "git".to_string(),
+                "branch".to_string(),
+                "feature".to_string(),
+                head
+            ]
+        );
+        assert_eq!(plan.steps[0].risk, Risk::Mutating);
+
+        let preview = plan.preview.as_ref().unwrap();
+        assert_eq!(preview.headline, "Create branch feature");
+        assert!(!preview.requires_type_to_confirm);
+        // The preview names the commit the branch will point at.
+        assert!(
+            preview.lines.iter().any(|l| l.contains("c2")),
+            "preview should show the target commit: {preview:?}"
+        );
+    }
+
+    #[test]
+    fn plan_branch_create_checkout_adds_a_switch_step() {
+        let (fx, repo) = branch_fixture();
+        let head = fx.git(&["rev-parse", "HEAD"]);
+        let plan = repo
+            .plan(&Op::BranchCreate {
+                name: "feature".into(),
+                from: head,
+                checkout: true,
+            })
+            .unwrap();
+
+        assert_eq!(plan.steps.len(), 2);
+        assert!(plan.display.contains(" && "));
+        assert_eq!(
+            plan.steps[1].argv,
+            vec!["git".to_string(), "switch".to_string(), "feature".into()]
+        );
+        assert_eq!(plan.steps[1].risk, Risk::Mutating);
+    }
+
+    #[test]
+    fn plan_branch_create_rejects_invalid_names() {
+        let (fx, repo) = branch_fixture();
+        let head = fx.git(&["rev-parse", "HEAD"]);
+        for name in ["", "  ", "-leading-dash", "has space", "up/../down", "weird:colon"] {
+            let err = repo
+                .plan(&Op::BranchCreate {
+                    name: name.into(),
+                    from: head.clone(),
+                    checkout: false,
+                })
+                .unwrap_err();
+            assert!(
+                matches!(err, GitError::BadBranchName { .. }),
+                "name {name:?}: got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_branch_create_rejects_an_unknown_from() {
+        let (_fx, repo) = branch_fixture();
+        let err = repo
+            .plan(&Op::BranchCreate {
+                name: "x".into(),
+                from: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz".into(),
+                checkout: false,
+            })
+            .unwrap_err();
+        assert!(matches!(err, GitError::NoCommit { .. }), "got {err:?}");
+    }
+
+    // ── reset ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn plan_reset_classifies_risk_by_mode() {
+        let (fx, repo) = branch_fixture();
+        let target = fx.git(&["rev-parse", "HEAD~1"]);
+
+        let soft = repo
+            .plan(&Op::Reset {
+                mode: ResetMode::Soft,
+                target: target.clone(),
+            })
+            .unwrap();
+        assert_eq!(soft.display, format!("git reset --soft {target}"));
+        assert_eq!(soft.steps[0].risk, Risk::Mutating);
+        assert!(soft.steps[0].effect.is_none());
+        assert!(!soft.preview.as_ref().unwrap().requires_type_to_confirm);
+
+        let mixed = repo
+            .plan(&Op::Reset {
+                mode: ResetMode::Mixed,
+                target: target.clone(),
+            })
+            .unwrap();
+        assert_eq!(mixed.display, format!("git reset --mixed {target}"));
+        assert_eq!(mixed.steps[0].risk, Risk::Mutating);
+        assert!(
+            mixed
+                .preview
+                .as_ref()
+                .unwrap()
+                .lines
+                .iter()
+                .any(|l| l.contains("unstaged")),
+            "mixed reset must explain the unstage: {mixed:?}"
+        );
+
+        let hard = repo
+            .plan(&Op::Reset {
+                mode: ResetMode::Hard,
+                target: target.clone(),
+            })
+            .unwrap();
+        assert_eq!(hard.display, format!("git reset --hard {target}"));
+        assert_eq!(hard.steps[0].risk, Risk::Dangerous);
+        assert!(hard.steps[0].effect.is_some());
+        assert!(hard.preview.as_ref().unwrap().requires_type_to_confirm);
+    }
+
+    #[test]
+    fn plan_reset_rejects_an_unknown_target() {
+        let (_fx, repo) = branch_fixture();
+        let err = repo
+            .plan(&Op::Reset {
+                mode: ResetMode::Mixed,
+                target: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz".into(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, GitError::NoCommit { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn plan_reset_on_an_unborn_repo_errors() {
+        let fx = testutil::Fixture::new("plan-reset-unborn");
+        let repo = Repo::open(&fx.path).unwrap();
+        let err = repo
+            .plan(&Op::Reset {
+                mode: ResetMode::Soft,
+                target: "x".into(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, GitError::NoCommits), "got {err:?}");
+    }
+
+    // ── cherry_pick ────────────────────────────────────────────────────────
+
+    #[test]
+    fn plan_cherry_pick_lists_the_commits() {
+        let fx = testutil::Fixture::new("plan-cherry");
+        fx.commit_file("a.txt", "one\n", "c1");
+        fx.git(&["checkout", "-b", "side"]);
+        fx.commit_file("b.txt", "two\n", "c2");
+        fx.git(&["checkout", "main"]);
+        let pick = fx.git(&["rev-parse", "side"]);
+        let repo = Repo::open(&fx.path).unwrap();
+
+        let plan = repo
+            .plan(&Op::CherryPick {
+                hashes: vec![pick.clone()],
+            })
+            .unwrap();
+
+        assert_eq!(plan.display, format!("git cherry-pick {pick}"));
+        assert_eq!(plan.steps[0].risk, Risk::Mutating);
+        let preview = plan.preview.as_ref().unwrap();
+        assert_eq!(preview.headline, "Cherry-pick 1 commit");
+        assert!(!preview.requires_type_to_confirm);
+        assert!(
+            preview.lines.iter().any(|l| l.contains("c2")),
+            "preview should name the picked commit: {preview:?}"
+        );
+        assert!(
+            preview.lines.iter().any(|l| l.contains("main")),
+            "preview should name the target branch: {preview:?}"
+        );
+    }
+
+    #[test]
+    fn plan_cherry_pick_rejects_an_empty_selection() {
+        let (_fx, repo) = branch_fixture();
+        let err = repo
+            .plan(&Op::CherryPick { hashes: vec![] })
+            .unwrap_err();
+        assert!(matches!(err, GitError::EmptySelection), "got {err:?}");
+    }
+
+    #[test]
+    fn plan_cherry_pick_rejects_an_unknown_hash() {
+        let (_fx, repo) = branch_fixture();
+        let err = repo
+            .plan(&Op::CherryPick {
+                hashes: vec!["zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz".into()],
+            })
+            .unwrap_err();
+        assert!(matches!(err, GitError::NoCommit { .. }), "got {err:?}");
     }
 }

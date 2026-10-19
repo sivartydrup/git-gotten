@@ -1,4 +1,4 @@
-import { useBuildInfo, useRepoStore } from "../store";
+import { useBuildInfo, useGraphStore, useRepoStore } from "../store";
 
 /**
  * Top bar (SPEC §7): product brand + build identity, and — when a repository is
@@ -8,6 +8,7 @@ import { useBuildInfo, useRepoStore } from "../store";
 export function TopBar() {
   const { info } = useBuildInfo();
   const { repos, status, activeId } = useRepoStore();
+  const { query, setQuery } = useGraphStore();
 
   const meta = repos.find((r) => r.id === activeId) ?? null;
   const activeStatus = activeId ? status[activeId] ?? null : null;
@@ -19,6 +20,14 @@ export function TopBar() {
         <span className="version">
           {info.name} {info.version} · {info.arch}
         </span>
+      )}
+      {activeId && (
+        <input
+          className="topbar-search"
+          placeholder="Filter graph: subject, author, branch…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
       )}
 
       <div className="topbar-repo">

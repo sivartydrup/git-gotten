@@ -12,6 +12,9 @@
 //! Stage 3 adds the branching-graph shapes (SPEC §10.1): [`Graph`], [`Node`],
 //! [`Edge`], [`Line`], [`LineSegment`], [`RefLabel`], [`RefKind`], and the
 //! [`BRANCH_PALETTE`] color indices they reference.
+//! Stage 4 adds the inspect-drawer shapes (`load_commit`): [`CommitDetail`],
+//! [`FileStat`], [`FileDiff`] — and the graph context-menu ops: [`Op::BranchCreate`],
+//! [`Op::Reset`] ([`ResetMode`]), [`Op::CherryPick`].
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -167,6 +170,23 @@ pub struct CommandPlan {
     pub preview: Option<Preview>,
 }
 
+/// The mode of a `git reset` requested by the graph context menu (SPEC §10.1).
+///
+/// `Soft` moves only the branch pointer (index and worktree untouched); `Mixed`
+/// also resets the index to the target (changes reappear unstaged); `Hard`
+/// discards the working tree too — the only one of the three that destroys
+/// uncommitted work, so it is the `Dangerous` (type-to-confirm) tier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ResetMode {
+    /// `git reset --soft <target>` — move the pointer, keep everything else.
+    Soft,
+    /// `git reset --mixed <target>` — move the pointer, unstage the difference.
+    Mixed,
+    /// `git reset --hard <target>` — discard all uncommitted changes.
+    Hard,
+}
+
 /// A user operation, which the core compiles into a [`CommandPlan`] (SPEC §13
 /// `run_op`). The web sends intent, never argv: risk is always derived by the core.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -194,6 +214,30 @@ pub enum Op {
         branch: Option<String>,
         /// Overwrite the remote ref (`--force`): `Dangerous`.
         force: bool,
+    },
+    /// Create a branch at a commit (`git branch <name> <from>`), optionally
+    /// switching to it (graph context menu, SPEC §10.1).
+    BranchCreate {
+        /// New branch name (a full ref name, not a commit-ish).
+        name: String,
+        /// The commit the new branch points at.
+        from: Hash,
+        /// Also `git switch` to the new branch after creating it.
+        checkout: bool,
+    },
+    /// Move the current branch pointer to a commit (`git reset --<mode> <target>`;
+    /// graph context menu "reset to here", SPEC §10.1).
+    Reset {
+        /// The reset mode (`--soft` / `--mixed` / `--hard`).
+        mode: ResetMode,
+        /// The commit to move to.
+        target: Hash,
+    },
+    /// Re-apply commit(s) on top of the current branch (`git cherry-pick <hashes…>`;
+    /// graph context menu, SPEC §10.1).
+    CherryPick {
+        /// The commits to pick, in the order they should be applied.
+        hashes: Vec<Hash>,
     },
 }
 
@@ -387,6 +431,67 @@ pub struct Graph {
     pub edges: Vec<Edge>,
     /// All lines, in creation order.
     pub lines: Vec<Line>,
+}
+
+/// Per-file change counts in a commit's diff (the inspect drawer's stat,
+/// SPEC §10.1). `binary` files have unknown counts (both `0`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct FileStat {
+    /// The file path in the commit (a renamed file shows its new name).
+    pub path: String,
+    /// Lines added.
+    pub additions: u32,
+    /// Lines removed.
+    pub deletions: u32,
+    /// `true` when either side is a binary file (no text counts).
+    pub binary: bool,
+}
+
+/// One file's unified diff for a commit (the inspect drawer's patch view,
+/// SPEC §10.1): `patch` is raw git unified-diff text for that file only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct FileDiff {
+    /// The file path in the commit (a renamed file shows its new name).
+    pub path: String,
+    /// `true` when the diff is a binary marker instead of text hunks.
+    pub binary: bool,
+    /// The unified diff text for this file (`index`/`---`/`+++`/hunks, no
+    /// `diff --git` header).
+    pub patch: String,
+}
+
+/// Full details of one commit, for the inspect drawer (IPC `load_commit`,
+/// SPEC §10.1): identity + full message + both dates + parents + the refs
+/// pointing here + per-file stat and diff.
+///
+/// Merge commits (≥2 parents) have empty `stat`/`diff`: git shows no diff
+/// for a merge without combined-diff flags, so the drawer says so instead.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct CommitDetail {
+    /// The commit's full object id (hex).
+    pub hash: Hash,
+    /// First line of the message.
+    pub subject: String,
+    /// The complete commit message (blank line + body, trailing newline trimmed).
+    pub message: String,
+    pub author_name: String,
+    pub author_email: String,
+    /// Author date, unix seconds.
+    pub author_date: u64,
+    pub committer_name: String,
+    pub committer_email: String,
+    /// Committer date, unix seconds.
+    pub committer_date: u64,
+    /// Parent hashes, in parent order (a merge lists all of them).
+    pub parents: Vec<Hash>,
+    /// Refs pointing at this commit (branches, remote-tracking, tags).
+    pub refs: Vec<RefLabel>,
+    /// `true` when HEAD points at this commit.
+    pub is_head: bool,
+    /// Per-file +/- counts (empty for merge commits).
+    pub stat: Vec<FileStat>,
+    /// Per-file unified diffs (empty for merge commits).
+    pub diff: Vec<FileDiff>,
 }
 
 #[cfg(test)]
@@ -710,4 +815,84 @@ mod tests {
         assert_eq!(distinct.len(), 20);
     }
 
+    #[test]
+    fn reset_mode_serializes_as_plain_words() {
+        assert_eq!(serde_json::to_string(&ResetMode::Soft).unwrap(), r#""soft""#);
+        assert_eq!(serde_json::to_string(&ResetMode::Mixed).unwrap(), r#""mixed""#);
+        assert_eq!(serde_json::to_string(&ResetMode::Hard).unwrap(), r#""hard""#);
+        let back: ResetMode = serde_json::from_str(r#""hard""#).unwrap();
+        assert_eq!(back, ResetMode::Hard);
+    }
+
+    #[test]
+    fn op_context_menu_variants_round_trip() {
+        // Each variant: exact JSON in, same JSON out.
+        for json in [
+            r#"{"kind":"branch_create","name":"feature","from":"abc","checkout":true}"#,
+            r#"{"kind":"branch_create","name":"hotfix","from":"def","checkout":false}"#,
+            r#"{"kind":"reset","mode":"hard","target":"def"}"#,
+            r#"{"kind":"cherry_pick","hashes":["aa","bb"]}"#,
+        ] {
+            let op: Op = serde_json::from_str(json).unwrap();
+            assert_eq!(serde_json::to_string(&op).unwrap(), json);
+        }
+        let reset: Op =
+            serde_json::from_str(r#"{"kind":"reset","mode":"hard","target":"def"}"#).unwrap();
+        assert!(matches!(reset, Op::Reset { mode: ResetMode::Hard, .. }));
+        let pick: Op =
+            serde_json::from_str(r#"{"kind":"cherry_pick","hashes":["aa","bb"]}"#).unwrap();
+        let Op::CherryPick { hashes, .. } = &pick else {
+            panic!("wrong variant");
+        };
+        assert_eq!(hashes.len(), 2);
+    }
+
+    fn sample_commit_detail() -> CommitDetail {
+        CommitDetail {
+            hash: "a".repeat(40),
+            subject: "fix: the thing".into(),
+            message: "fix: the thing\n\nLonger body.\n".into(),
+            author_name: "Test User".into(),
+            author_email: "test@example.com".into(),
+            author_date: 1_700_000_000,
+            committer_name: "Test User".into(),
+            committer_email: "test@example.com".into(),
+            committer_date: 1_700_000_001,
+            parents: vec!["b".repeat(40)],
+            refs: vec![RefLabel {
+                name: "main".into(),
+                kind: RefKind::Branch,
+                color: 0,
+            }],
+            is_head: true,
+            stat: vec![FileStat {
+                path: "a.txt".into(),
+                additions: 2,
+                deletions: 1,
+                binary: false,
+            }],
+            diff: vec![FileDiff {
+                path: "a.txt".into(),
+                binary: false,
+                patch: "-one\n+two\n+three\n".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn commit_detail_round_trips_through_serde() {
+        let d = sample_commit_detail();
+        let json = serde_json::to_string(&d).unwrap();
+        assert!(json.contains(r#""is_head":true"#));
+        let back: CommitDetail = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, d);
+    }
+
+    #[test]
+    fn commit_detail_types_are_ts_types() {
+        _assert_ts::<CommitDetail>();
+        _assert_ts::<FileStat>();
+        _assert_ts::<FileDiff>();
+        _assert_ts::<ResetMode>();
+    }
 }

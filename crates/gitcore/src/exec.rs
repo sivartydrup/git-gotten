@@ -25,7 +25,7 @@ use crate::GitError;
 /// A user's shell (or a parent `git` invocation) may set these; if they did, git
 /// would operate on the *wrong* repository. The cwd is always the worktree root,
 /// which is what we want git to target.
-const ENV_UNSET: &[&str] = &[
+pub(crate) const ENV_UNSET: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -36,7 +36,7 @@ const ENV_UNSET: &[&str] = &[
 
 /// Environment set explicitly on every git child process: fail fast on credential
 /// prompts, never invoke a pager (output is piped either way).
-const ENV_SET: &[(&str, &str)] = &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_PAGER", "cat")];
+pub(crate) const ENV_SET: &[(&str, &str)] = &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_PAGER", "cat")];
 
 /// Locate and verify a git binary: search `PATH` for the platform executable,
 /// then check that it answers `git --version`. A missing or broken git is `Err(())`.
@@ -75,7 +75,7 @@ fn find_and_verify_git() -> Result<String, ()> {
 static GIT: LazyLock<Result<String, ()>> = LazyLock::new(find_and_verify_git);
 
 /// The path of the working git binary, or [`GitError::GitNotFound`] when there is none.
-fn resolve_git() -> Result<String, GitError> {
+pub(crate) fn resolve_git() -> Result<String, GitError> {
     match LazyLock::force(&GIT) {
         Ok(program) => Ok(program.clone()),
         Err(()) => Err(GitError::GitNotFound),

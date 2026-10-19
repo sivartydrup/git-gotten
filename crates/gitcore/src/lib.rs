@@ -21,13 +21,15 @@ use gix::hash::ObjectId;
 
 mod exec;
 mod plan;
+mod show;
 
 /// Shared read-model types, re-exported so `gitcore::Status` etc. read naturally.
 pub use git_gotten_protocol::{
-    ChangeKind, CommandPlan, FileChange, GitStep, Op, OpResult, Preview, RepoMeta, RepoId, Risk,
-    Status,
+    ChangeKind, CommandPlan, CommitDetail, FileChange, FileDiff, FileStat, GitStep, Graph, Op,
+    OpResult, Preview, RefLabel, RepoMeta, RepoId, Risk, Status,
 };
 pub use exec::{GitExecutor, OpQueue};
+pub use show::{numstat, patch};
 
 /// Errors surfaced by the git engine.
 ///
@@ -55,9 +57,25 @@ pub enum GitError {
     #[error("git i/o error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// No working `git` binary was found (PATH search + `git --version` failed).
-    #[error("git binary not found on PATH")]
-    GitNotFound,
+    /// A `gix` object read failed (object database, refs, …).
+    #[error("git object read failed: {0}")]
+    Object(String),
+
+    /// The requested object does not exist (or is not a commit).
+    #[error("no such commit: {hash}")]
+    NoCommit { hash: String },
+
+    /// The repository has no commits yet, so an op that needs a history cannot run.
+    #[error("the repository has no commits yet")]
+    NoCommits,
+
+    /// A requested branch name is empty or invalid.
+    #[error("invalid branch name: {name}")]
+    BadBranchName { name: String },
+
+    /// No commits were selected for an op (e.g. cherry-pick).
+    #[error("no commits selected")]
+    EmptySelection,
 
     /// A commit was requested with an empty (or blank) message.
     #[error("commit message is empty")]
@@ -74,6 +92,14 @@ pub enum GitError {
     /// The named remote does not exist in the repository.
     #[error("unknown remote: {name}")]
     UnknownRemote { name: String },
+
+    /// The `git` binary is not on the PATH, so no operation can be executed.
+    #[error("git executable not found")]
+    GitNotFound,
+
+    /// Building or laying out the commit graph failed (e.g. an empty repository).
+    #[error(transparent)]
+    Graph(graph::GraphError),
 }
 
 /// Serialize an error for the web shell as its (transparency-contract) display string.
@@ -149,6 +175,130 @@ impl Repo {
     /// Compute the live status of this repository.
     pub fn status(&self) -> Result<Status, GitError> {
         compute_status(&self.inner)
+    }
+
+    /// The laid-out commit graph of this repository (IPC `load_graph`, SPEC §10.1):
+    /// every commit reachable from the refs (+ HEAD), with lanes, lines, and edges.
+    ///
+    /// A repository with no commits is [`GitError::Graph`]. The web renders the
+    /// result on a canvas; the layout itself lives in the `graph` crate.
+    pub fn graph(&self) -> Result<Graph, GitError> {
+        let dag = graph::build_dag(&self.inner).map_err(GitError::Graph)?;
+        let mut layout = graph::LaneLayout;
+        layout.compute(&dag).map_err(GitError::Graph)
+    }
+
+    /// Full details of one commit (IPC `load_commit`, the inspect drawer, SPEC §10.1):
+    /// the full message, both identities and dates, parents, the refs pointing here,
+    /// and — for non-merge commits — the per-file stat and diff from `git show`.
+    ///
+    /// A missing (or non-commit) object is [`GitError::NoCommit`]. Merge commits
+    /// (≥2 parents) have empty `stat`/`diff`: git shows no diff for them.
+    pub fn commit_detail(&self, hash: &str) -> Result<CommitDetail, GitError> {
+        let commit = self.commit_at(hash)?;
+        let oid = commit.id().detach();
+
+        let message = String::from_utf8_lossy(
+            commit.message_raw().map_err(|e| GitError::Object(e.to_string()))?,
+        )
+        .trim_end()
+        .to_string();
+        let subject = message.lines().next().unwrap_or("").to_string();
+
+        let sig = |s: &gix::actor::SignatureRef| -> (String, String, u64) {
+            let name = String::from_utf8_lossy(s.name).into_owned();
+            let email = String::from_utf8_lossy(s.email).into_owned();
+            let date = s
+                .time()
+                .map(|t| u64::try_from(t.seconds).unwrap_or(0))
+                .unwrap_or(0);
+            (name, email, date)
+        };
+        let author = commit
+            .author()
+            .map_err(|e| GitError::Object(e.to_string()))?;
+        let committer = commit
+            .committer()
+            .map_err(|e| GitError::Object(e.to_string()))?;
+        let (author_name, author_email, author_date) = sig(&author);
+        let (committer_name, committer_email, committer_date) = sig(&committer);
+
+        let parents: Vec<git_gotten_protocol::Hash> = commit
+            .parent_ids()
+            .map(|id| id.to_hex().to_string())
+            .collect();
+
+        let is_head = self
+            .inner
+            .head()
+            .ok()
+            .and_then(|h| h.id().map(|id| id.detach()))
+            == Some(oid);
+
+        let refs = self.refs_at(oid)?;
+
+        // Git shows no diff for merge commits without combined-diff flags.
+        let (stat, diff) = if parents.len() < 2 {
+            (
+                show::numstat(&self.path, hash)?,
+                show::patch(&self.path, hash)?,
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
+        Ok(CommitDetail {
+            hash: oid.to_hex().to_string(),
+            subject,
+            message,
+            author_name,
+            author_email,
+            author_date,
+            committer_name,
+            committer_email,
+            committer_date,
+            parents,
+            refs,
+            is_head,
+            stat,
+            diff,
+        })
+    }
+
+    /// Find a commit by its (short or full) hex object id.
+    ///
+    /// Any failure to read the object (missing, not a commit, corrupt) is
+    /// [`GitError::NoCommit`] with the hash as given: to the drawer these all
+    /// read the same.
+    fn commit_at(&self, hash: &str) -> Result<gix::Commit<'_>, GitError> {
+        let hash = hash.trim();
+        let oid: ObjectId =
+            hash.parse().map_err(|_| GitError::NoCommit { hash: hash.to_string() })?;
+        self.inner
+            .find_commit(oid)
+            .map_err(|_| GitError::NoCommit { hash: hash.to_string() })
+    }
+
+    /// Every ref pointing at `oid` (branches, remote-tracking, tags — annotated
+    /// tags peeled to their commit), with placeholder palette colors: the graph
+    /// layout is the color authority, so the web recolors these from the node's
+    /// line.
+    fn refs_at(&self, oid: ObjectId) -> Result<Vec<RefLabel>, GitError> {
+        // The shared label table keeps the drawer and the graph in agreement.
+        let mut labels = graph::collect_ref_labels(&self.inner)
+            .map_err(GitError::Graph)?
+            .get(&oid)
+            .cloned()
+            .unwrap_or_default();
+        // Deterministic drawer order: branches, remotes, tags — each alphabetical.
+        let rank = |kind: git_gotten_protocol::RefKind| match kind {
+            git_gotten_protocol::RefKind::Branch => 0,
+            git_gotten_protocol::RefKind::Remote => 1,
+            git_gotten_protocol::RefKind::Tag => 2,
+            git_gotten_protocol::RefKind::Worktree => 3,
+        };
+        labels.sort_by(|a, b| (rank(a.kind), &a.name).cmp(&(rank(b.kind), &b.name)));
+        Ok(labels)
     }
 }
 
@@ -392,6 +542,7 @@ fn compute_status(repo: &gix::Repository) -> Result<Status, GitError> {
 mod tests {
     use super::*;
     use git_gotten_testutil as testutil;
+    use git_gotten_protocol::ResetMode;
 
     // ── Error rendering ──────────────────────────────────────────────────────
 
@@ -604,5 +755,298 @@ mod tests {
         assert_eq!(meta.branch.as_deref(), Some("main"));
         assert_eq!((meta.ahead, meta.behind), (1, 0));
         assert_eq!(meta.dirty_count, 3);
+    }
+
+    // ── Stage 4: graph + commit details + the context-menu ops ────────────
+
+    /// Two branches, a merge, a tag, and a remote:
+    ///   main:    c1 (a.txt) → c4 (d.txt) → c5 (merge of feature)   [HEAD]
+    ///   feature: c2 (b.txt) → c3 (c.txt)
+    ///   tag `v1` on c1; `origin/main` on c4 (pushed before the merge).
+    /// Deterministic dates (commit_file_at) keep the ordering reproducible.
+    fn graph_fixture() -> (testutil::Fixture, Repo) {
+        let mut fx = testutil::Fixture::new("graph");
+        fx.commit_file_at("a.txt", "a\n", "c1", 1_000);
+        fx.git(&["checkout", "-b", "feature"]);
+        fx.commit_file_at("b.txt", "b\n", "c2", 1_100);
+        fx.commit_file_at("c.txt", "c\n", "c3", 1_200);
+        fx.git(&["checkout", "main"]);
+        fx.commit_file_at("d.txt", "d\n", "c4", 1_300);
+        fx.add_origin("main"); // origin/main = c4
+        let (code, _o, err) =
+            fx.git_run(&["merge", "--no-ff", "feature", "-m", "merge feature"]);
+        assert_eq!(code, 0, "merge should be clean: {err}");
+        fx.git(&["tag", "v1", &fx.git(&["rev-parse", "main~2"])]);
+        let repo = Repo::open(&fx.path).unwrap();
+        (fx, repo)
+    }
+
+    #[test]
+    fn graph_lays_out_a_branch_merge_tag_remote() {
+        let (fx, repo) = graph_fixture();
+        let g = repo.graph().unwrap();
+
+        assert_eq!(g.nodes.len(), 5);
+        let c5 = fx.git(&["rev-parse", "HEAD"]);
+        assert_eq!(g.nodes[0].hash, c5, "the merge is the newest row");
+        assert!(g.nodes[0].is_head);
+        assert!(
+            g.nodes[0].refs.iter().any(|r| {
+                r.name == "main" && r.kind == git_gotten_protocol::RefKind::Branch
+            }),
+            "the merge carries main: {:?}",
+            g.nodes[0].refs
+        );
+        assert_eq!(g.edges.len(), 5, "5 commits, 4 links + the merge's 2nd parent");
+
+        let c1 = fx.git(&["rev-parse", "main~2"]);
+        let n1 = g.nodes.iter().find(|n| n.hash == c1).unwrap();
+        assert!(
+            n1.refs.iter().any(|r| r.name == "v1" && r.kind == git_gotten_protocol::RefKind::Tag),
+            "c1 carries tag v1: {:?}",
+            n1.refs
+        );
+        let c4 = fx.git(&["rev-parse", "main~1"]);
+        let n4 = g.nodes.iter().find(|n| n.hash == c4).unwrap();
+        assert!(
+            n4.refs.iter().any(|r| {
+                r.name == "origin/main" && r.kind == git_gotten_protocol::RefKind::Remote
+            }),
+            "c4 carries origin/main: {:?}",
+            n4.refs
+        );
+
+        // Two lines: the mainline and the feature branch. The merge absorbs
+        // the feature lane - a dense layout allocates no third for it.
+        assert_eq!(g.lines.len(), 2, "got {:?} lines", g.lines.len());
+        for line in &g.lines {
+            assert!(!line.segments.is_empty());
+        }
+        // Rows are unique and dense.
+        let rows: std::collections::HashSet<u32> = g.nodes.iter().map(|n| n.row).collect();
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows.iter().copied().min().unwrap(), 0);
+    }
+
+    #[test]
+    fn graph_of_an_empty_repo_errors() {
+        let fx = testutil::Fixture::new("empty-graph");
+        let repo = Repo::open(&fx.path).unwrap();
+        let err = repo.graph().unwrap_err();
+        assert!(
+            matches!(err, GitError::Graph(graph::GraphError::Empty)),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn commit_detail_reads_a_regular_commit() {
+        let (fx, repo) = graph_fixture();
+        let c4 = fx.git(&["rev-parse", "main~1"]);
+        let d = repo.commit_detail(&c4).unwrap();
+
+        assert_eq!(d.hash, c4);
+        assert_eq!(d.subject, "c4");
+        assert_eq!(d.message, "c4");
+        assert_eq!(d.author_name, "Test User");
+        assert_eq!(d.author_email, "test@example.com");
+        assert_eq!((d.author_date, d.committer_date), (1_300, 1_300));
+        assert_eq!(d.parents, vec![fx.git(&["rev-parse", "main~2"])]);
+        assert!(!d.is_head);
+
+        assert_eq!(d.refs.len(), 1);
+        assert_eq!(d.refs[0].name, "origin/main");
+        assert_eq!(d.refs[0].kind, git_gotten_protocol::RefKind::Remote);
+
+        assert_eq!(d.stat.len(), 1);
+        assert_eq!(d.stat[0].path, "d.txt");
+        assert_eq!((d.stat[0].additions, d.stat[0].deletions), (1, 0));
+        assert!(!d.stat[0].binary);
+        assert_eq!(d.diff.len(), 1);
+        assert_eq!(d.diff[0].path, "d.txt");
+        assert!(d.diff[0].patch.contains("+d"), "got {:?}", d.diff[0].patch);
+    }
+
+    #[test]
+    fn commit_detail_reads_a_root_commit() {
+        let (fx, repo) = graph_fixture();
+        let c1 = fx.git(&["rev-parse", "main~2"]);
+        let d = repo.commit_detail(&c1).unwrap();
+
+        assert!(d.parents.is_empty());
+        assert!(
+            d.refs.iter().any(|r| r.name == "v1" && r.kind == git_gotten_protocol::RefKind::Tag),
+            "root carries v1: {:?}",
+            d.refs
+        );
+        // A root commit diffs against the empty tree — it has stat + diff.
+        assert_eq!(d.stat.len(), 1);
+        assert_eq!(d.stat[0].path, "a.txt");
+        assert_eq!(d.diff.len(), 1);
+        assert!(d.diff[0].patch.contains("+a"));
+    }
+
+    #[test]
+    fn commit_detail_of_a_merge_has_no_diff() {
+        let (fx, repo) = graph_fixture();
+        let c5 = fx.git(&["rev-parse", "HEAD"]);
+        let d = repo.commit_detail(&c5).unwrap();
+
+        assert_eq!(d.parents.len(), 2);
+        assert!(d.is_head);
+        assert!(d.stat.is_empty(), "merges have no default diff");
+        assert!(d.diff.is_empty(), "merges have no default diff");
+    }
+
+    #[test]
+    fn commit_detail_reports_renames_and_binaries() {
+        let fx = testutil::Fixture::new("detail-rename-bin");
+        fx.commit_file_at("old.txt", "x\n", "c1", 100);
+        std::fs::write(fx.path.join("img.bin"), [0u8, 1, 2]).unwrap();
+        fx.git(&["mv", "old.txt", "new.txt"]);
+        fx.write_file("new.txt", "x\ny\n");
+        std::fs::write(fx.path.join("img.bin"), [0u8, 1, 2, 0, 3]).unwrap();
+        fx.add("new.txt");
+        fx.add("img.bin");
+        let (code, _o, err) = fx.git_run(&["commit", "-m", "c2"]);
+        assert_eq!(code, 0, "commit should succeed: {err}");
+        let c2 = fx.git(&["rev-parse", "HEAD"]);
+        let repo = Repo::open(&fx.path).unwrap();
+
+        let d = repo.commit_detail(&c2).unwrap();
+        let stat_paths: Vec<&str> = d.stat.iter().map(|s| s.path.as_str()).collect();
+        assert!(stat_paths.contains(&"new.txt"), "rename resolves to the new name: {stat_paths:?}");
+        assert!(stat_paths.contains(&"img.bin"), "{stat_paths:?}");
+        let img = d.stat.iter().find(|s| s.path == "img.bin").unwrap();
+        assert!(img.binary);
+
+        let diff_paths: Vec<&str> = d.diff.iter().map(|f| f.path.as_str()).collect();
+        assert!(diff_paths.contains(&"new.txt"), "{diff_paths:?}");
+        assert!(diff_paths.contains(&"img.bin"), "{diff_paths:?}");
+        let img = d.diff.iter().find(|f| f.path == "img.bin").unwrap();
+        assert!(img.binary);
+        let renamed = d.diff.iter().find(|f| f.path == "new.txt").unwrap();
+        assert!(!renamed.binary);
+        assert!(renamed.patch.contains("rename from old.txt"), "got {:?}", renamed.patch);
+    }
+
+    #[test]
+    fn commit_detail_rejects_unknown_and_malformed_hashes() {
+        let (_fx, repo) = graph_fixture();
+        let missing = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+        assert!(
+            matches!(repo.commit_detail(missing).unwrap_err(), GitError::NoCommit { .. }),
+            "got {:?}",
+            repo.commit_detail(missing).unwrap_err()
+        );
+        assert!(
+            matches!(repo.commit_detail("not-a-hash").unwrap_err(), GitError::NoCommit { .. }),
+            "got {:?}",
+            repo.commit_detail("not-a-hash").unwrap_err()
+        );
+    }
+
+    // ── End-to-end through the executor (real git) ────────────────────────
+
+    #[tokio::test]
+    async fn run_branch_create_op_end_to_end() {
+        let fx = testutil::Fixture::new("exec-branch");
+        fx.commit_file("a.txt", "one\n", "c1");
+        fx.commit_file("b.txt", "two\n", "c2");
+        let c1 = fx.git(&["rev-parse", "HEAD~1"]);
+        let repo = Repo::open(&fx.path).unwrap();
+        let plan = repo
+            .plan(&Op::BranchCreate {
+                name: "side".into(),
+                from: c1.clone(),
+                checkout: true,
+            })
+            .unwrap();
+
+        let executor = GitExecutor::new();
+        let result = executor.run_plan(&repo.id, &repo.path, &plan).await;
+        assert!(result.ok, "stderr: {}", result.stderr);
+        assert_eq!(fx.git(&["rev-parse", "--abbrev-ref", "HEAD"]), "side");
+        assert_eq!(fx.git(&["rev-parse", "side"]), c1);
+    }
+
+    #[tokio::test]
+    async fn run_reset_mixed_op_end_to_end() {
+        let fx = testutil::Fixture::new("exec-reset-mixed");
+        fx.commit_file("a.txt", "one\n", "c1");
+        fx.commit_file("a.txt", "one\ntwo\n", "c2");
+        let c1 = fx.git(&["rev-parse", "HEAD~1"]);
+        let repo = Repo::open(&fx.path).unwrap();
+        let plan = repo
+            .plan(&Op::Reset {
+                mode: ResetMode::Mixed,
+                target: c1.clone(),
+            })
+            .unwrap();
+
+        let executor = GitExecutor::new();
+        let result = executor.run_plan(&repo.id, &repo.path, &plan).await;
+        assert!(result.ok, "stderr: {}", result.stderr);
+        assert_eq!(fx.git(&["rev-parse", "main"]), c1);
+        // The worktree change survives, unstaged.
+        assert!(
+            fx.git(&["status", "--porcelain"])
+                .lines()
+                .any(|l| l == " M a.txt"),
+            "porcelain: {}",
+            fx.git(&["status", "--porcelain"])
+        );
+    }
+
+    #[tokio::test]
+    async fn run_reset_hard_op_end_to_end() {
+        let fx = testutil::Fixture::new("exec-reset-hard");
+        fx.commit_file("a.txt", "one\n", "c1");
+        fx.commit_file("a.txt", "one\ntwo\n", "c2");
+        fx.write_file("a.txt", "one\ntwo\nthree\n"); // uncommitted
+        let c1 = fx.git(&["rev-parse", "HEAD~1"]);
+        let repo = Repo::open(&fx.path).unwrap();
+        let plan = repo
+            .plan(&Op::Reset {
+                mode: ResetMode::Hard,
+                target: c1.clone(),
+            })
+            .unwrap();
+
+        let executor = GitExecutor::new();
+        let result = executor.run_plan(&repo.id, &repo.path, &plan).await;
+        assert!(result.ok, "stderr: {}", result.stderr);
+        assert_eq!(fx.git(&["rev-parse", "main"]), c1);
+        assert_eq!(fx.git(&["status", "--porcelain"]), "");
+        assert_eq!(
+            std::fs::read_to_string(fx.path.join("a.txt")).unwrap(),
+            "one\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_cherry_pick_op_end_to_end() {
+        let fx = testutil::Fixture::new("exec-cherry");
+        fx.commit_file("a.txt", "one\n", "c1");
+        fx.git(&["checkout", "-b", "side"]);
+        fx.commit_file("b.txt", "two\n", "c2");
+        fx.git(&["checkout", "main"]);
+        let pick = fx.git(&["rev-parse", "side"]);
+        let repo = Repo::open(&fx.path).unwrap();
+        let plan = repo
+            .plan(&Op::CherryPick {
+                hashes: vec![pick],
+            })
+            .unwrap();
+
+        let executor = GitExecutor::new();
+        let result = executor.run_plan(&repo.id, &repo.path, &plan).await;
+        assert!(result.ok, "stderr: {}", result.stderr);
+        assert_ne!(fx.git(&["rev-parse", "HEAD"]), fx.git(&["rev-parse", "main~1"]));
+        assert_eq!(
+            std::fs::read_to_string(fx.path.join("b.txt")).unwrap(),
+            "two\n"
+        );
+        assert_eq!(fx.git(&["log", "-1", "--format=%s"]), "c2");
     }
 }

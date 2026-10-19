@@ -14,6 +14,9 @@ mod dag;
 mod layout;
 mod svg;
 
+pub use dag::classify as classify_ref;
+pub use dag::collect_ref_labels;
+
 pub use git_gotten_protocol::Graph;
 pub use layout::LaneLayout;
 pub use svg::to_svg;

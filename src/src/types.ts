@@ -130,7 +130,10 @@ export interface CommandPlan {
 export type Op =
   | { kind: "commit"; message: string; amend: boolean }
   | { kind: "checkout"; target: string; force: boolean }
-  | { kind: "push"; remote: string; branch: string | null; force: boolean };
+  | { kind: "push"; remote: string; branch: string | null; force: boolean }
+  | { kind: "branch_create"; name: string; from: string; checkout: boolean }
+  | { kind: "reset"; mode: "soft" | "mixed" | "hard"; target: string }
+  | { kind: "cherry_pick"; hashes: string[] };
 
 /** The result of running a [`CommandPlan`] (Rust `OpResult`, safe failure, SPEC §8). */
 export interface OpResult {
@@ -178,3 +181,132 @@ export interface OpStarted {
 
 /** Payload of the `op_finished` event: the recorded [`LogEntry`] (Rust, SPEC §13). */
 export type OpFinished = LogEntry;
+
+// ── Branching graph (Rust `git_gotten_protocol`, SPEC §10.1) ────────────────
+
+/** What kind of ref a [`RefLabel`] is. */
+export type RefKind = "Branch" | "Remote" | "Tag" | "Worktree";
+
+/** A ref pinned to a graph node, rendered as a colored label. */
+export interface RefLabel {
+  name: string;
+  kind: RefKind;
+  /** Palette index of the line this ref sits on (see BRANCH_PALETTE). */
+  color: number;
+}
+
+/** One span of a [`Line`] in a fixed lane; `from_row`..=`to_row` inclusive. */
+export interface LineSegment {
+  lane: number;
+  from_row: number;
+  to_row: number;
+}
+
+/** A line of history: a lane lineage with a stable color. */
+export interface Line {
+  id: number;
+  /** Palette index into BRANCH_PALETTE. */
+  color: number;
+  /** Branch name at the line's opener, if one exists. */
+  name: string | null;
+  segments: LineSegment[];
+}
+
+/** One commit in the laid-out graph (one row, one lane). */
+export interface Node {
+  hash: string;
+  subject: string;
+  author: string;
+  /** Author date, unix seconds. */
+  date: number;
+  /** Row (y index, 0 = newest). */
+  row: number;
+  /** Lane (x index, 0 = leftmost). */
+  lane: number;
+  /** True when HEAD points at this node. */
+  is_head: boolean;
+  refs: RefLabel[];
+  /** The lines alive at this row, in lane order. */
+  lines: number[];
+}
+
+/** A commit → parent edge (merge commits have ≥2). */
+export interface Edge {
+  from: string;
+  to: string;
+}
+
+/** The laid-out commit graph for one repository (what the canvas draws). */
+export interface Graph {
+  nodes: Node[];
+  edges: Edge[];
+  lines: Line[];
+}
+
+/** Per-file change counts in a commit's diff. */
+export interface FileStat {
+  path: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+}
+
+/** One file's unified diff for a commit. */
+export interface FileDiff {
+  path: string;
+  binary: boolean;
+  patch: string;
+}
+
+/** Full details of one commit, for the inspect drawer (Rust `CommitDetail`). */
+export interface CommitDetail {
+  hash: string;
+  subject: string;
+  message: string;
+  author_name: string;
+  author_email: string;
+  /** Author date, unix seconds. */
+  author_date: number;
+  committer_name: string;
+  committer_email: string;
+  /** Committer date, unix seconds. */
+  committer_date: number;
+  parents: string[];
+  refs: RefLabel[];
+  is_head: boolean;
+  stat: FileStat[];
+  diff: FileDiff[];
+}
+
+/**
+ * The default branch-lane palette (Rust `BRANCH_PALETTE`): a line's `color`
+ * field is an index into this array, and the web maps indices to theme
+ * tokens in light/dark (SPEC §12).
+ */
+export const BRANCH_PALETTE: readonly string[] = [
+  "#4c8bf5", // 0  blue (mainline first)
+  "#e05252", // 1  red
+  "#58b368", // 2  green
+  "#e89a3c", // 3  orange
+  "#9b6bd4", // 4  purple
+  "#4cc9c0", // 5  teal
+  "#d65fa3", // 6  pink
+  "#8e9c3c", // 7  olive
+  "#5f6ef0", // 8  indigo
+  "#c75c2e", // 9  vermillion
+  "#2fb56b", // 10 emerald
+  "#7e5bc0", // 11 violet
+  "#b0893b", // 12 gold
+  "#3fa8c4", // 13 cyan
+  "#b4589e", // 14 fuchsia
+  "#6fa332", // 15 lime
+  "#9e4f4f", // 16 brick
+  "#5472d6", // 17 royal blue
+  "#8c6ba8", // 18 mauve
+  "#4a9e8c", // 19 sea green
+];
+
+/** Map a palette index to a hex color (wraps past the palette's end). */
+export function paletteColor(index: number): string {
+  return BRANCH_PALETTE[index % BRANCH_PALETTE.length];
+}

@@ -18,8 +18,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use git_gotten_protocol::{
-    CommandPlan, LogEntry, Op, OpResult, OpStarted, RepoId, RepoMeta, Risk, Status,
-    StatusChanged,
+    CommandPlan, CommitDetail, Graph, LogEntry, Op, OpResult, OpStarted, RepoId, RepoMeta,
+    Risk, Status, StatusChanged,
 };
 use gitcore::{GitError, GitExecutor};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
@@ -153,6 +153,26 @@ impl Backend {
             .get(id)
             .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
         Ok(repo.status()?)
+    }
+
+    /// The laid-out commit graph of an open repository (IPC `load_graph`,
+    /// SPEC §10.1): the web renders it on a canvas.
+    pub fn load_graph(&self, id: &str) -> Result<Graph, AppError> {
+        let repos = self.registry.lock_repos();
+        let repo = repos
+            .get(id)
+            .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
+        Ok(repo.graph()?)
+    }
+
+    /// Full details of one commit in an open repository (IPC `load_commit`,
+    /// the inspect drawer, SPEC §10.1).
+    pub fn load_commit(&self, id: &str, hash: &str) -> Result<CommitDetail, AppError> {
+        let repos = self.registry.lock_repos();
+        let repo = repos
+            .get(id)
+            .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
+        Ok(repo.commit_detail(hash)?)
     }
 
     /// Compile `op` into its visible `CommandPlan` for an open repository.
@@ -309,6 +329,22 @@ fn load_status(repo: RepoId, state: State<'_, Backend>) -> Result<Status, AppErr
     state.load_status(&repo)
 }
 
+/// The laid-out commit graph of an open repository (IPC `load_graph`, SPEC §10.1).
+#[tauri::command]
+fn load_graph(repo: RepoId, state: State<'_, Backend>) -> Result<Graph, AppError> {
+    state.load_graph(&repo)
+}
+
+/// Full details of one commit (IPC `load_commit`, the inspect drawer, SPEC §10.1).
+#[tauri::command]
+fn load_commit(
+    repo: RepoId,
+    hash: String,
+    state: State<'_, Backend>,
+) -> Result<CommitDetail, AppError> {
+    state.load_commit(&repo, &hash)
+}
+
 /// Compile an operation into its visible `CommandPlan` without running it (IPC
 /// `plan_op`): drives the inline command hints and the preview dialog, so the
 /// displayed command is always the Rust-side source of truth (SPEC §8).
@@ -423,6 +459,8 @@ pub fn run() {
             build_info,
             open_repo,
             load_status,
+            load_graph,
+            load_commit,
             plan_op,
             run_op,
             load_log
@@ -496,6 +534,56 @@ mod tests {
         let (backend, _rx) = Backend::new();
         let err = backend.load_status("/does/not/exist").unwrap_err();
         assert!(matches!(err, AppError::RepoNotOpen(_)), "got {err}");
+    }
+
+    #[test]
+    fn load_graph_returns_the_laid_out_graph() {
+        let (backend, _rx) = Backend::new();
+        let fx = testutil::Fixture::new("app-graph");
+        fx.commit_file("a.txt", "x\n", "c1");
+        backend.open(fx.id()).unwrap();
+
+        let g = backend.load_graph(fx.id()).unwrap();
+        assert_eq!(g.nodes.len(), 1);
+        assert_eq!(g.nodes[0].subject, "c1");
+        assert!(g.nodes[0].is_head);
+        assert!(
+            g.nodes[0].refs.iter().any(|r| r.name == "main"),
+            "HEAD's branch ref must be pinned: {:?}",
+            g.nodes[0].refs
+        );
+    }
+
+    #[test]
+    fn load_graph_on_unknown_repo_errors() {
+        let (backend, _rx) = Backend::new();
+        let err = backend.load_graph("/does/not/exist").unwrap_err();
+        assert!(matches!(err, AppError::RepoNotOpen(_)), "got {err}");
+    }
+
+    #[test]
+    fn load_commit_reads_details_and_rejects_unknown_hashes() {
+        let (backend, _rx) = Backend::new();
+        let fx = testutil::Fixture::new("app-commit");
+        fx.commit_file("a.txt", "x\n", "c1");
+        backend.open(fx.id()).unwrap();
+
+        let hash = fx.git(&["rev-parse", "HEAD"]);
+        let d = backend.load_commit(fx.id(), &hash).unwrap();
+        assert_eq!(d.hash, hash);
+        assert_eq!(d.subject, "c1");
+        assert!(d.parents.is_empty(), "root commit");
+        assert!(d.is_head);
+        assert_eq!(d.stat.len(), 1);
+        assert_eq!(d.stat[0].path, "a.txt");
+
+        let err = backend
+            .load_commit(fx.id(), "zzz")
+            .unwrap_err();
+        assert!(
+            matches!(err, AppError::Git(GitError::NoCommit { .. })),
+            "got {err}"
+        );
     }
 
     #[test]

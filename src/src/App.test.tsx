@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import App from "./App";
-import { useActivityStore, useRepoStore } from "./store";
+import { useActivityStore, useGraphStore, useRepoStore } from "./store";
 import type { RepoMeta, Status } from "./types";
 
 // `planOp` / `runOp` are hoisted so tests can drive per-test IPC behavior.
@@ -20,6 +20,8 @@ vi.mock("./api", () => ({
   loadLog: vi.fn().mockResolvedValue(null),
   onOpStarted: vi.fn().mockResolvedValue(null),
   onOpFinished: vi.fn().mockResolvedValue(null),
+  loadGraph: vi.fn().mockResolvedValue(null),
+  loadCommit: vi.fn().mockResolvedValue(null),
 }));
 
 afterEach(() => {
@@ -38,6 +40,17 @@ afterEach(() => {
     preview: null,
     error: null,
     busy: false,
+  });
+  useGraphStore.setState({
+    graph: null,
+    loading: false,
+    error: null,
+    selected: null,
+    hovered: null,
+    query: "",
+    detail: null,
+    detailLoading: false,
+    detailError: null,
   });
 });
 
