@@ -29,6 +29,29 @@ if (window.PointerEvent === undefined) {
     }) as typeof PointerEvent,
   });
 }
+// jsdom has no ResizeObserver: a minimal stand-in that records `observe()`
+// calls so tests can prove the canvas gets a live size observer.
+class FakeResizeObserver {
+  static instances: FakeResizeObserver[] = [];
+  observed: Element | null = null;
+  constructor(_callback: ResizeObserverCallback) {
+    FakeResizeObserver.instances.push(this);
+  }
+  observe(el: Element) {
+    this.observed = el;
+  }
+  unobserve() {
+    this.observed = null;
+  }
+  disconnect() {
+    this.observed = null;
+  }
+}
+if (typeof ResizeObserver === "undefined") {
+  Object.assign(globalThis, {
+    ResizeObserver: FakeResizeObserver as unknown as typeof ResizeObserver,
+  });
+}
 vi.mock("../api", () => ({
   fetchBuildInfo: vi.fn().mockResolvedValue(null),
   openRepo: vi.fn().mockResolvedValue(null),
@@ -154,7 +177,8 @@ function recorder() {
     arcs: 0,
     strokes: 0,
     fills: 0,
-    texts: [] as { text: string; alpha: number }[],
+    rects: [] as { x: number; y: number; w: number; h: number }[],
+    texts: [] as { text: string; x: number; y: number; alpha: number }[],
     globalAlpha: 1,
     font: "",
     fillStyle: "",
@@ -169,15 +193,17 @@ function recorder() {
     arc() {
       rec.arcs += 1;
     },
-    fillRect() {},
+    fillRect(x: number, y: number, w: number, h: number) {
+      rec.rects.push({ x, y, w, h });
+    },
     fill() {
       rec.fills += 1;
     },
     stroke() {
       rec.strokes += 1;
     },
-    fillText(text: string, _x: number, _y: number) {
-      rec.texts.push({ text, alpha: rec.globalAlpha });
+    fillText(text: string, x: number, y: number) {
+      rec.texts.push({ text, x, y, alpha: rec.globalAlpha });
     },
   };
   return rec as CanvasCtx & typeof rec;
@@ -279,6 +305,26 @@ test("renderGraph: an empty graph clears and draws nothing", () => {
   expect(rec.arcs).toBe(0);
 });
 
+test("renderGraph: leftmost-lane labels are clamped inside the canvas", () => {
+  // A lane-0 dot sits at x=18; its ref pills and the HEAD label extend left
+  // and must never cross the canvas's left edge.
+  const g = threeNodeGraph();
+  const rec = recorder();
+  renderGraph(
+    rec,
+    800,
+    300,
+    identity,
+    { graph: g, selected: null, hovered: null, query: "" },
+    1,
+  );
+  for (const r of rec.rects) {
+    expect(r.x, `rect at ${r.x}`).toBeGreaterThanOrEqual(2);
+  }
+  const head = rec.texts.find((t) => t.text === "HEAD");
+  expect(head?.x, "HEAD label x").toBeGreaterThanOrEqual(2);
+});
+
 // ── Component smoke ──────────────────────────────────────────────────────────
 
 test("GraphCanvas renders the toolbar, a canvas, and the commit count", () => {
@@ -293,6 +339,26 @@ test("GraphCanvas renders the toolbar, a canvas, and the commit count", () => {
 test("GraphCanvas renders the open-repo prompt when nothing is active", () => {
   render(<GraphCanvas />);
   expect(screen.getByText("Open a repository to see its history")).toBeTruthy();
+});
+test("GraphCanvas attaches the size observer when the canvas mounts after the first graph load", async () => {
+  // The component mounts with no repo (no canvas yet); when the first graph
+  // arrives the canvas appears and the observer must (re)attach, or the
+  // canvas bitmap is never sized beyond the 300x150 HTML default.
+  useGraphStore.setState({ graph: null, loading: false });
+  useRepoStore.setState({ activeId: "/repo/alpha" });
+  render(<GraphCanvas />);
+  expect(document.querySelector("canvas.graph-canvas")).toBeNull();
+  expect(
+    FakeResizeObserver.instances.some((o) => o.observed !== null),
+  ).toBe(false);
+
+  useGraphStore.setState({ graph: threeNodeGraph(), loading: false });
+  await flush();
+  expect(document.querySelector("canvas.graph-canvas")).toBeTruthy();
+  expect(
+    FakeResizeObserver.instances.some((o) => o.observed?.tagName === "SECTION"),
+    "a size observer on the graph container",
+  ).toBe(true);
 });
 
 // ── Component interactions (canvas event → store → drawer / menu) ──────────

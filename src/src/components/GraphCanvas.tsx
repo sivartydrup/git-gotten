@@ -30,6 +30,8 @@ const MAX_SCALE = 4;
 const ROW_MARGIN = 5;
 /** More refs than this collapse into a `+n` pill. */
 const MAX_REF_PILLS = 4;
+/** The left edge a label may not cross (keeps pills / the HEAD marker inside the canvas). */
+const MIN_X = 2;
 
 /** A canvas viewport: uniform scale + translation. */
 export interface Viewport {
@@ -268,7 +270,12 @@ export function renderGraph(
     for (let i = 0; i < shown.length; i++) {
       const ref = shown[i];
       const pillW = Math.max(14, ref.name.length * 5.2 + 8);
-      const px2 = x - DOT_R - 8 - (i % 2) * (pillW + 4);
+      let px2 = x - DOT_R - 8 - (i % 2) * (pillW + 4);
+      if (px2 - pillW < MIN_X) {
+        // Leftmost lanes sit near the canvas edge: slide the pill right so
+        // the label is never clipped (the dot is drawn on top of it).
+        px2 += MIN_X - (px2 - pillW);
+      }
       const py2 = y + (i < 2 ? -1 : 1) * (6 + Math.floor(i / 2) * 12);
       ctx.fillStyle = paletteColor(ref.color);
       ctx.fillRect(px2 - pillW, py2 - 6, pillW, 12);
@@ -279,7 +286,7 @@ export function renderGraph(
     if (node.refs.length > MAX_REF_PILLS) {
       ctx.fillStyle = "var(--muted, #888)";
       ctx.font = "9px ui-monospace, monospace";
-      ctx.fillText(`+${node.refs.length - MAX_REF_PILLS}`, x - DOT_R - 34, y + 18);
+      ctx.fillText(`+${node.refs.length - MAX_REF_PILLS}`, Math.max(MIN_X, x - DOT_R - 34), y + 18);
     }
 
     // The commit dot, in the color of the line it sits on.
@@ -305,7 +312,7 @@ export function renderGraph(
       ctx.stroke();
       ctx.fillStyle = "var(--fg, #333)";
       ctx.font = "bold 10px ui-monospace, monospace";
-      ctx.fillText("HEAD", x - DOT_R - 30, y - 10);
+      ctx.fillText("HEAD", Math.max(MIN_X, x - DOT_R - 30), y - 10);
     }
 
     // Hover ring.
@@ -390,6 +397,10 @@ export function GraphCanvas() {
   );
   const nodesCount = graph?.nodes.length ?? 0;
   const head = useMemo(() => graph?.nodes.find((n) => n.is_head) ?? null, [graph]);
+  // The canvas element only exists in the drawn body state. Effects that
+  // capture it must re-run when it appears/disappears (the component mounts
+  // with no repo, so `canvasRef` is `null` until the first graph loads).
+  const hasCanvas = !error && !loading && !!graph && graph.nodes.length > 0;
 
   // Keep the latest render inputs in a ref for the rAF loop.
   const stateRef = useRef({ graph, selected, hovered, query, lanes });
@@ -418,7 +429,7 @@ export function GraphCanvas() {
     });
     ro.observe(container);
     return () => ro.disconnect();
-  }, []);
+  }, [hasCanvas]);
 
   // The rAF render loop: draw only when dirty.
   useEffect(() => {
@@ -479,7 +490,7 @@ export function GraphCanvas() {
     };
     canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", onWheel);
-  }, []);
+  }, [hasCanvas]);
 
   const onPointerDown = (e: ReactPointerEvent) => {
     if (e.button !== 0) {
