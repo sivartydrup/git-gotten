@@ -122,18 +122,36 @@ export interface CommandPlan {
   preview: Preview | null;
 }
 
+/** A commit identity (name + email) for the commit panel's author field. */
+export interface Author {
+  name: string;
+  email: string;
+}
+
 /** A user operation the core compiles into a [`CommandPlan`] (Rust `Op`, SPEC §13).
  *
  * The web sends intent, never argv: risk is always derived by the core.
  * (serde `tag = "kind"`, `rename_all = "snake_case"`.
  */
 export type Op =
-  | { kind: "commit"; message: string; amend: boolean }
+  | {
+      kind: "commit";
+      message: string;
+      amend: boolean;
+      /** Override the author identity; omitted/`null` uses the configured identity. */
+      author?: Author | null;
+      /** Extra `Co-authored-by: Name <email>` trailer lines. */
+      co_authors?: string[];
+    }
   | { kind: "checkout"; target: string; force: boolean }
   | { kind: "push"; remote: string; branch: string | null; force: boolean }
   | { kind: "branch_create"; name: string; from: string; checkout: boolean }
   | { kind: "reset"; mode: "soft" | "mixed" | "hard"; target: string }
-  | { kind: "cherry_pick"; hashes: string[] };
+  | { kind: "cherry_pick"; hashes: string[] }
+  | { kind: "stage"; path: string | null }
+  | { kind: "unstage"; path: string | null }
+  | { kind: "discard"; path: string }
+  | { kind: "stage_hunks"; path: string; selected: number[] };
 
 /** The result of running a [`CommandPlan`] (Rust `OpResult`, safe failure, SPEC §8). */
 export interface OpResult {
@@ -251,11 +269,23 @@ export interface FileStat {
   binary: boolean;
 }
 
-/** One file's unified diff for a commit. */
+/** One hunk of a unified diff (SPEC §10.2): a single `@@`-delimited block. */
+export interface Hunk {
+  /** The `@@ -l,c +l,c @@ [section]` header line. */
+  header: string;
+  /** The hunk body lines, each with its leading ` ` / `+` / `-` marker. */
+  lines: string[];
+  /** `true` for the index-vs-HEAD side, `false` for worktree-vs-index. */
+  staged: boolean;
+}
+
+/** One file's unified diff (a commit's, or the working tree's, SPEC §10.2). */
 export interface FileDiff {
   path: string;
   binary: boolean;
   patch: string;
+  /** The hunks parsed from `patch` (empty for binary files). */
+  hunks: Hunk[];
 }
 
 /** Full details of one commit, for the inspect drawer (Rust `CommitDetail`). */

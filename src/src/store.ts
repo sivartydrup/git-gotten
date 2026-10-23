@@ -2,6 +2,7 @@ import { create } from "zustand";
 import {
   fetchBuildInfo,
   loadCommit,
+  loadDiff,
   loadGraph,
   loadLog,
   loadStatus,
@@ -13,6 +14,7 @@ import type {
   BuildInfo,
   CommandPlan,
   CommitDetail,
+  FileDiff,
   Graph,
   LogEntry,
   Op,
@@ -396,4 +398,70 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   setQuery: (query) => set({ query }),
   closeDetail: () =>
     set({ selected: null, detail: null, detailError: null, detailLoading: false }),
+}));
+
+// ── Staging: file list + per-file diff (SPEC §10.2) ─────────────────────────
+
+interface StagingState {
+  /** The file whose diff is shown in the Files tab (`null` = none selected). */
+  file: string | null;
+  /** The working-tree diff of `file` (staged hunks first, then unstaged). */
+  diff: FileDiff | null;
+  /** True while a `loadDiff` round-trip is in flight. */
+  loading: boolean;
+  /** Last `loadDiff` failure (the Rust error string). */
+  error: string | null;
+  /** Select a file and load its diff; `null` clears the selection. */
+  selectFile: (path: string | null) => void;
+  /** Re-read the diff of the selected file (after an op mutates the tree). */
+  reload: () => void;
+  /** Drop the selection and diff (the active repo changed). */
+  reset: () => void;
+  /** One `loadDiff` round-trip; stale responses are dropped. */
+  load: (path: string) => Promise<void>;
+}
+
+/** Client state for the staging UI (the Files tab, SPEC §10.2). */
+export const useStagingStore = create<StagingState>((set, get) => ({
+  file: null,
+  diff: null,
+  loading: false,
+  error: null,
+
+  load: async (path) => {
+    set({ loading: true, error: null });
+    try {
+      const repo = useRepoStore.getState().activeId;
+      const diff = repo ? await loadDiff(repo, path) : null;
+      if (get().file !== path) {
+        return; // stale response: the selection moved on
+      }
+      set({ diff, loading: false });
+    } catch (e) {
+      if (get().file !== path) {
+        return;
+      }
+      set({
+        diff: null,
+        loading: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+
+  selectFile: (path) => {
+    set({ file: path, diff: null, error: null, loading: false });
+    if (path) {
+      void get().load(path);
+    }
+  },
+
+  reload: () => {
+    const { file } = get();
+    if (file) {
+      void get().load(file);
+    }
+  },
+
+  reset: () => set({ file: null, diff: null, loading: false, error: null }),
 }));

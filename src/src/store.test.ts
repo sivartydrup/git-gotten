@@ -217,7 +217,7 @@ const detailFixture: CommitDetail = {
   refs: [{ name: "main", kind: "Branch", color: 0 }],
   is_head: true,
   stat: [{ path: "a.txt", additions: 1, deletions: 0, binary: false }],
-  diff: [{ path: "a.txt", binary: false, patch: "+one" }],
+  diff: [{ path: "a.txt", binary: false, patch: "+one", hunks: [] }],
 };
 
 test("graph load stores the laid-out graph and clears stale selections", async () => {

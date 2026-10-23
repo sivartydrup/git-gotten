@@ -18,8 +18,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use git_gotten_protocol::{
-    CommandPlan, CommitDetail, Graph, LogEntry, Op, OpResult, OpStarted, RepoId, RepoMeta,
-    Risk, Status, StatusChanged,
+    CommandPlan, CommitDetail, FileDiff, Graph, LogEntry, Op, OpResult, OpStarted, RepoId,
+    RepoMeta, Risk, Status, StatusChanged,
 };
 use gitcore::{GitError, GitExecutor};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
@@ -173,6 +173,17 @@ impl Backend {
             .get(id)
             .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
         Ok(repo.commit_detail(hash)?)
+    }
+
+    /// The working-tree diff of one file in an open repository (IPC `load_diff`,
+    /// the staging UI, SPEC §10.2): both sides parsed into hunks (staged first,
+    /// then unstaged) so the web can render per-hunk checkboxes.
+    pub fn load_diff(&self, id: &str, path: &str) -> Result<FileDiff, AppError> {
+        let repos = self.registry.lock_repos();
+        let repo = repos
+            .get(id)
+            .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
+        Ok(repo.diff_file(path)?)
     }
 
     /// Compile `op` into its visible `CommandPlan` for an open repository.
@@ -345,6 +356,16 @@ fn load_commit(
     state.load_commit(&repo, &hash)
 }
 
+/// The working-tree diff of one file (IPC `load_diff`, the staging UI, SPEC §10.2).
+#[tauri::command]
+fn load_diff(
+    repo: RepoId,
+    path: String,
+    state: State<'_, Backend>,
+) -> Result<FileDiff, AppError> {
+    state.load_diff(&repo, &path)
+}
+
 /// Compile an operation into its visible `CommandPlan` without running it (IPC
 /// `plan_op`): drives the inline command hints and the preview dialog, so the
 /// displayed command is always the Rust-side source of truth (SPEC §8).
@@ -461,6 +482,7 @@ pub fn run() {
             load_status,
             load_graph,
             load_commit,
+            load_diff,
             plan_op,
             run_op,
             load_log
@@ -733,6 +755,8 @@ mod tests {
                 &Op::Commit {
                     message: "   ".into(),
                     amend: false,
+                    author: None,
+                    co_authors: vec![],
                 },
             )
             .unwrap_err();
@@ -751,6 +775,8 @@ mod tests {
         let op = Op::Commit {
             message: "add c".into(),
             amend: false,
+            author: None,
+            co_authors: vec![],
         };
         let plan = backend.plan(fx.id(), &op).unwrap();
         assert_eq!(plan.display, r#"git commit -m "add c""#);

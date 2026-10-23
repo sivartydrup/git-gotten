@@ -19,14 +19,15 @@ use std::path::{Path, PathBuf};
 
 use gix::hash::ObjectId;
 
+mod diff;
 mod exec;
 mod plan;
 mod show;
 
 /// Shared read-model types, re-exported so `gitcore::Status` etc. read naturally.
 pub use git_gotten_protocol::{
-    ChangeKind, CommandPlan, CommitDetail, FileChange, FileDiff, FileStat, GitStep, Graph, Op,
-    OpResult, Preview, RefLabel, RepoMeta, RepoId, Risk, Status,
+    Author, ChangeKind, CommandPlan, CommitDetail, FileChange, FileDiff, FileStat, GitStep,
+    Graph, Hunk, Op, OpResult, Preview, RefLabel, RepoMeta, RepoId, Risk, Status,
 };
 pub use exec::{GitExecutor, OpQueue};
 pub use show::{numstat, patch};
@@ -73,8 +74,8 @@ pub enum GitError {
     #[error("invalid branch name: {name}")]
     BadBranchName { name: String },
 
-    /// No commits were selected for an op (e.g. cherry-pick).
-    #[error("no commits selected")]
+    /// Nothing was selected for an op (commits to cherry-pick, hunks to stage).
+    #[error("no selection for this op")]
     EmptySelection,
 
     /// A commit was requested with an empty (or blank) message.
@@ -175,6 +176,72 @@ impl Repo {
     /// Compute the live status of this repository.
     pub fn status(&self) -> Result<Status, GitError> {
         compute_status(&self.inner)
+    }
+    /// The working-tree diff of one file (SPEC §10.2): the file's staged
+    /// (index-vs-HEAD) and unstaged (worktree-vs-index) hunks, each flagged,
+    /// staged first — the shape the per-hunk staging UI renders.
+    ///
+    /// `patch` is the raw text of the side the user acts on (the unstaged
+    /// diff, falling back to the staged diff when there is none). Untracked
+    /// files have no index entry, so their diff runs against the null device
+    /// (every line added, unstaged). Binary files carry a marker instead of
+    /// hunks.
+    pub fn diff_file(&self, path: &str) -> Result<FileDiff, GitError> {
+        // The status knows which side of the index this file lives on; the
+        // unstaged diff of an untracked file must use `--no-index` instead.
+        let untracked = self
+            .status()?
+            .changes
+            .iter()
+            .any(|c| c.path == path && c.kind == ChangeKind::Untracked);
+        let (staged_raw, unstaged_raw) = diff::diff_sides(&self.path, path, untracked)?;
+        Ok(diff::file_diff(path, &staged_raw, &unstaged_raw))
+    }
+
+    /// The configured commit identity (`user.name` / `user.email`) — the
+    /// prefill for the commit panel's author field.
+    ///
+    /// Falls back to the author of HEAD when the config is unset (the identity
+    /// that made the last commit: the value a new commit will most likely use).
+    /// `None` when neither source yields both fields.
+    pub fn identity(&self) -> Option<Author> {
+        let cfg = |key: &str| {
+            show::run_git_sync_allow(&self.path, &["config", key], 1)
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default()
+        };
+        let (mut name, mut email) = (cfg("user.name"), cfg("user.email"));
+        if name.is_empty() || email.is_empty() {
+            let (n, e) = self.head_author();
+            if !n.is_empty() || !e.is_empty() {
+                (name, email) = (n, e);
+            }
+        }
+        if name.is_empty() || email.is_empty() {
+            return None;
+        }
+        Some(Author { name, email })
+    }
+
+    /// The author (name, email) of HEAD, via the `gix` read-model.
+    fn head_author(&self) -> (String, String) {
+        let oid = self
+            .inner
+            .head()
+            .ok()
+            .and_then(|h| h.id().map(|id| id.detach()));
+        let commit = match oid.and_then(|oid| self.inner.find_commit(oid).ok()) {
+            Some(c) => c,
+            None => return (String::new(), String::new()),
+        };
+        let sig = match commit.author() {
+            Ok(s) => s,
+            Err(_) => return (String::new(), String::new()),
+        };
+        (
+            String::from_utf8_lossy(sig.name).into_owned(),
+            String::from_utf8_lossy(sig.email).into_owned(),
+        )
     }
 
     /// The laid-out commit graph of this repository (IPC `load_graph`, SPEC §10.1):

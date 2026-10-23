@@ -55,7 +55,7 @@ const detail: CommitDetail = {
   refs: [{ name: "main", kind: "Branch", color: 0 }],
   is_head: true,
   stat: [{ path: "a.txt", additions: 1, deletions: 2, binary: false }],
-  diff: [{ path: "a.txt", binary: false, patch: "+one\n-two" }],
+  diff: [{ path: "a.txt", binary: false, patch: "+one\n-two", hunks: [] }],
 };
 
 test("empty state: no selection shows the prompt", () => {

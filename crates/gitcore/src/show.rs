@@ -21,6 +21,20 @@ use crate::GitError;
 /// A non-zero exit is [`GitError::Command`] (with the captured stderr); a
 /// spawn failure (no git binary) is an I/O error.
 pub(crate) fn run_git_sync(cwd: &Path, args: &[&str]) -> Result<String, GitError> {
+    run_git_sync_allow(cwd, args, -1)
+}
+
+/// Like [`run_git_sync`], but tolerates one specific non-zero exit code.
+///
+/// Some git commands report "the result" through their exit code:
+/// `git diff --no-index` exits `1` when the files differ, and `git config`
+/// exits `1` when a key is unset. Callers that treat those as data pass the
+/// code here; any other non-zero exit is still an error.
+pub(crate) fn run_git_sync_allow(
+    cwd: &Path,
+    args: &[&str],
+    allow_exit: i32,
+) -> Result<String, GitError> {
     let program = resolve_git()?;
     let mut cmd = Command::new(&program);
     cmd.args(args);
@@ -37,9 +51,10 @@ pub(crate) fn run_git_sync(cwd: &Path, args: &[&str]) -> Result<String, GitError
         .map_err(|e| GitError::Io(std::io::Error::new(e.kind(), e.to_string())))?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    if !output.status.success() {
+    let exit = output.status.code().unwrap_or(-1);
+    if !output.status.success() && exit != allow_exit {
         return Err(GitError::Command {
-            exit: output.status.code().unwrap_or(-1),
+            exit,
             detail: stderr.trim().to_string(),
         });
     }
@@ -131,7 +146,7 @@ pub fn split_patch(out: &str) -> Vec<FileDiff> {
     for line in out.lines() {
         if let Some(header) = line.strip_prefix("diff --git ") {
             if let Some(file) = current.take() {
-                files.push(file);
+                files.push(finish(file));
             }
             // `a/x /dev/null` (a deletion) has the path on the *first* token;
             // everything else reads it from the `b/` (final) side.
@@ -147,6 +162,7 @@ pub fn split_patch(out: &str) -> Vec<FileDiff> {
                 path,
                 binary: false,
                 patch: String::new(),
+                hunks: Vec::new(),
             });
             continue;
         }
@@ -164,9 +180,18 @@ pub fn split_patch(out: &str) -> Vec<FileDiff> {
         }
     }
     if let Some(file) = current.take() {
-        files.push(file);
+        files.push(finish(file));
     }
     files
+}
+
+/// Fill in the parsed hunks of a finished file's diff (the `hunks` field).
+/// Binary diffs have no text hunks (`hunks_from` yields none for the marker).
+fn finish(file: FileDiff) -> FileDiff {
+    FileDiff {
+        hunks: crate::diff::hunks_from(&file.patch, false),
+        ..file
+    }
 }
 
 /// Strip the `a/` / `b/` side prefix from a diff header path.

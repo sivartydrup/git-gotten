@@ -8,7 +8,9 @@
 //! `display` is the single source of truth for the UI (inline hint, preview dialog,
 //! activity log, SPEC §8/§9): it is the exact argv, quoted only where necessary.
 
-use git_gotten_protocol::{ChangeKind, CommandPlan, GitStep, Op, Preview, ResetMode, Risk, Status};
+use git_gotten_protocol::{
+    Author, ChangeKind, CommandPlan, GitStep, Op, Preview, ResetMode, Risk, Status,
+};
 
 use crate::{GitError, Repo};
 
@@ -44,12 +46,18 @@ pub fn format_argv(argv: &[String]) -> String {
 impl Repo {
     /// Compile `op` into a [`CommandPlan`], reading the current repository state.
     ///
-    /// Read-only: this touches only the `gix` read-model, never the git CLI. The
-    /// same op compiled twice against the same state yields the same plan.
+    /// Planning never *mutates*: the only git invocations it makes are read-only
+    /// diffs (the discard / stage-hunks previews). The same op compiled twice
+    /// against the same state yields the same plan.
     pub fn plan(&self, op: &Op) -> Result<CommandPlan, GitError> {
         let status = self.status()?;
         match op {
-            Op::Commit { message, amend } => plan_commit(&status, message, *amend),
+            Op::Commit {
+                message,
+                amend,
+                author,
+                co_authors,
+            } => plan_commit(&status, message, author.as_ref(), co_authors, *amend),
             Op::Checkout { target, force } => plan_checkout(&status, target, *force),
             Op::Push {
                 remote,
@@ -63,24 +71,51 @@ impl Repo {
             } => plan_branch_create(self, name, from, *checkout),
             Op::Reset { mode, target } => plan_reset(self, &status, *mode, target),
             Op::CherryPick { hashes } => plan_cherry_pick(self, &status, hashes),
+            Op::Stage { path } => plan_stage(&status, path.as_deref()),
+            Op::Unstage { path } => plan_unstage(&status, path.as_deref()),
+            Op::Discard { path } => plan_discard(self, path),
+            Op::StageHunks { path, selected } => plan_stage_hunks(self, path, selected),
         }
     }
 }
 
-/// `git commit -m <message> [--amend]` — `Mutating`; previews the staged files.
-fn plan_commit(status: &Status, message: &str, amend: bool) -> Result<CommandPlan, GitError> {
+/// `git commit -m <message> [--amend] [--author "…"]` — `Mutating`; previews the
+/// staged files. Co-authors are appended to the message as `Co-authored-by:`
+/// trailers (git's conventional format), so the displayed command shows them.
+fn plan_commit(
+    status: &Status,
+    message: &str,
+    author: Option<&Author>,
+    co_authors: &[String],
+    amend: bool,
+) -> Result<CommandPlan, GitError> {
     if message.trim().is_empty() {
         return Err(GitError::EmptyCommitMessage);
     }
+
+    let message = if co_authors.is_empty() {
+        message.to_string()
+    } else {
+        let mut full = message.to_string();
+        full.push_str("\n\n");
+        for co in co_authors {
+            full.push_str(&format!("Co-authored-by: {co}\n"));
+        }
+        full.trim_end().to_string()
+    };
 
     let mut argv = vec![
         "git".to_string(),
         "commit".to_string(),
         "-m".to_string(),
-        message.to_string(),
+        message.clone(),
     ];
     if amend {
         argv.push("--amend".to_string());
+    }
+    if let Some(a) = author {
+        argv.push("--author".to_string());
+        argv.push(format!("{} <{}>", a.name, a.email));
     }
 
     let staged: Vec<&ChangeKind> = status
@@ -135,6 +170,7 @@ fn plan_commit(status: &Status, message: &str, amend: bool) -> Result<CommandPla
             },
             risk: Risk::Mutating,
             effect: amend.then(|| "rewrites the last commit".to_string()),
+            input: None,
         }],
         display,
         preview: Some(preview),
@@ -169,6 +205,7 @@ fn plan_checkout(status: &Status, target: &str, force: bool) -> Result<CommandPl
             summary: format!("switch to {target}"),
             risk: Risk::Mutating,
             effect: None,
+            input: None,
         }],
         display,
         preview: Some(Preview {
@@ -252,6 +289,7 @@ fn plan_push(
             summary: format!("push {branch} to {remote}"),
             risk,
             effect,
+            input: None,
         }],
         display,
         preview: Some(Preview {
@@ -349,6 +387,7 @@ fn plan_branch_create(
         summary: format!("create branch {name} at {}", short_hash(from)),
         risk: Risk::Mutating,
         effect: None,
+        input: None,
     }];
     if checkout {
         steps.push(GitStep {
@@ -356,6 +395,7 @@ fn plan_branch_create(
             summary: format!("switch to {name}"),
             risk: Risk::Mutating,
             effect: None,
+            input: None,
         });
     }
 
@@ -450,6 +490,7 @@ fn plan_reset(
             summary: format!("reset to {target}"),
             risk,
             effect,
+            input: None,
         }],
         display: format_argv(&[
             "git".to_string(),
@@ -505,6 +546,7 @@ fn plan_cherry_pick(
             summary: "cherry-pick onto the current branch".to_string(),
             risk: Risk::Mutating,
             effect: None,
+            input: None,
         }],
         display,
         preview: Some(Preview {
@@ -517,6 +559,219 @@ fn plan_cherry_pick(
         }),
     })
 }
+
+/// `git add [-A | -- <path>]` — `Mutating`: stage one file (untracked →
+/// newly added) or the whole tree.
+fn plan_stage(status: &Status, path: Option<&str>) -> Result<CommandPlan, GitError> {
+    let (argv, summary, headline) = match path {
+        Some(p) => (
+            vec!["git".to_string(), "add".to_string(), "--".to_string(), p.to_string()],
+            format!("stage {p}"),
+            format!("Stage {p}"),
+        ),
+        None => (
+            vec!["git".to_string(), "add".to_string(), "-A".to_string()],
+            "stage all changes".to_string(),
+            "Stage all changes".to_string(),
+        ),
+    };
+    let lines = vec![match path {
+        Some(p) => format!("  {p}"),
+        None => format!("  {} changed files", status.changes.len()),
+    }];
+    let preview = Preview {
+        headline,
+        lines,
+        requires_type_to_confirm: false,
+    };
+    let display = format_argv(&argv);
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary,
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+        }],
+        display,
+        preview: Some(preview),
+    })
+}
+
+/// `git reset --<path | all>` — `Mutating`: the index entries go back to
+/// HEAD while the worktree is left untouched (changes reappear unstaged; a
+/// staged *new* file becomes untracked with its content preserved).
+fn plan_unstage(status: &Status, path: Option<&str>) -> Result<CommandPlan, GitError> {
+    let (argv, summary, headline) = match path {
+        Some(p) => (
+            vec!["git".to_string(), "reset".to_string(), "-q".to_string(), "--".to_string(), p.to_string()],
+            format!("unstage {p} (worktree untouched)"),
+            format!("Unstage {p}"),
+        ),
+        None => (
+            vec!["git".to_string(), "reset".to_string(), "-q".to_string()],
+            "unstage all (worktree untouched)".to_string(),
+            "Unstage all changes".to_string(),
+        ),
+    };
+    let lines = vec![match path {
+        Some(p) => format!("  {p} (content kept in the worktree)"),
+        None => format!("  {} changed files (content kept in the worktree)", status.changes.len()),
+    }];
+    let preview = Preview {
+        headline,
+        lines,
+        requires_type_to_confirm: false,
+    };
+    let display = format_argv(&argv);
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary,
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+        }],
+        display,
+        preview: Some(preview),
+    })
+}
+
+/// Discard a file's uncommitted changes — `Dangerous` (type-to-confirm).
+///
+/// Tracked files: `git restore --source=HEAD --staged --worktree -- <path>`
+/// restores *both* the index entry and the worktree file from HEAD (a
+/// staged-new file is deleted; a deleted file comes back). Untracked files
+/// have nothing to restore, so they are deleted: `git clean -f -- <path>`.
+/// The preview shows the diff being discarded (SPEC §10.2).
+fn plan_discard(repo: &Repo, path: &str) -> Result<CommandPlan, GitError> {
+    let untracked = repo
+        .status()?
+        .changes
+        .iter()
+        .any(|c| c.path == path && c.kind == ChangeKind::Untracked);
+
+    let diff = repo.diff_file(path)?;
+    let mut lines = vec![path.to_string()];
+    if diff.binary {
+        lines.push("  (binary — the whole file is discarded)".to_string());
+    } else {
+        for h in &diff.hunks {
+            lines.push(format!("  {}", h.header));
+            for l in &h.lines {
+                lines.push(format!("  {l}"));
+            }
+        }
+    }
+    let preview = Preview {
+        headline: format!("Discard {path}"),
+        lines,
+        requires_type_to_confirm: true,
+    };
+
+    let (argv, summary) = if untracked {
+        (
+            vec![
+                "git".to_string(),
+                "clean".to_string(),
+                "-f".to_string(),
+                "--".to_string(),
+                path.to_string(),
+            ],
+            format!("delete the untracked file {path}"),
+        )
+    } else {
+        (
+            vec![
+                "git".to_string(),
+                "restore".to_string(),
+                "--source=HEAD".to_string(),
+                "--staged".to_string(),
+                "--worktree".to_string(),
+                "--".to_string(),
+                path.to_string(),
+            ],
+            format!("restore {path} from HEAD (index and worktree)"),
+        )
+    };
+    let display = format_argv(&argv);
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary,
+            risk: Risk::Dangerous,
+            effect: Some(format!("destroys the uncommitted changes in {path}")),
+            input: None,
+        }],
+        display,
+        preview: Some(preview),
+    })
+}
+
+/// `git apply --cached` with the selected hunks' patch on stdin — `Mutating`:
+/// the index gains exactly the chosen hunks, the worktree is untouched.
+///
+/// `selected` indexes the web's view of the file (`Repo::diff_file(path).hunks`:
+/// staged hunks first, then unstaged); only unstaged hunks are stageable, and
+/// a selection that no longer matches the current diff is an error (the file
+/// changed between viewing and staging — re-read rather than apply stale bytes).
+fn plan_stage_hunks(
+    repo: &Repo,
+    path: &str,
+    selected: &[usize],
+) -> Result<CommandPlan, GitError> {
+    let untracked = repo
+        .status()?
+        .changes
+        .iter()
+        .any(|c| c.path == path && c.kind == ChangeKind::Untracked);
+    let (staged_raw, unstaged_raw) = crate::diff::diff_sides(&repo.path, path, untracked)?;
+    let staged_count = crate::diff::hunks_from(&staged_raw, true).len();
+    let unstaged = crate::diff::hunks_from(&unstaged_raw, false);
+
+    // Map the web's indices (into staged ++ unstaged) onto the raw unstaged
+    // diff's hunks; drop anything that is staged or out of range.
+    let selected: Vec<usize> = selected
+        .iter()
+        .filter(|&&i| i >= staged_count && i - staged_count < unstaged.len())
+        .map(|&i| i - staged_count)
+        .collect();
+    if selected.is_empty() {
+        return Err(GitError::EmptySelection);
+    }
+    let patch = crate::diff::build_apply_patch(&unstaged_raw, &selected)
+        .ok_or(GitError::EmptySelection)?;
+
+    let total = unstaged.len();
+    let count = selected.len();
+    let mut lines = vec![path.to_string()];
+    for &i in &selected {
+        lines.push(format!("  {}", unstaged[i].header));
+    }
+    let preview = Preview {
+        headline: format!("Stage {count} of {total} hunks"),
+        lines,
+        requires_type_to_confirm: false,
+    };
+    let argv = vec![
+        "git".to_string(),
+        "apply".to_string(),
+        "--cached".to_string(),
+    ];
+    let display = format_argv(&argv);
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary: format!("stage {count} of {total} hunks in {path}"),
+            risk: Risk::Mutating,
+            effect: Some(format!("updates the index for {path}; the worktree is untouched")),
+            input: Some(patch),
+        }],
+        display,
+        preview: Some(preview),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,6 +827,8 @@ mod tests {
             .plan(&Op::Commit {
                 message: "add b".into(),
                 amend: false,
+                author: None,
+                co_authors: vec![],
             })
             .unwrap();
 
@@ -597,6 +854,8 @@ mod tests {
             .plan(&Op::Commit {
                 message: "amend it".into(),
                 amend: true,
+                author: None,
+                co_authors: vec![],
             })
             .unwrap();
 
@@ -619,6 +878,8 @@ mod tests {
             .plan(&Op::Commit {
                 message: "empty".into(),
                 amend: false,
+                author: None,
+                co_authors: vec![],
             })
             .unwrap();
         let preview = plan.preview.as_ref().unwrap();
@@ -633,6 +894,8 @@ mod tests {
             .plan(&Op::Commit {
                 message: "   ".into(),
                 amend: false,
+                author: None,
+                co_authors: vec![],
             })
             .unwrap_err();
         assert!(matches!(err, GitError::EmptyCommitMessage), "got {err:?}");
@@ -801,6 +1064,8 @@ mod tests {
             repo.plan(&Op::Commit {
                 message: "m".into(),
                 amend: false,
+                author: None,
+                co_authors: vec![],
             }).unwrap()
             .steps[0]
             .risk,
@@ -1080,5 +1345,154 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(err, GitError::NoCommit { .. }), "got {err:?}");
+    }
+
+    // ── stage / unstage / discard / stage-hunks (Stage 5) ─────────────────
+
+    /// A committed 20-line file with two modified lines (1 and 15) apart
+    /// enough to yield **two** hunks.
+    fn two_hunk_fixture() -> testutil::Fixture {
+        let fx = testutil::Fixture::new("plan-two-hunk");
+        let content = (1..=20).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\n") + "\n";
+        fx.commit_file("f.txt", &content, "c1");
+        let mut lines: Vec<&str> = content.lines().collect();
+        lines[0] = "l1X";
+        lines[14] = "l15X";
+        fx.write_file("f.txt", &(lines.join("\n") + "\n"));
+        fx
+    }
+
+    #[test]
+    fn plan_stage_file_and_all() {
+        let fx = two_hunk_fixture();
+        let repo = Repo::open(&fx.path).unwrap();
+
+        let file = repo.plan(&Op::Stage { path: Some("f.txt".into()) }).unwrap();
+        assert_eq!(file.display, "git add -- f.txt");
+        assert_eq!(file.steps[0].risk, Risk::Mutating);
+        assert!(!file.preview.as_ref().unwrap().requires_type_to_confirm);
+
+        let all = repo.plan(&Op::Stage { path: None }).unwrap();
+        assert_eq!(all.display, "git add -A");
+        assert!(all
+            .preview
+            .as_ref()
+            .unwrap()
+            .lines
+            .iter()
+            .any(|l| l.contains("1 changed file")));
+    }
+
+    #[test]
+    fn plan_unstage_file_and_all() {
+        let fx = two_hunk_fixture();
+        let repo = Repo::open(&fx.path).unwrap();
+
+        let file = repo.plan(&Op::Unstage { path: Some("f.txt".into()) }).unwrap();
+        assert_eq!(file.display, "git reset -q -- f.txt");
+        assert_eq!(file.steps[0].risk, Risk::Mutating);
+
+        let all = repo.plan(&Op::Unstage { path: None }).unwrap();
+        assert_eq!(all.display, "git reset -q");
+    }
+
+    #[test]
+    fn plan_discard_is_dangerous_and_shows_the_diff() {
+        let fx = two_hunk_fixture();
+        let repo = Repo::open(&fx.path).unwrap();
+
+        let plan = repo.plan(&Op::Discard { path: "f.txt".into() }).unwrap();
+        assert_eq!(
+            plan.steps[0].argv,
+            vec![
+                "git".to_string(),
+                "restore".to_string(),
+                "--source=HEAD".to_string(),
+                "--staged".to_string(),
+                "--worktree".to_string(),
+                "--".to_string(),
+                "f.txt".to_string()
+            ]
+        );
+        assert_eq!(plan.steps[0].risk, Risk::Dangerous);
+        let preview = plan.preview.as_ref().unwrap();
+        assert!(preview.requires_type_to_confirm);
+        // The diff being discarded is in the preview (SPEC §10.2).
+        assert!(preview.lines.iter().any(|l| l.contains("l1X")));
+    }
+
+    #[test]
+    fn plan_stage_hunks_compiles_the_apply_step() {
+        let fx = two_hunk_fixture();
+        let repo = Repo::open(&fx.path).unwrap();
+
+        // Both hunks are unstaged, so the web's indices 0 and 1 map 1:1.
+        let plan = repo
+            .plan(&Op::StageHunks {
+                path: "f.txt".into(),
+                selected: vec![0],
+            })
+            .unwrap();
+        assert_eq!(plan.display, "git apply --cached");
+        assert_eq!(plan.steps[0].risk, Risk::Mutating);
+        let input = plan.steps[0].input.as_deref().expect("patch on stdin");
+        assert!(input.contains("-l1\n+l1X"), "hunk 1 selected: {input}");
+        assert!(!input.contains("-l15"), "hunk 2 not selected: {input}");
+        assert!(input.contains("--- a/f.txt"), "apply patch needs the file header: {input}");
+        let preview = plan.preview.as_ref().unwrap();
+        assert_eq!(preview.headline, "Stage 1 of 2 hunks");
+    }
+
+    #[test]
+    fn plan_stage_hunks_rejects_an_empty_selection() {
+        let fx = two_hunk_fixture();
+        let repo = Repo::open(&fx.path).unwrap();
+        let err = repo
+            .plan(&Op::StageHunks {
+                path: "f.txt".into(),
+                selected: vec![],
+            })
+            .unwrap_err();
+        assert!(matches!(err, GitError::EmptySelection), "got {err:?}");
+    }
+
+    #[test]
+    fn plan_stage_hunks_maps_over_staged_hunks() {
+        let fx = two_hunk_fixture();
+        fx.add("f.txt"); // stage everything: both hunks are now staged
+        let repo = Repo::open(&fx.path).unwrap();
+        // The web's hunk list is [staged, staged] — there is nothing to stage,
+        // so any selection is rejected.
+        let err = repo
+            .plan(&Op::StageHunks {
+                path: "f.txt".into(),
+                selected: vec![0, 1],
+            })
+            .unwrap_err();
+        assert!(matches!(err, GitError::EmptySelection), "got {err:?}");
+    }
+
+    #[test]
+    fn plan_commit_carries_author_and_co_authors_in_the_display() {
+        let fx = two_hunk_fixture();
+        fx.add("f.txt");
+        let repo = Repo::open(&fx.path).unwrap();
+
+        let plan = repo
+            .plan(&Op::Commit {
+                message: "fix: the thing".into(),
+                amend: false,
+                author: Some(Author {
+                    name: "Jane".into(),
+                    email: "jane@example.com".into(),
+                }),
+                co_authors: vec!["Joe <joe@example.com>".into()],
+            })
+            .unwrap();
+        // The trailer rides in the message and the identity in `--author`;
+        // the displayed command is the exact argv (SPEC §8).
+        assert!(plan.display.contains("-m \"fix: the thing"));
+        assert!(plan.display.contains("Co-authored-by: Joe <joe@example.com>"));
+        assert!(plan.display.contains(r#"--author "Jane <jane@example.com>""#));
     }
 }

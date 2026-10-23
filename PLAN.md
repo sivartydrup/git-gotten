@@ -336,9 +336,9 @@ git push -u origin main
 **Commit & push:** `git add -A && git commit -m "stage-05: per-hunk staging + commit" && git push origin main`
 
 **Acceptance criteria:**
-- [ ] Per-hunk staging stages exactly the selected hunks (asserted in index).
-- [ ] Commit + amend + discard all work and appear in the activity log.
-- [ ] Untracked files can be added/committed.
+- [x] Per-hunk staging stages exactly the selected hunks (asserted in index).
+- [x] Commit + amend + discard all work and appear in the activity log.
+- [x] Untracked files can be added/committed.
 
 ---
 

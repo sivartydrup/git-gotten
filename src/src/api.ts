@@ -4,6 +4,7 @@ import type {
   BuildInfo,
   CommandPlan,
   CommitDetail,
+  FileDiff,
   Graph,
   LogEntry,
   Op,
@@ -77,6 +78,21 @@ export async function loadCommit(
     return null;
   }
   return await invoke<CommitDetail>("load_commit", { repo, hash });
+}
+
+/**
+ * Load the working-tree diff of one file (Rust `load_diff` command, the
+ * staging UI, SPEC §10.2). Returns the diff with its hunks, or `null`
+ * outside Tauri.
+ */
+export async function loadDiff(
+  repo: RepoId,
+  path: string,
+): Promise<FileDiff | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<FileDiff>("load_diff", { repo, path });
 }
 
 /**

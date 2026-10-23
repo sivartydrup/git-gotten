@@ -60,7 +60,7 @@ test("renders the GitGotten shell (non-Tauri fallback)", async () => {
   // resolve `null`. Flush the microtasks so the fallback branch commits.
   await act(async () => {});
   expect(document.body.textContent).toContain("GitGotten");
-  expect(document.body.textContent).toContain("Running outside Tauri");
+  expect(document.body.textContent).toContain("Files"); // the Files tab
   expect(document.body.textContent).toContain("No repositories open");
 });
 
@@ -90,6 +90,10 @@ test("renders a seeded repo: nav entry, top-bar state, and changes", async () =>
   useRepoStore.setState({ repos: [meta], activeId: meta.id, status: { [meta.id]: status } });
 
   render(<App />);
+  await act(async () => {});
+
+  // The changed files live in the Files tab (the graph is the default tab).
+  fireEvent.click(screen.getByRole("tab", { name: "Files" }));
   await act(async () => {});
 
   const body = document.body.textContent ?? "";
@@ -128,6 +132,8 @@ test("shows a clean tree for a repo with no changes", async () => {
   });
 
   render(<App />);
+  await act(async () => {});
+  fireEvent.click(screen.getByRole("tab", { name: "Files" }));
   await act(async () => {});
 
   const body = document.body.textContent ?? "";
@@ -204,7 +210,7 @@ test("commit flow: preview shows the exact command, confirm runs and records it"
 
   // The commit action with its live CmdHint is present; the button is
   // disabled until a message is typed.
-  const input = screen.getByPlaceholderText("Commit message");
+  const input = screen.getByPlaceholderText(/commit message/i);
   expect((screen.getByRole("button", { name: "Commit" }) as HTMLButtonElement).disabled).toBe(true);
 
   fireEvent.change(input, { target: { value: "fix: thing" } });

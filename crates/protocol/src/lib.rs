@@ -15,6 +15,10 @@
 //! Stage 4 adds the inspect-drawer shapes (`load_commit`): [`CommitDetail`],
 //! [`FileStat`], [`FileDiff`] — and the graph context-menu ops: [`Op::BranchCreate`],
 //! [`Op::Reset`] ([`ResetMode`]), [`Op::CherryPick`].
+//! Stage 5 adds the per-hunk staging shapes (SPEC §10.2): [`Hunk`], the
+//! working-tree side of [`FileDiff`], [`Author`], the stdin [`GitStep::input`],
+//! and the staging ops: [`Op::Stage`], [`Op::Unstage`], [`Op::Discard`],
+//! [`Op::StageHunks`].
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -144,6 +148,9 @@ pub struct GitStep {
     /// Structured blast radius when the step affects history
     /// (e.g. `force-push `main` — remote loses 2 commits`); `None` for most steps.
     pub effect: Option<String>,
+    /// Optional text piped to the process's stdin (e.g. a patch for
+    /// `git apply --cached`). `None` for steps that take no input.
+    pub input: Option<String>,
 }
 
 /// What will change before a risky op runs (SPEC §8), shown in the preview dialog.
@@ -194,10 +201,16 @@ pub enum ResetMode {
 pub enum Op {
     /// Commit the staged changes (`git commit`).
     Commit {
-        /// Commit message (`-m`).
+        /// Commit message (`-m`; co-authors are appended as trailers by the core).
         message: String,
         /// Rewrite HEAD instead of adding a new commit (`--amend`).
         amend: bool,
+        /// Override the author identity (`--author`); `None` uses the configured identity.
+        #[serde(default)]
+        author: Option<Author>,
+        /// Extra `Co-authored-by: Name <email>` trailer lines.
+        #[serde(default)]
+        co_authors: Vec<String>,
     },
     /// Switch to a branch, or a commit-ish (detaches HEAD) (`git switch`).
     Checkout {
@@ -238,6 +251,31 @@ pub enum Op {
     CherryPick {
         /// The commits to pick, in the order they should be applied.
         hashes: Vec<Hash>,
+    },
+    /// Stage (add) a file, or the whole tree when `path` is `None` (`git add`).
+    Stage {
+        /// The file to stage; `None` stages everything (`git add -A`).
+        path: Option<String>,
+    },
+    /// Unstage (reset from HEAD) a file, or the whole index when `path` is `None`
+    /// (`git reset --`). Content in the worktree is untouched.
+    Unstage {
+        /// The file to unstage; `None` unstages everything.
+        path: Option<String>,
+    },
+    /// Discard a file's uncommitted changes, restoring it to its HEAD state
+    /// (`git checkout --`-equivalent). `Dangerous` — destroys uncommitted work.
+    Discard {
+        /// The file to restore.
+        path: String,
+    },
+    /// Stage the selected hunks of a file (`git apply --cached` of the built patch).
+    /// `selected` indexes into the file's *unstaged* hunks.
+    StageHunks {
+        /// The file whose hunks are staged.
+        path: String,
+        /// Indices (into the unstaged hunk list) to stage.
+        selected: Vec<usize>,
     },
 }
 
@@ -447,17 +485,43 @@ pub struct FileStat {
     pub binary: bool,
 }
 
-/// One file's unified diff for a commit (the inspect drawer's patch view,
-/// SPEC §10.1): `patch` is raw git unified-diff text for that file only.
+/// One hunk of a unified diff (SPEC §10.2): a single `@@`-delimited block of
+/// changed lines, the unit of per-hunk staging.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Hunk {
+    /// The `@@ -l,c +l,c @@ [section]` header line.
+    pub header: String,
+    /// The hunk body lines, each with its leading ` ` / `+` / `-` marker.
+    pub lines: Vec<String>,
+    /// `true` when this hunk comes from the index-vs-HEAD (staged) side of the
+    /// diff, `false` for the worktree-vs-index (unstaged) side. The per-hunk
+    /// stage checkboxes only act on unstaged hunks.
+    pub staged: bool,
+}
+
+/// One file's unified diff. `patch` is raw git unified-diff text for that file;
+/// `hunks` is the parsed form of the same diff (the working-tree view renders
+/// hunks so each can carry a stage checkbox, SPEC §10.2). Commit diffs
+/// (`CommitDetail`) also carry hunks (parsed, `staged: false`) but the drawer
+/// renders the raw `patch` instead.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct FileDiff {
-    /// The file path in the commit (a renamed file shows its new name).
+    /// The file path in the diff (a renamed file shows its new name).
     pub path: String,
     /// `true` when the diff is a binary marker instead of text hunks.
     pub binary: bool,
     /// The unified diff text for this file (`index`/`---`/`+++`/hunks, no
     /// `diff --git` header).
     pub patch: String,
+    /// The hunks parsed from `patch` (empty for binary files).
+    pub hunks: Vec<Hunk>,
+}
+
+/// A commit identity (name + email) for the commit panel's author field.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Author {
+    pub name: String,
+    pub email: String,
 }
 
 /// Full details of one commit, for the inspect drawer (IPC `load_commit`,
@@ -613,6 +677,7 @@ mod tests {
                 summary: "force-push main to origin".into(),
                 risk: Risk::Dangerous,
                 effect: Some("force-push `main` — remote loses 1 commit".into()),
+                input: None,
             }],
             display: "git push --force origin main".into(),
             preview: Some(Preview {
@@ -640,11 +705,13 @@ mod tests {
         let op = Op::Commit {
             message: "fix: the thing".into(),
             amend: false,
+            author: None,
+            co_authors: vec![],
         };
         let json = serde_json::to_string(&op).unwrap();
         assert_eq!(
             json,
-            r#"{"kind":"commit","message":"fix: the thing","amend":false}"#
+            r#"{"kind":"commit","message":"fix: the thing","amend":false,"author":null,"co_authors":[]}"#
         );
         let back: Op = serde_json::from_str(&json).unwrap();
         assert_eq!(back, op);
@@ -875,6 +942,7 @@ mod tests {
                 path: "a.txt".into(),
                 binary: false,
                 patch: "-one\n+two\n+three\n".into(),
+                hunks: vec![],
             }],
         }
     }
@@ -893,6 +961,29 @@ mod tests {
         _assert_ts::<CommitDetail>();
         _assert_ts::<FileStat>();
         _assert_ts::<FileDiff>();
+        _assert_ts::<Hunk>();
+        _assert_ts::<Author>();
         _assert_ts::<ResetMode>();
+    }
+
+    #[test]
+    fn hunk_and_author_round_trip_through_serde() {
+        let h = Hunk {
+            header: "@@ -1,2 +1,3 @@".into(),
+            lines: vec![" x".into(), "+y".into(), " z".into()],
+            staged: false,
+        };
+        let json = serde_json::to_string(&h).unwrap();
+        assert!(json.contains(r#""staged":false"#));
+        let back: Hunk = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, h);
+
+        let a = Author {
+            name: "Jane".into(),
+            email: "jane@example.com".into(),
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        let back: Author = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, a);
     }
 }

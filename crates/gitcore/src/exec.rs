@@ -195,6 +195,15 @@ impl GitExecutor {
             let mut cmd = tokio::process::Command::new(&program);
             cmd.args(&step.argv[1..]);
             cmd.current_dir(cwd);
+            // `spawn()` (unlike `output()`) inherits stdio by default, so the
+            // capture streams must be piped explicitly or nothing is recorded.
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+            if step.input.is_some() {
+                cmd.stdin(std::process::Stdio::piped());
+            } else {
+                cmd.stdin(std::process::Stdio::null());
+            }
             for (key, value) in ENV_SET {
                 cmd.env(key, value);
             }
@@ -202,14 +211,34 @@ impl GitExecutor {
                 cmd.env_remove(key);
             }
 
-            match cmd.output().await {
-                Ok(output) => {
-                    stdout.push_str(&String::from_utf8_lossy(&output.stdout));
-                    stderr.push_str(&String::from_utf8_lossy(&output.stderr));
-                    exit = output.status.code().unwrap_or(-1);
-                    if exit != 0 {
-                        ok = false;
-                        break; // safe failure: the remaining steps must not run
+            match cmd.spawn() {
+                Ok(mut child) => {
+                    // Pipe the step's stdin (if any) before waiting: `git
+                    // apply --cached` reads its patch from stdin. Closing the
+                    // write half sends EOF so git proceeds.
+                    if let Some(input) = &step.input {
+                        if let Some(mut stdin) = child.stdin.take() {
+                            use tokio::io::AsyncWriteExt;
+                            let _ = stdin.write_all(input.as_bytes()).await;
+                            let _ = stdin.shutdown().await;
+                        }
+                    }
+                    match child.wait_with_output().await {
+                        Ok(output) => {
+                            stdout.push_str(&String::from_utf8_lossy(&output.stdout));
+                            stderr.push_str(&String::from_utf8_lossy(&output.stderr));
+                            exit = output.status.code().unwrap_or(-1);
+                            if exit != 0 {
+                                ok = false;
+                                break; // safe failure: the remaining steps must not run
+                            }
+                        }
+                        Err(e) => {
+                            exit = -1;
+                            ok = false;
+                            stderr.push_str(&format!("failed to run git: {e}\n"));
+                            break;
+                        }
                     }
                 }
                 Err(e) => {
@@ -397,6 +426,7 @@ mod tests {
                 summary: "create a commit".into(),
                 risk: Risk::Mutating,
                 effect: None,
+                input: None,
             }],
             display: format!("git commit -m \"{message}\""),
             preview: None,
@@ -444,6 +474,7 @@ mod tests {
                 summary: "switch to side".into(),
                 risk: Risk::Mutating,
                 effect: None,
+                input: None,
             }],
             display: "git switch side".into(),
             preview: None,
@@ -496,6 +527,7 @@ mod tests {
                     summary: "fails".into(),
                     risk: Risk::Mutating,
                     effect: None,
+                    input: None,
                 },
                 GitStep {
                     argv: vec![
@@ -506,6 +538,7 @@ mod tests {
                     summary: "must not run".into(),
                     risk: Risk::Mutating,
                     effect: None,
+                    input: None,
                 },
             ],
             display: "git commit -m \"never\" && git switch side".into(),
@@ -519,5 +552,41 @@ mod tests {
         // The second step never ran: HEAD is still on main.
         let status = repo.status().unwrap();
         assert_eq!(status.branch.as_deref(), Some("main"));
+    }
+
+    // ── stdin ───────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn executor_pipes_step_input_to_stdin() {
+        let fx = testutil::Fixture::new("exec-stdin");
+        let repo = Repo::open(&fx.path).unwrap();
+        let executor = GitExecutor::new();
+
+        // `git hash-object -t blob --stdin` is read-only and hashes exactly
+        // what it receives on stdin — the SHA of the input is the proof.
+        let plan = CommandPlan {
+            steps: vec![GitStep {
+                argv: vec![
+                    "git".to_string(),
+                    "hash-object".to_string(),
+                    "-t".to_string(),
+                    "blob".to_string(),
+                    "--stdin".to_string(),
+                ],
+                summary: "hash the stdin blob".to_string(),
+                risk: Risk::ReadOnly,
+                effect: None,
+                input: Some("hello\n".to_string()),
+            }],
+            display: "git hash-object -t blob --stdin".to_string(),
+            preview: None,
+        };
+        let result = executor.run_plan(&repo.id, &repo.path, &plan).await;
+
+        assert!(result.ok, "stderr: {}", result.stderr);
+        assert_eq!(
+            result.stdout.trim(),
+            "ce013625030ba8dba906f756967f9e9ca394464a"
+        );
     }
 }
