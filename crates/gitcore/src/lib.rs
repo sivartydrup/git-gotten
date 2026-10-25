@@ -26,8 +26,9 @@ mod show;
 
 /// Shared read-model types, re-exported so `gitcore::Status` etc. read naturally.
 pub use git_gotten_protocol::{
-    Author, ChangeKind, CommandPlan, CommitDetail, FileChange, FileDiff, FileStat, GitStep,
-    Graph, Hunk, Op, OpResult, Preview, RefLabel, RepoMeta, RepoId, Risk, Status,
+    Author, Branch, ChangeKind, CommandPlan, CommitDetail, FileChange, FileDiff, FileStat,
+    GitStep, Graph, Hunk, Op, OpResult, Preview, RefLabel, Remote, RepoMeta, RepoId, Risk,
+    Status, Tag,
 };
 pub use exec::{GitExecutor, OpQueue};
 pub use show::{numstat, patch};
@@ -70,9 +71,9 @@ pub enum GitError {
     #[error("the repository has no commits yet")]
     NoCommits,
 
-    /// A requested branch name is empty or invalid.
-    #[error("invalid branch name: {name}")]
-    BadBranchName { name: String },
+    /// A requested ref name (branch, tag, remote) is empty or invalid.
+    #[error("invalid name: {name}")]
+    BadRefName { name: String },
 
     /// Nothing was selected for an op (commits to cherry-pick, hunks to stage).
     #[error("no selection for this op")]
@@ -82,8 +83,8 @@ pub enum GitError {
     #[error("commit message is empty")]
     EmptyCommitMessage,
 
-    /// A switch/checkout was requested with an empty target.
-    #[error("switch target is empty")]
+    /// An op was requested with an empty target (switch target, remote url, …).
+    #[error("target is empty")]
     EmptyTarget,
 
     /// A push was requested while HEAD is detached (there is no branch to push).
@@ -93,6 +94,22 @@ pub enum GitError {
     /// The named remote does not exist in the repository.
     #[error("unknown remote: {name}")]
     UnknownRemote { name: String },
+
+    /// The named branch does not exist.
+    #[error("unknown branch: {name}")]
+    UnknownBranch { name: String },
+
+    /// The named tag does not exist.
+    #[error("unknown tag: {name}")]
+    UnknownTag { name: String },
+
+    /// A new ref (branch) would collide with an existing one.
+    #[error("a branch named '{name}' already exists")]
+    BranchExists { name: String },
+
+    /// A new remote would collide with an existing one.
+    #[error("a remote named '{name}' already exists")]
+    RemoteExists { name: String },
 
     /// The `git` binary is not on the PATH, so no operation can be executed.
     #[error("git executable not found")]
@@ -153,6 +170,21 @@ impl Repo {
             path,
             inner,
         })
+    }
+
+    /// Re-open the repository in place.
+    ///
+    /// The `gix` handle caches the configuration (and the refs it discovered) at
+    /// open time, so after an op — or any external mutation — of `branch.*`/remote
+    /// config this is how the read model (`status`, `branches`, `remotes`, and the
+    /// plan constructors that check them) learns the new state. `id`/`path` are
+    /// unchanged: the canonical worktree root is stable.
+    pub fn refresh(&mut self) -> Result<(), GitError> {
+        let fresh = Self::open(&self.path)?;
+        self.id = fresh.id;
+        self.path = fresh.path;
+        self.inner = fresh.inner;
+        Ok(())
     }
 
     /// The workspace-nav summary for this repository (folds [`Self::status`]).
@@ -332,6 +364,125 @@ impl Repo {
         })
     }
 
+    /// Every branch of this repository — local and remote-tracking — for the
+    /// Branches tab (IPC `load_branches`, SPEC §10.3).
+    ///
+    /// Sorted with the checked-out branch first, then by name. A branch's
+    /// `ahead`/`behind` are against its configured upstream; untracked branches
+    /// (and remote branches) report 0/0. Symbolic pseudo-refs (e.g.
+    /// `origin/HEAD`) are not branches and are skipped.
+    pub fn branches(&self) -> Result<Vec<Branch>, GitError> {
+        let head = self.inner.head().map_err(GitError::Gix)?;
+        let current = if head.is_detached() {
+            None
+        } else {
+            head.referent_name()
+                .map(|r| r.to_string())
+                .and_then(|r| r.strip_prefix("refs/heads/").map(String::from))
+        };
+
+        let mut out = Vec::new();
+        let platform = self.inner.references().map_err(GitError::Gix)?;
+        for (is_remote, iter) in [
+            (false, platform.local_branches().map_err(GitError::Gix)?),
+            (true, platform.remote_branches().map_err(GitError::Gix)?),
+        ] {
+            for reference in iter {
+                let reference = reference.map_err(GitError::Gix)?;
+                let full = String::from_utf8_lossy(reference.name().as_bstr()).into_owned();
+                let prefix = if is_remote { "refs/remotes/" } else { "refs/heads/" };
+                let Some(name) = full.strip_prefix(prefix) else {
+                    continue; // not a branch under the expected namespace
+                };
+                let Some(oid) = reference.try_id().map(|id| id.detach()) else {
+                    continue; // symbolic (origin/HEAD): no object, not a branch
+                };
+                let is_current = !is_remote && current.as_deref() == Some(name);
+                let upstream = (!is_remote).then(|| upstream_of(&self.inner, name)).flatten();
+                let (ahead, behind) = match (&upstream, is_current) {
+                    (Some(up), _) if up.oid != oid => ahead_behind(&self.inner, oid, up.oid)?,
+                    _ => (0, 0),
+                };
+                out.push(Branch {
+                    name: name.to_string(),
+                    is_current,
+                    is_remote,
+                    upstream: upstream.map(|up| up.name),
+                    ahead,
+                    behind,
+                    tip: oid.to_string(),
+                });
+            }
+        }
+        // The checked-out branch first, then by display name.
+        out.sort_by(|a, b| b.is_current.cmp(&a.is_current).then_with(|| a.name.cmp(&b.name)));
+        Ok(out)
+    }
+
+    /// Every configured remote (a `[remote "…"]` section) for the Remotes tab
+    /// (IPC `load_remotes`, SPEC §10.3), in git's bytewise-sorted order.
+    pub fn remotes(&self) -> Result<Vec<Remote>, GitError> {
+        let config = self.inner.config_snapshot();
+        let mut out = Vec::new();
+        for name in self.inner.remote_names().iter() {
+            let name = String::from_utf8_lossy(name).into_owned();
+            let fetch = config
+                .try_value::<String>(&format!("remote.{name}.url"))
+                .map_err(|e| GitError::Object(e.to_string()))?;
+            let push = config
+                .try_value::<String>(&format!("remote.{name}.pushurl"))
+                .map_err(|e| GitError::Object(e.to_string()))?;
+            let url = fetch.clone().or(push.clone()).unwrap_or_default();
+            out.push(Remote { name, url, fetch, push });
+        }
+        Ok(out)
+    }
+
+    /// Every tag for the Tags tab (IPC `load_tags`, SPEC §10.3), sorted by name.
+    ///
+    /// Annotated tags (tag objects) carry their message; their `target` is
+    /// peeled to the commit they point at. Lightweight tags point straight at a
+    /// commit (or, rarely, another object, which is reported as-is).
+    pub fn tags(&self) -> Result<Vec<Tag>, GitError> {
+        let mut out = Vec::new();
+        let platform = self.inner.references().map_err(GitError::Gix)?;
+        for reference in platform.tags().map_err(GitError::Gix)? {
+            let reference = reference.map_err(GitError::Gix)?;
+            let full = String::from_utf8_lossy(reference.name().as_bstr()).into_owned();
+            let Some(name) = full.strip_prefix("refs/tags/") else {
+                continue;
+            };
+            let Some(oid) = reference.try_id().map(|id| id.detach()) else {
+                continue;
+            };
+            let mut tag = Tag {
+                name: name.to_string(),
+                target: oid.to_string(),
+                annotated: false,
+                message: None,
+            };
+            if let Ok(tag_obj) = self.inner.find_tag(oid) {
+                tag.annotated = true;
+                // The raw tag-object message; whitespace-only → no message.
+                if let Ok(ref_) = tag_obj.decode() {
+                    let message = String::from_utf8_lossy(ref_.message).trim().to_string();
+                    tag.message = (!message.is_empty()).then_some(message);
+                }
+                if let Ok(target) = tag_obj.target_id() {
+                    let peeled = target.detach();
+                    if self.inner.find_commit(peeled).is_ok() {
+                        tag.target = peeled.to_string();
+                    }
+                }
+            } else if self.inner.find_commit(oid).is_ok() {
+                // Lightweight: `target` is already the commit.
+            }
+            out.push(tag);
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
     /// Find a commit by its (short or full) hex object id.
     ///
     /// Any failure to read the object (missing, not a commit, corrupt) is
@@ -380,7 +531,7 @@ struct Upstream {
 /// Resolve `branch.<name>.remote` / `branch.<name>.merge` in the config to the
 /// remote-tracking ref (e.g. `refs/remotes/origin/main`) and its object.
 /// `None` when the branch has no upstream or the remote-tracking ref is absent.
-fn upstream_of(repo: &gix::Repository, branch: &str) -> Option<Upstream> {
+pub(crate) fn upstream_of(repo: &gix::Repository, branch: &str) -> Option<Upstream> {
     let config = repo.config_snapshot();
     let remote = config
         .try_value::<String>(&format!("branch.{branch}.remote"))
@@ -596,6 +747,7 @@ fn compute_status(repo: &gix::Repository) -> Result<Status, GitError> {
     Ok(Status {
         branch,
         detached_head,
+        head: head_id.map(|oid| oid.to_string()),
         ahead,
         behind,
         upstream: upstream.map(|up| up.name),

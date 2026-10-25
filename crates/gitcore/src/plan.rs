@@ -12,7 +12,7 @@ use git_gotten_protocol::{
     Author, ChangeKind, CommandPlan, GitStep, Op, Preview, ResetMode, Risk, Status,
 };
 
-use crate::{GitError, Repo};
+use crate::{upstream_of, GitError, Repo};
 
 /// Join a git argv into the `display` string shown in the UI.
 ///
@@ -63,7 +63,15 @@ impl Repo {
                 remote,
                 branch,
                 force,
-            } => plan_push(&self.inner, &status, remote, branch.as_deref(), *force),
+                set_upstream,
+            } => plan_push(
+                &self.inner,
+                &status,
+                remote,
+                branch.as_deref(),
+                *force,
+                *set_upstream,
+            ),
             Op::BranchCreate {
                 name,
                 from,
@@ -75,6 +83,33 @@ impl Repo {
             Op::Unstage { path } => plan_unstage(&status, path.as_deref()),
             Op::Discard { path } => plan_discard(self, path),
             Op::StageHunks { path, selected } => plan_stage_hunks(self, path, selected),
+            Op::BranchDelete {
+                name,
+                remote,
+                force,
+            } => plan_branch_delete(self, name, remote.as_deref(), *force),
+            Op::BranchRename { name, new_name } => plan_branch_rename(self, name, new_name),
+            Op::BranchSetUpstream {
+                branch,
+                remote,
+                name,
+            } => plan_branch_set_upstream(self, branch, remote.as_deref(), name),
+            Op::RemoteAdd { name, url } => plan_remote_add(self, name, url),
+            Op::RemoteRemove { name } => plan_remote_remove(self, name),
+            Op::RemoteFetch { remote, refspec } => plan_remote_fetch(self, remote, refspec.as_deref()),
+            Op::TagCreate {
+                name,
+                target,
+                annotated,
+                message,
+            } => plan_tag_create(self, name, target, *annotated, message.as_deref()),
+            Op::TagCheckout { name, force } => plan_tag_checkout(self, name, *force),
+            Op::TagDelete { name, remote } => plan_tag_delete(self, name, remote.as_deref()),
+            Op::TagPush {
+                remote,
+                name,
+                force,
+            } => plan_tag_push(self, remote, name, *force),
         }
     }
 }
@@ -224,6 +259,7 @@ fn plan_push(
     remote: &str,
     branch: Option<&str>,
     force: bool,
+    set_upstream: bool,
 ) -> Result<CommandPlan, GitError> {
     if remote.trim().is_empty() {
         return Err(GitError::UnknownRemote {
@@ -245,6 +281,9 @@ fn plan_push(
     let mut argv = vec!["git".to_string(), "push".to_string()];
     if force {
         argv.push("--force".to_string());
+    }
+    if set_upstream {
+        argv.push("-u".to_string());
     }
     argv.push(remote.to_string());
     argv.push(branch.clone());
@@ -271,6 +310,9 @@ fn plan_push(
     let mut lines = Vec::new();
     if force {
         lines.push("remote commits will be overwritten".to_string());
+    }
+    if set_upstream {
+        lines.push(format!("sets `{branch}`'s upstream to {remote}/{branch}"));
     }
     if status.ahead > 0 {
         lines.push(format!(
@@ -318,9 +360,10 @@ fn short_oid(oid: &Option<String>) -> String {
         .map(|o| o.chars().take(12).collect())
         .unwrap_or_default()
 }
-/// Ref-name characters git rejects in a branch name (a leading `-` is checked
-/// separately; a name may not be empty or contain whitespace/control chars).
-fn invalid_branch_name(name: &str) -> bool {
+/// Ref-name characters git rejects (a leading `-` is checked separately; a name
+/// may not be empty or contain whitespace/control chars). Shared by branch, tag
+/// and remote names.
+fn invalid_ref_name(name: &str) -> bool {
     if name.is_empty()
         || name.starts_with('-')
         || name.ends_with('.')
@@ -365,8 +408,8 @@ fn plan_branch_create(
     from: &str,
     checkout: bool,
 ) -> Result<CommandPlan, GitError> {
-    if invalid_branch_name(name) {
-        return Err(GitError::BadBranchName {
+    if invalid_ref_name(name) {
+        return Err(GitError::BadRefName {
             name: name.to_string(),
         });
     }
@@ -428,6 +471,577 @@ fn plan_branch_create(
             headline: format!("Create branch {name}"),
             lines,
             requires_type_to_confirm: false,
+        }),
+    })
+}
+/// `git branch -d <name>` (or `-D` to force), or `git push <remote> --delete
+/// <name>` when `remote` is set — `Mutating` either way.
+///
+/// The branch must exist (a plan is where a stale UI pick becomes a clear
+/// error). Deleting the *checked-out* branch shows an effect (git will refuse
+/// until HEAD moves); a branch with a remote upstream says the remote copy is
+/// kept; a remote delete says the ref leaves the remote.
+fn plan_branch_delete(
+    repo: &Repo,
+    name: &str,
+    remote: Option<&str>,
+    force: bool,
+) -> Result<CommandPlan, GitError> {
+    if invalid_ref_name(name) {
+        return Err(GitError::BadRefName {
+            name: name.to_string(),
+        });
+    }
+
+    let step = match remote {
+        None => {
+            if repo
+                .inner
+                .find_reference(format!("refs/heads/{name}").as_str())
+                .is_err()
+            {
+                return Err(GitError::UnknownBranch {
+                    name: name.to_string(),
+                });
+            }
+            let argv = vec![
+                "git".to_string(),
+                "branch".to_string(),
+                if force { "-D".to_string() } else { "-d".to_string() },
+                name.to_string(),
+            ];
+
+            // Blast radius: what the user thinks gets deleted.
+            let mut effect = String::new();
+            if repo.status()?.branch.as_deref() == Some(name) {
+                effect.push_str("the branch is checked out — git will refuse until HEAD moves");
+            }
+            if let Some(up) = upstream_of(&repo.inner, name) {
+                if !effect.is_empty() {
+                    effect.push_str("; ");
+                }
+                effect.push_str(&format!(
+                    "the remote branch {} is kept",
+                    up.name
+                ));
+            }
+            let effect = (!effect.is_empty()).then_some(effect);
+
+            let mut lines = Vec::new();
+            if force {
+                lines.push("force: deletes even unmerged work".to_string());
+            } else {
+                lines.push("git refuses if the branch has unmerged commits (use force to override)"
+                    .to_string());
+            }
+
+            GitStep {
+                argv,
+                summary: format!("delete branch {name}"),
+                risk: Risk::Mutating,
+                effect,
+                input: None,
+            }
+        }
+        Some(remote) => {
+            if !repo.inner.remote_names().iter().any(|n| *n == remote) {
+                return Err(GitError::UnknownRemote {
+                    name: remote.to_string(),
+                });
+            }
+            let full = format!("refs/remotes/{remote}/{name}");
+            if repo.inner.find_reference(full.as_str()).is_err() {
+                return Err(GitError::UnknownBranch {
+                    name: format!("{remote}/{name}"),
+                });
+            }
+            GitStep {
+                argv: vec![
+                    "git".to_string(),
+                    "push".to_string(),
+                    remote.to_string(),
+                    "--delete".to_string(),
+                    name.to_string(),
+                ],
+                summary: format!("delete {name} from {remote}"),
+                risk: Risk::Mutating,
+                effect: Some(format!("the branch is deleted from {remote}")),
+                input: None,
+            }
+        }
+    };
+
+    let display = format_argv(&step.argv);
+    Ok(CommandPlan {
+        steps: vec![step.clone()],
+        display,
+        preview: Some(Preview {
+            headline: format!("Delete branch {name}"),
+            lines: vec![step.effect.clone().unwrap_or_default()],
+            requires_type_to_confirm: false,
+        }),
+    })
+}
+
+/// `git branch --move <name> <new_name>` — `Mutating`.
+fn plan_branch_rename(
+    repo: &Repo,
+    name: &str,
+    new_name: &str,
+) -> Result<CommandPlan, GitError> {
+    if invalid_ref_name(name) || invalid_ref_name(new_name) {
+        return Err(GitError::BadRefName {
+            name: if invalid_ref_name(name) { name } else { new_name }.to_string(),
+        });
+    }
+    if repo
+        .inner
+        .find_reference(format!("refs/heads/{name}").as_str())
+        .is_err()
+    {
+        return Err(GitError::UnknownBranch {
+            name: name.to_string(),
+        });
+    }
+    if repo
+        .inner
+        .find_reference(format!("refs/heads/{new_name}").as_str())
+        .is_ok()
+    {
+        return Err(GitError::BranchExists {
+            name: new_name.to_string(),
+        });
+    }
+
+    let argv = vec![
+        "git".to_string(),
+        "branch".to_string(),
+        "--move".to_string(),
+        name.to_string(),
+        new_name.to_string(),
+    ];
+    let display = format_argv(&argv);
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv: argv.clone(),
+            summary: format!("rename {name} to {new_name}"),
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+        }],
+        display,
+        preview: Some(Preview {
+            headline: format!("Rename {name} → {new_name}"),
+            lines: vec![],
+            requires_type_to_confirm: false,
+        }),
+    })
+}
+
+/// `git branch <branch> --set-upstream-to=<remote>/<name>` (or
+/// `--unset-upstream` when `remote` is `None`) — `Mutating`.
+fn plan_branch_set_upstream(
+    repo: &Repo,
+    branch: &str,
+    remote: Option<&str>,
+    name: &str,
+) -> Result<CommandPlan, GitError> {
+    if invalid_ref_name(branch) {
+        return Err(GitError::BadRefName {
+            name: branch.to_string(),
+        });
+    }
+    if repo
+        .inner
+        .find_reference(format!("refs/heads/{branch}").as_str())
+        .is_err()
+    {
+        return Err(GitError::UnknownBranch {
+            name: branch.to_string(),
+        });
+    }
+
+    let (argv, summary) = match remote {
+        None => (
+            vec![
+                "git".to_string(),
+                "branch".to_string(),
+                branch.to_string(),
+                "--unset-upstream".to_string(),
+            ],
+            format!("clear {branch}'s upstream"),
+        ),
+        Some(remote) => {
+            if !repo.inner.remote_names().iter().any(|n| *n == remote) {
+                return Err(GitError::UnknownRemote {
+                    name: remote.to_string(),
+                });
+            }
+            let full = format!("refs/remotes/{remote}/{name}");
+            if repo.inner.find_reference(full.as_str()).is_err() {
+                return Err(GitError::UnknownBranch {
+                    name: format!("{remote}/{name}"),
+                });
+            }
+            (
+                vec![
+                    "git".to_string(),
+                    "branch".to_string(),
+                    branch.to_string(),
+                    format!("--set-upstream-to={remote}/{name}"),
+                ],
+                format!("set {branch}'s upstream to {remote}/{name}"),
+            )
+        }
+    };
+    let display = format_argv(&argv);
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv: argv.clone(),
+            summary,
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+        }],
+        display,
+        preview: None,
+    })
+}
+
+/// `git remote add <name> <url>` — `Mutating`.
+fn plan_remote_add(repo: &Repo, name: &str, url: &str) -> Result<CommandPlan, GitError> {
+    if invalid_ref_name(name) {
+        return Err(GitError::BadRefName {
+            name: name.to_string(),
+        });
+    }
+    if url.trim().is_empty() {
+        return Err(GitError::EmptyTarget);
+    }
+    if repo.inner.remote_names().iter().any(|n| *n == name) {
+        return Err(GitError::RemoteExists {
+            name: name.to_string(),
+        });
+    }
+
+    let argv = vec![
+        "git".to_string(),
+        "remote".to_string(),
+        "add".to_string(),
+        name.to_string(),
+        url.to_string(),
+    ];
+    let display = format_argv(&argv);
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv: argv.clone(),
+            summary: format!("add remote {name}"),
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+        }],
+        display,
+        preview: None,
+    })
+}
+
+/// `git remote remove <name>` — `Mutating`; the effect counts the
+/// remote-tracking branches that disappear with the remote.
+fn plan_remote_remove(repo: &Repo, name: &str) -> Result<CommandPlan, GitError> {
+    if !repo.inner.remote_names().iter().any(|n| *n == name) {
+        return Err(GitError::UnknownRemote {
+            name: name.to_string(),
+        });
+    }
+
+    // The refs that will be deleted: this remote's tracking branches.
+    let prefix = format!("refs/remotes/{name}/");
+    let count = repo
+        .inner
+        .references()
+        .map_err(GitError::Gix)?
+        .remote_branches()
+        .map_err(GitError::Gix)?
+        .filter_map(|r| r.ok())
+        .filter(|r| String::from_utf8_lossy(r.name().as_bstr()).starts_with(&prefix))
+        .count();
+
+    let argv = vec!["git".to_string(), "remote".to_string(), "remove".to_string(), name.to_string()];
+    let display = format_argv(&argv);
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv: argv.clone(),
+            summary: format!("remove remote {name}"),
+            risk: Risk::Mutating,
+            effect: Some(format!(
+                "deletes {count} remote-tracking branch{} of `{name}`",
+                if count == 1 { "" } else { "es" }
+            )),
+            input: None,
+        }],
+        display,
+        preview: None,
+    })
+}
+
+/// `git fetch <remote> [refspec]` — `Mutating` (it updates the remote-tracking
+/// refs; it never touches the working tree).
+fn plan_remote_fetch(
+    repo: &Repo,
+    remote: &str,
+    refspec: Option<&str>,
+) -> Result<CommandPlan, GitError> {
+    if !repo.inner.remote_names().iter().any(|n| *n == remote) {
+        return Err(GitError::UnknownRemote {
+            name: remote.to_string(),
+        });
+    }
+
+    let mut argv = vec!["git".to_string(), "fetch".to_string(), remote.to_string()];
+    let summary = match refspec {
+        Some(r) => {
+            argv.push(r.to_string());
+            format!("fetch {r} from {remote}")
+        }
+        None => format!("fetch {remote}"),
+    };
+    let display = format_argv(&argv);
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv: argv.clone(),
+            summary,
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+        }],
+        display,
+        preview: None,
+    })
+}
+
+/// `git tag [-a] [-m <message>] <name> <target>` — `Mutating`.
+fn plan_tag_create(
+    repo: &Repo,
+    name: &str,
+    target: &str,
+    annotated: bool,
+    message: Option<&str>,
+) -> Result<CommandPlan, GitError> {
+    if invalid_ref_name(name) {
+        return Err(GitError::BadRefName {
+            name: name.to_string(),
+        });
+    }
+    let target_commit = repo.commit_at(target)?;
+    let subject = target_commit
+        .message()
+        .map_err(|e| GitError::Object(e.to_string()))?
+        .summary()
+        .to_string();
+
+    let mut argv = vec!["git".to_string(), "tag".to_string()];
+    if annotated {
+        argv.push("-a".to_string());
+    }
+    argv.push(name.to_string());
+    if annotated {
+        // `-m` never opens an editor; a `None` message becomes an explicit empty one.
+        argv.push("-m".to_string());
+        argv.push(message.unwrap_or_default().to_string());
+    }
+    argv.push(target.to_string());
+
+    let mut lines = vec![format!("at {target}: {subject}")];
+    if repo
+        .inner
+        .find_reference(format!("refs/tags/{name}").as_str())
+        .is_ok()
+    {
+        lines.push(format!("tag `{name}` already exists — git will fail"));
+    }
+
+    let display = format_argv(&argv);
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv: argv.clone(),
+            summary: format!("create tag {name} at {}", short_hash(target)),
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+        }],
+        display,
+        preview: Some(Preview {
+            headline: format!("Create tag {name}"),
+            lines,
+            requires_type_to_confirm: false,
+        }),
+    })
+}
+
+/// `git switch --detach <name>` — `Mutating`; checks the tag out without a branch.
+fn plan_tag_checkout(repo: &Repo, name: &str, force: bool) -> Result<CommandPlan, GitError> {
+    if invalid_ref_name(name) {
+        return Err(GitError::BadRefName {
+            name: name.to_string(),
+        });
+    }
+    if repo
+        .inner
+        .find_reference(format!("refs/tags/{name}").as_str())
+        .is_err()
+    {
+        return Err(GitError::UnknownTag {
+            name: name.to_string(),
+        });
+    }
+
+    let mut argv = vec![
+        "git".to_string(),
+        "switch".to_string(),
+        "--detach".to_string(),
+        name.to_string(),
+    ];
+    if force {
+        argv.push("--force".to_string());
+    }
+    let display = format_argv(&argv);
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv: argv.clone(),
+            summary: format!("check out tag {name} (detached)"),
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+        }],
+        display,
+        preview: None,
+    })
+}
+
+/// `git tag -d <name>` (or `git push <remote> --delete <name>` when `remote` is
+/// set) — `Mutating` either way.
+fn plan_tag_delete(
+    repo: &Repo,
+    name: &str,
+    remote: Option<&str>,
+) -> Result<CommandPlan, GitError> {
+    if invalid_ref_name(name) {
+        return Err(GitError::BadRefName {
+            name: name.to_string(),
+        });
+    }
+
+    let step = match remote {
+        None => {
+            // Deleting a local tag requires the tag to exist here.
+            if repo
+                .inner
+                .find_reference(format!("refs/tags/{name}").as_str())
+                .is_err()
+            {
+                return Err(GitError::UnknownTag {
+                    name: name.to_string(),
+                });
+            }
+            GitStep {
+                argv: vec![
+                    "git".to_string(),
+                    "tag".to_string(),
+                    "-d".to_string(),
+                    name.to_string(),
+                ],
+                summary: format!("delete tag {name}"),
+                risk: Risk::Mutating,
+                effect: None,
+                input: None,
+            }
+        }
+        Some(remote) => {
+            // Deleting on a remote does not require a local copy (the local tag may
+            // already be gone); a stale remote tag fails at run time with git's error.
+            if !repo.inner.remote_names().iter().any(|n| *n == remote) {
+                return Err(GitError::UnknownRemote {
+                    name: remote.to_string(),
+                });
+            }
+            GitStep {
+                argv: vec![
+                    "git".to_string(),
+                    "push".to_string(),
+                    remote.to_string(),
+                    "--delete".to_string(),
+                    name.to_string(),
+                ],
+                summary: format!("delete {name} from {remote}"),
+                risk: Risk::Mutating,
+                effect: Some(format!("the tag is deleted from {remote}")),
+                input: None,
+            }
+        }
+    };
+    let display = format_argv(&step.argv);
+    Ok(CommandPlan {
+        steps: vec![step.clone()],
+        display,
+        preview: Some(Preview {
+            headline: format!("Delete tag {name}"),
+            lines: vec![step.effect.clone().unwrap_or_default()],
+            requires_type_to_confirm: false,
+        }),
+    })
+}
+
+/// `git push [--force] <remote> <tag>` — `Mutating`, or `Dangerous` (type-to-confirm)
+/// when force-pushing (a tag is supposed to be immutable).
+fn plan_tag_push(
+    repo: &Repo,
+    remote: &str,
+    name: &str,
+    force: bool,
+) -> Result<CommandPlan, GitError> {
+    if !repo.inner.remote_names().iter().any(|n| *n == remote) {
+        return Err(GitError::UnknownRemote {
+            name: remote.to_string(),
+        });
+    }
+    if repo
+        .inner
+        .find_reference(format!("refs/tags/{name}").as_str())
+        .is_err()
+    {
+        return Err(GitError::UnknownTag {
+            name: name.to_string(),
+        });
+    }
+
+    let mut argv = vec!["git".to_string(), "push".to_string()];
+    if force {
+        argv.push("--force".to_string());
+    }
+    argv.push(remote.to_string());
+    argv.push(name.to_string());
+
+    let effect = force.then(|| format!("force-push `{name}` — the remote tag will be replaced"));
+    let display = format_argv(&argv);
+    let preview_line =
+        effect.clone().unwrap_or_else(|| "the tag is published to the remote".to_string());
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv: argv.clone(),
+            summary: format!("push tag {name} to {remote}"),
+            risk: if force {
+                Risk::Dangerous
+            } else {
+                Risk::Mutating
+            },
+            effect,
+            input: None,
+        }],
+        display,
+        preview: Some(Preview {
+            headline: format!("Push tag {name} to {remote}"),
+            lines: vec![preview_line],
+            requires_type_to_confirm: force,
         }),
     })
 }
@@ -971,6 +1585,7 @@ mod tests {
                 remote: "origin".into(),
                 branch: None,
                 force: false,
+                set_upstream: false,
             })
             .unwrap();
 
@@ -1004,6 +1619,7 @@ mod tests {
                 remote: "origin".into(),
                 branch: None,
                 force: true,
+                set_upstream: false,
             })
             .unwrap();
 
@@ -1031,6 +1647,7 @@ mod tests {
                 remote: "origin".into(),
                 branch: None,
                 force: false,
+                set_upstream: false,
             })
             .unwrap_err();
         assert!(
@@ -1048,6 +1665,7 @@ mod tests {
                 remote: "origin".into(),
                 branch: None,
                 force: false,
+                set_upstream: false,
             })
             .unwrap_err();
         assert!(matches!(err, GitError::DetachedHead), "got {err:?}");
@@ -1085,6 +1703,7 @@ mod tests {
                 remote: "origin".into(),
                 branch: Some("main".into()),
                 force: true,
+                set_upstream: false,
             }).unwrap()
             .steps[0]
             .risk,
@@ -1201,7 +1820,7 @@ mod tests {
                 })
                 .unwrap_err();
             assert!(
-                matches!(err, GitError::BadBranchName { .. }),
+                matches!(err, GitError::BadRefName { .. }),
                 "name {name:?}: got {err:?}"
             );
         }

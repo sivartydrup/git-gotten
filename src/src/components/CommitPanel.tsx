@@ -105,7 +105,14 @@ export function CommitPanel() {
     ? { kind: "checkout", target: target.trim(), force: false }
     : null;
   const pushOp: Op | null = activeStatus?.branch
-    ? { kind: "push", remote: "origin", branch: activeStatus.branch, force }
+    ? {
+        kind: "push",
+        remote: "origin",
+        branch: activeStatus.branch,
+        force,
+        // `git push` on an untracked branch needs `-u` to have anywhere to go.
+        set_upstream: !activeStatus.upstream,
+      }
     : null;
   const switchHint = usePlanHint(activeId, checkoutOp);
   const pushHint = usePlanHint(activeId, pushOp);

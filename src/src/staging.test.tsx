@@ -57,6 +57,7 @@ function statusWithChanges(): Status {
   return {
     branch: "main",
     detached_head: null,
+    head: null,
     ahead: 0,
     behind: 0,
     upstream: null,

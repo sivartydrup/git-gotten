@@ -33,6 +33,7 @@ const commitPlan: CommandPlan = {
       summary: "Commit the staged changes.",
       risk: "Mutating",
       effect: null,
+      input: null,
     },
   ],
   preview: {
@@ -96,7 +97,7 @@ test("requestPreview surfaces the IPC error and keeps the dialog closed", async 
   planOp.mockRejectedValueOnce(new Error("repository is not open: /repo/x"));
 
   await act(async () => {
-    await useActivityStore.getState().requestPreview("/repo/x", { kind: "push", remote: "origin", branch: null, force: false });
+    await useActivityStore.getState().requestPreview("/repo/x", { kind: "push", remote: "origin", branch: null, force: false, set_upstream: false });
   });
 
   const s = useActivityStore.getState();
@@ -249,6 +250,7 @@ test("Dangerous (force-push) preview requires type-to-confirm before running", a
         summary: "Overwrite origin/main, discarding its history.",
         risk: "Dangerous",
         effect: "force-push main — remote loses 2 commits",
+        input: null,
       },
     ],
     preview: {
@@ -258,7 +260,7 @@ test("Dangerous (force-push) preview requires type-to-confirm before running", a
     },
   };
   useActivityStore.setState({
-    preview: { repo: "/repo/alpha", op: { kind: "push", remote: "origin", branch: "main", force: true }, plan: forcePlan },
+    preview: { repo: "/repo/alpha", op: { kind: "push", remote: "origin", branch: "main", force: true, set_upstream: false }, plan: forcePlan },
   });
 
   render(<PreviewDialog />);
@@ -285,7 +287,7 @@ test("Dangerous (force-push) preview requires type-to-confirm before running", a
   });
   expect(runOp).toHaveBeenCalledWith(
     "/repo/alpha",
-    { kind: "push", remote: "origin", branch: "main", force: true },
+    { kind: "push", remote: "origin", branch: "main", force: true, set_upstream: false },
   );
 });
 

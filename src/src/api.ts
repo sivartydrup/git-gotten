@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  Branch,
   BuildInfo,
   CommandPlan,
   CommitDetail,
@@ -11,10 +12,12 @@ import type {
   OpFinished,
   OpResult,
   OpStarted,
+  Remote,
   RepoId,
   RepoMeta,
   Status,
   StatusChanged,
+  Tag,
 } from "./types";
 
 /**
@@ -93,6 +96,38 @@ export async function loadDiff(
     return null;
   }
   return await invoke<FileDiff>("load_diff", { repo, path });
+}
+/**
+ * Load the branches of an open repository (Rust `load_branches` command,
+ * SPEC §10.5). Returns the list, or `null` outside Tauri.
+ */
+export async function loadBranches(repo: RepoId): Promise<Branch[] | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<Branch[]>("load_branches", { repo });
+}
+
+/**
+ * Load the remotes of an open repository (Rust `load_remotes` command,
+ * SPEC §10.5). Returns the list, or `null` outside Tauri.
+ */
+export async function loadRemotes(repo: RepoId): Promise<Remote[] | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<Remote[]>("load_remotes", { repo });
+}
+
+/**
+ * Load the tags of an open repository (Rust `load_tags` command,
+ * SPEC §10.5). Returns the list, or `null` outside Tauri.
+ */
+export async function loadTags(repo: RepoId): Promise<Tag[] | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<Tag[]>("load_tags", { repo });
 }
 
 /**

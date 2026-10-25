@@ -18,8 +18,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use git_gotten_protocol::{
-    CommandPlan, CommitDetail, FileDiff, Graph, LogEntry, Op, OpResult, OpStarted, RepoId,
-    RepoMeta, Risk, Status, StatusChanged,
+    Branch, CommandPlan, CommitDetail, FileDiff, Graph, LogEntry, Op, OpResult, OpStarted, Remote,
+    RepoId, RepoMeta, Risk, Status, StatusChanged, Tag,
 };
 use gitcore::{GitError, GitExecutor};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
@@ -68,6 +68,19 @@ impl RepoRegistry {
     /// Re-derive a repository's live status, or `None` if it is not open.
     pub fn refresh_status(&self, id: &str) -> Option<Status> {
         self.repos.lock().get(id)?.status().ok()
+    }
+
+    /// Re-open a registered repository's `gix` handle in place.
+    ///
+    /// The handle caches the repository's configuration (and the refs it
+    /// discovered) at open time; after an op that touches `branch.*`/remote
+    /// config, this is how the read model (`status`, `branches`, `remotes`, and
+    /// the next [`plan`](gitcore::Repo::plan)) sees the new state. A repository
+    /// whose path has vanished keeps its previous handle.
+    pub fn refresh(&self, id: &str) {
+        if let Some(repo) = self.repos.lock().get_mut(id) {
+            let _ = repo.refresh();
+        }
     }
 
     /// All open repository ids.
@@ -185,6 +198,32 @@ impl Backend {
             .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
         Ok(repo.diff_file(path)?)
     }
+    /// The branches of an open repository (IPC `load_branches`, SPEC §10.5).
+    pub fn load_branches(&self, id: &str) -> Result<Vec<Branch>, AppError> {
+        let repos = self.registry.lock_repos();
+        let repo = repos
+            .get(id)
+            .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
+        Ok(repo.branches()?)
+    }
+
+    /// The remotes of an open repository (IPC `load_remotes`, SPEC §10.5).
+    pub fn load_remotes(&self, id: &str) -> Result<Vec<Remote>, AppError> {
+        let repos = self.registry.lock_repos();
+        let repo = repos
+            .get(id)
+            .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
+        Ok(repo.remotes()?)
+    }
+
+    /// The tags of an open repository (IPC `load_tags`, SPEC §10.5).
+    pub fn load_tags(&self, id: &str) -> Result<Vec<Tag>, AppError> {
+        let repos = self.registry.lock_repos();
+        let repo = repos
+            .get(id)
+            .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
+        Ok(repo.tags()?)
+    }
 
     /// Compile `op` into its visible `CommandPlan` for an open repository.
     ///
@@ -214,6 +253,10 @@ impl Backend {
             (repo.id.clone(), repo.path.clone())
         };
         let result = self.executor.run_plan(&repo_id, &repo_path, plan).await;
+        // An op may have changed the repository's config or refs (`branch.*`,
+        // remotes, tags): the registry's `gix` handle caches both at open time,
+        // so refresh it to keep the read model and the next `plan` live.
+        self.registry.refresh(&repo_id);
         self.log.record(id, &result);
         Ok(result)
     }
@@ -365,6 +408,23 @@ fn load_diff(
 ) -> Result<FileDiff, AppError> {
     state.load_diff(&repo, &path)
 }
+/// The branches of an open repository (IPC `load_branches`, SPEC §10.5).
+#[tauri::command]
+fn load_branches(repo: RepoId, state: State<'_, Backend>) -> Result<Vec<Branch>, AppError> {
+    state.load_branches(&repo)
+}
+
+/// The remotes of an open repository (IPC `load_remotes`, SPEC §10.5).
+#[tauri::command]
+fn load_remotes(repo: RepoId, state: State<'_, Backend>) -> Result<Vec<Remote>, AppError> {
+    state.load_remotes(&repo)
+}
+
+/// The tags of an open repository (IPC `load_tags`, SPEC §10.5).
+#[tauri::command]
+fn load_tags(repo: RepoId, state: State<'_, Backend>) -> Result<Vec<Tag>, AppError> {
+    state.load_tags(&repo)
+}
 
 /// Compile an operation into its visible `CommandPlan` without running it (IPC
 /// `plan_op`): drives the inline command hints and the preview dialog, so the
@@ -483,6 +543,9 @@ pub fn run() {
             load_graph,
             load_commit,
             load_diff,
+            load_branches,
+            load_remotes,
+            load_tags,
             plan_op,
             run_op,
             load_log
@@ -800,6 +863,62 @@ mod tests {
         let (backend, _rx) = Backend::new();
         let plan = noop_plan("git noop");
         let err = backend.run_op("/does/not/exist", &plan).await.unwrap_err();
+        assert!(matches!(err, AppError::RepoNotOpen(_)), "got {err}");
+    }
+    /// Regression: an op that rewrites git config (`branch.*`) must be visible
+    /// through the registry's `gix` handle — it caches the config at open time,
+    /// so `run_op` refreshes the handle before the next read.
+    #[tokio::test]
+    async fn run_op_refreshes_the_cached_config_handle() {
+        let (backend, _rx) = Backend::new();
+        let mut fx = testutil::Fixture::new("config-refresh");
+        fx.commit_file("a.txt", "one\n", "c1");
+        let _ = fx.add_origin("main"); // main tracks origin/main in config
+        backend.open(fx.id()).unwrap();
+        assert_eq!(
+            backend.refresh_status(fx.id()).unwrap().upstream.as_deref(),
+            Some("origin/main")
+        );
+
+        let op = Op::BranchSetUpstream {
+            branch: "main".into(),
+            remote: None,
+            name: String::new(),
+        };
+        let plan = backend.plan(fx.id(), &op).unwrap();
+        let result = backend.run_op(fx.id(), &plan).await.unwrap();
+        assert!(result.ok, "stderr: {}", result.stderr);
+
+        // The unset must be visible: without the post-op refresh the stale
+        // handle would still report the pre-op upstream.
+        assert_eq!(
+            backend.refresh_status(fx.id()).unwrap().upstream,
+            None
+        );
+    }
+    /// The ref loaders see the fixture's branches, remote, and tags.
+    #[test]
+    fn ref_loaders_read_live_refs() {
+        let (backend, _rx) = Backend::new();
+        let mut fx = testutil::Fixture::new("ref-loaders");
+        fx.commit_file("a.txt", "one\n", "c1");
+        let _ = fx.add_origin("main");
+        let _ = fx.git(&["branch", "side"]);
+        let head = fx.git(&["rev-parse", "HEAD"]);
+        let _ = fx.git(&["tag", "v1", &head]);
+        backend.open(fx.id()).unwrap();
+
+        let branches = backend.load_branches(fx.id()).unwrap();
+        let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
+        assert!(names.contains(&"main") && names.contains(&"side"), "got {names:?}");
+
+        let remotes = backend.load_remotes(fx.id()).unwrap();
+        assert_eq!(remotes.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["origin"]);
+
+        let tags = backend.load_tags(fx.id()).unwrap();
+        assert_eq!(tags.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), vec!["v1"]);
+
+        let err = backend.load_branches("/nope").unwrap_err();
         assert!(matches!(err, AppError::RepoNotOpen(_)), "got {err}");
     }
 

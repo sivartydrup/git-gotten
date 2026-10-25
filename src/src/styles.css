@@ -1148,3 +1148,106 @@ code {
 .commit-actions .co-author {
   flex: 0 1 160px;
 }
+
+// ── Refs tabs: branches, remotes, tags (SPEC §10.5) ──────────────────────────
+
+.refs-subtabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px 0;
+}
+
+.refs-panel {
+  flex: 1;
+  overflow: auto;
+  padding: 8px;
+}
+
+.refs-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.refs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.refs-head h3 {
+  margin: 0;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.refs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.refs-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+
+.refs-row.current {
+  background: var(--surface);
+}
+
+.refs-name {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 13px;
+}
+
+.refs-row .refs-upstream,
+.refs-row .refs-msg,
+.refs-row .refs-url {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.badge.sync {
+  color: var(--muted);
+}
+
+.row-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+
+.row-btn {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.dialog-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-top: 8px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 13px;
+}
+
+.dialog-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 13px;
+}

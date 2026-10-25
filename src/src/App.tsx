@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useActivityStore, useBuildInfo, useGraphStore, useRepoStore, useStagingStore } from "./store";
+import { useActivityStore, useBuildInfo, useGraphStore, useRefsStore, useRepoStore, useStagingStore } from "./store";
 import { onOpFinished, onOpStarted, onStatusChanged } from "./api";
 import { TopBar } from "./components/TopBar";
 import { RepoNav } from "./components/RepoNav";
@@ -10,8 +10,9 @@ import { InspectDrawer } from "./components/InspectDrawer";
 import { FilesPanel } from "./components/FilesPanel";
 import { FileDiff } from "./components/FileDiff";
 import { CommitPanel } from "./components/CommitPanel";
+import { RefsPanel, type RefsTab } from "./components/RefsPanel";
 
-type MainTab = "graph" | "files";
+type MainTab = "graph" | "files" | "branches";
 
 /**
  * The Files tab (SPEC §10.2): the changed-files list and the selected file's
@@ -41,6 +42,7 @@ function FilesTab() {
 export default function App() {
   const { load } = useBuildInfo();
   const [tab, setTab] = useState<MainTab>("graph");
+  const [refsTab, setRefsTab] = useState<RefsTab>("branches");
 
   useEffect(() => {
     void load();
@@ -77,6 +79,9 @@ export default function App() {
         // The op may have changed the index/worktree: the staged file's diff
         // (hunk states) must be re-read.
         useStagingStore.getState().reload();
+        // The op may have changed refs (branch/remote/tag): re-read them so
+        // the tabs and the graph's ref labels stay live.
+        void useRefsStore.getState().load(activeId);
       }
     }).then((u) => {
       unlistenFinished = u;
@@ -93,6 +98,7 @@ export default function App() {
   useEffect(() => {
     if (activeId) {
       void useGraphStore.getState().load(activeId);
+      void useRefsStore.getState().load(activeId);
     } else {
       useGraphStore.getState().closeDetail();
     }
@@ -129,9 +135,38 @@ export default function App() {
             >
               Files
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "branches"}
+              className={`tab ${tab === "branches" ? "active" : ""}`}
+              onClick={() => setTab("branches")}
+            >
+              Branches
+            </button>
           </div>
           <div className="main-content">
-            {tab === "graph" ? <GraphCanvas /> : <FilesTab />}
+            {tab === "graph" && <GraphCanvas />}
+            {tab === "files" && <FilesTab />}
+            {tab === "branches" && (
+              <div className="refs-tab">
+                <div className="refs-subtabs">
+                  {(["branches", "remotes", "tags"] as const).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      role="tab"
+                      aria-selected={refsTab === t}
+                      className={`tab ${refsTab === t ? "active" : ""}`}
+                      onClick={() => setRefsTab(t)}
+                    >
+                      {t[0].toUpperCase() + t.slice(1)}
+                    </button>
+                  ))}
+                </div>
+                <RefsPanel tab={refsTab} />
+              </div>
+            )}
           </div>
           <CommitPanel />
         </div>

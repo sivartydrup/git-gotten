@@ -1,16 +1,20 @@
 import { create } from "zustand";
 import {
   fetchBuildInfo,
+  loadBranches,
   loadCommit,
   loadDiff,
   loadGraph,
   loadLog,
+  loadRemotes,
   loadStatus,
+  loadTags,
   openRepo,
   planOp,
   runOp,
 } from "./api";
 import type {
+  Branch,
   BuildInfo,
   CommandPlan,
   CommitDetail,
@@ -21,11 +25,13 @@ import type {
   OpFinished,
   OpResult,
   OpStarted,
+  Remote,
   RepoId,
   Risk,
   RepoMeta,
   Status,
   StatusChanged,
+  Tag,
 } from "./types";
 
 interface BuildInfoState {
@@ -398,6 +404,61 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   setQuery: (query) => set({ query }),
   closeDetail: () =>
     set({ selected: null, detail: null, detailError: null, detailLoading: false }),
+}));
+// ── Refs: branches, remotes, tags (SPEC §10.5) ──────────────────────────────
+
+interface RefsState {
+  /** The active repo's branches (`null`-safe: `[]` when none / outside Tauri). */
+  branches: Branch[];
+  /** The active repo's remotes. */
+  remotes: Remote[];
+  /** The active repo's tags. */
+  tags: Tag[];
+  /** True while the three `load*` round-trips are in flight. */
+  loading: boolean;
+  /** Last ref-load failure (the Rust error string). */
+  error: string | null;
+  /** Load the branches, remotes, and tags of `repo` (SPEC §10.5). */
+  load: (repo: RepoId) => Promise<void>;
+}
+
+/** Client state for the refs tabs (SPEC §10.5). */
+export const useRefsStore = create<RefsState>((set) => ({
+  branches: [],
+  remotes: [],
+  tags: [],
+  loading: false,
+  error: null,
+
+  load: async (repo) => {
+    set({ loading: true, error: null });
+    try {
+      const [branches, remotes, tags] = await Promise.all([
+        loadBranches(repo),
+        loadRemotes(repo),
+        loadTags(repo),
+      ]);
+      if (!branches && !remotes && !tags) {
+        // Outside Tauri: nothing to list, no error.
+        set({ branches: [], remotes: [], tags: [], loading: false });
+        return;
+      }
+      set({
+        branches: branches ?? [],
+        remotes: remotes ?? [],
+        tags: tags ?? [],
+        loading: false,
+      });
+    } catch (e) {
+      set({
+        branches: [],
+        remotes: [],
+        tags: [],
+        loading: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
 }));
 
 // ── Staging: file list + per-file diff (SPEC §10.2) ─────────────────────────

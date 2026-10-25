@@ -77,6 +77,7 @@ test("renders a seeded repo: nav entry, top-bar state, and changes", async () =>
   const status: Status = {
     branch: "main",
     detached_head: null,
+    head: null,
     ahead: 1,
     behind: 0,
     upstream: "origin/main",
@@ -121,6 +122,7 @@ test("shows a clean tree for a repo with no changes", async () => {
       [meta.id]: {
         branch: "main",
         detached_head: null,
+        head: null,
         ahead: 0,
         behind: 0,
         upstream: null,
@@ -166,6 +168,7 @@ test("commit flow: preview shows the exact command, confirm runs and records it"
       [meta.id]: {
         branch: "main",
         detached_head: null,
+        head: null,
         ahead: 0,
         behind: 0,
         upstream: null,

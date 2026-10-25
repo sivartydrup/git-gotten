@@ -38,6 +38,7 @@ const meta: RepoMeta = {
 const status: Status = {
   branch: "main",
   detached_head: null,
+  head: null,
   ahead: 1,
   behind: 0,
   upstream: "origin/main",

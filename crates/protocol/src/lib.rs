@@ -19,6 +19,12 @@
 //! working-tree side of [`FileDiff`], [`Author`], the stdin [`GitStep::input`],
 //! and the staging ops: [`Op::Stage`], [`Op::Unstage`], [`Op::Discard`],
 //! [`Op::StageHunks`].
+//! Stage 6 adds the ref-management shapes (SPEC §10.3): [`Branch`], [`Remote`],
+//! [`Tag`], the `Status.head` oid, and the ops: [`Op::BranchDelete`],
+//! [`Op::BranchRename`], [`Op::BranchSetUpstream`], [`Op::RemoteAdd`],
+//! [`Op::RemoteRemove`], [`Op::RemoteFetch`], [`Op::TagCreate`],
+//! [`Op::TagCheckout`], [`Op::TagDelete`], [`Op::TagPush`] — plus the
+//! `set_upstream` flag on [`Op::Push`].
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -78,6 +84,8 @@ pub struct Status {
     pub branch: Option<String>,
     /// Full OID (hex) of HEAD when detached; `None` when a branch is checked out.
     pub detached_head: Option<String>,
+    /// Full OID (hex) of HEAD (branch tip or detached); `None` on an unborn branch.
+    pub head: Option<String>,
     /// Commits on `branch` that are not on `upstream`.
     pub ahead: u32,
     /// Commits on `upstream` that are not on `branch`.
@@ -118,6 +126,53 @@ pub struct StatusChanged {
     pub repo: RepoId,
     /// The new status.
     pub status: Status,
+}
+
+// ── Refs: branches, remotes, tags (SPEC §10.3, computed by `gix`) ──────────
+
+/// A branch — local or remote-tracking — for the Branches tab (SPEC §10.3).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Branch {
+    /// Display name: `main`, or `origin/feature` for a remote-tracking branch.
+    pub name: String,
+    /// `true` when HEAD is on this branch (always `false` for remote branches).
+    pub is_current: bool,
+    /// `true` for a remote-tracking branch (`refs/remotes/…`).
+    pub is_remote: bool,
+    /// The branch's upstream (e.g. `origin/main`); `None` when untracked.
+    pub upstream: Option<String>,
+    /// Commits on the branch that are not on its upstream (0 when untracked).
+    pub ahead: u32,
+    /// Commits on the upstream that are not on the branch (0 when untracked).
+    pub behind: u32,
+    /// The commit the branch points at.
+    pub tip: Hash,
+}
+
+/// A configured remote (a `[remote "…"]` section) for the Remotes tab (SPEC §10.3).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Remote {
+    /// The remote's name (e.g. `origin`).
+    pub name: String,
+    /// The url to display: the fetch url, falling back to the push url.
+    pub url: String,
+    /// The fetch url (`remote.<name>.url`); `None` when only a push url is set.
+    pub fetch: Option<String>,
+    /// The push url (`remote.<name>.pushurl`); `None` when unset (pushes use the fetch url).
+    pub push: Option<String>,
+}
+
+/// A tag for the Tags tab (SPEC §10.3).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Tag {
+    /// The tag name (e.g. `v1.0`).
+    pub name: String,
+    /// The commit the tag points at (annotated tags are peeled to their commit).
+    pub target: Hash,
+    /// `true` for an annotated tag (a tag object); `false` for a lightweight one.
+    pub annotated: bool,
+    /// The tag object's message (annotated tags); `None` for lightweight tags.
+    pub message: Option<String>,
 }
 
 /// Risk classification of a git step or operation (SPEC §8).
@@ -227,6 +282,9 @@ pub enum Op {
         branch: Option<String>,
         /// Overwrite the remote ref (`--force`): `Dangerous`.
         force: bool,
+        /// Record the remote branch as the push upstream (`-u`).
+        #[serde(default)]
+        set_upstream: bool,
     },
     /// Create a branch at a commit (`git branch <name> <from>`), optionally
     /// switching to it (graph context menu, SPEC §10.1).
@@ -276,6 +334,87 @@ pub enum Op {
         path: String,
         /// Indices (into the unstaged hunk list) to stage.
         selected: Vec<usize>,
+    },
+    /// Delete a branch: locally (`git branch -d/-D`), or on a remote
+    /// (`git push <remote> --delete <name>`) when `remote` is set.
+    BranchDelete {
+        /// The branch name.
+        name: String,
+        /// `None` = a local branch; `Some` = delete that branch on this remote.
+        remote: Option<String>,
+        /// Force-delete unmerged work locally (`-D`). Ignored for remote deletes.
+        force: bool,
+    },
+    /// Rename a branch (`git branch --move <name> <new_name>`).
+    BranchRename {
+        /// The current branch name.
+        name: String,
+        /// The new name.
+        new_name: String,
+    },
+    /// Set (or clear) a local branch's upstream (`git branch --set-upstream-to`
+    /// / `--unset-upstream`).
+    BranchSetUpstream {
+        /// The local branch.
+        branch: String,
+        /// The remote to track; `None` clears the upstream.
+        remote: Option<String>,
+        /// The remote branch to track (used when `remote` is set).
+        name: String,
+    },
+    /// Add a remote (`git remote add <name> <url>`).
+    RemoteAdd {
+        /// The new remote's name.
+        name: String,
+        /// Its fetch url.
+        url: String,
+    },
+    /// Remove a remote and its remote-tracking branches (`git remote remove`).
+    RemoteRemove {
+        /// The remote's name.
+        name: String,
+    },
+    /// Fetch a remote (`git fetch <remote> [refspec]`).
+    RemoteFetch {
+        /// The remote to fetch from.
+        remote: String,
+        /// An explicit refspec; `None` = the remote's configured refspecs.
+        refspec: Option<String>,
+    },
+    /// Create a tag (`git tag [-a] [-m <msg>] <name> <target>`).
+    TagCreate {
+        /// The new tag name.
+        name: String,
+        /// The commit the tag points at.
+        target: Hash,
+        /// Annotated (a tag object with a message) vs lightweight (a direct pointer).
+        annotated: bool,
+        /// The tag message (annotated tags; an empty one is allowed, never opens an editor).
+        message: Option<String>,
+    },
+    /// Check out a tag, detaching HEAD (`git switch --detach <name>`).
+    TagCheckout {
+        /// The tag to check out.
+        name: String,
+        /// Discard local changes if they would be overwritten (`--force`).
+        force: bool,
+    },
+    /// Delete a tag: locally (`git tag -d`), or on a remote
+    /// (`git push <remote> --delete <name>`) when `remote` is set.
+    TagDelete {
+        /// The tag name.
+        name: String,
+        /// `None` = a local tag; `Some` = delete that tag on this remote.
+        remote: Option<String>,
+    },
+    /// Push a tag to a remote (`git push <remote> <name>`).
+    TagPush {
+        /// The remote to push to.
+        remote: String,
+        /// The tag name.
+        name: String,
+        /// Overwrite the remote tag (`--force`): `Dangerous`.
+        force: bool,
     },
 }
 
@@ -589,6 +728,7 @@ mod tests {
         Status {
             branch: Some("main".into()),
             detached_head: None,
+            head: Some("a".repeat(40)),
             ahead: 1,
             behind: 0,
             upstream: Some("origin/main".into()),
@@ -719,10 +859,20 @@ mod tests {
 
     #[test]
     fn op_push_round_trips_with_a_null_branch() {
-        let json = r#"{"kind":"push","remote":"origin","branch":null,"force":true}"#;
+        // `set_upstream` is `#[serde(default)]`: the old web payloads (without
+        // the field) still deserialize, but serialization always carries it.
+        let json = r#"{"kind":"push","remote":"origin","branch":null,"force":true,"set_upstream":false}"#;
         let op: Op = serde_json::from_str(json).unwrap();
         assert!(matches!(op, Op::Push { force: true, .. }));
         assert_eq!(serde_json::to_string(&op).unwrap(), json);
+        // A payload from an older web build (no `set_upstream`) still decodes.
+        let old: Op =
+            serde_json::from_str(r#"{"kind":"push","remote":"origin","branch":null,"force":false}"#)
+                .unwrap();
+        let Op::Push { set_upstream, .. } = &old else {
+            panic!("wrong variant");
+        };
+        assert!(!set_upstream);
     }
 
     #[test]
@@ -912,6 +1062,81 @@ mod tests {
             panic!("wrong variant");
         };
         assert_eq!(hashes.len(), 2);
+    }
+
+    // ── Stage 6: branches, remotes, tags ──────────────────────────────────
+
+    #[test]
+    fn branch_round_trips_through_serde() {
+        let b = Branch {
+            name: "origin/feature".into(),
+            is_current: false,
+            is_remote: true,
+            upstream: None,
+            ahead: 0,
+            behind: 2,
+            tip: "b".repeat(40),
+        };
+        let json = serde_json::to_string(&b).unwrap();
+        assert!(json.contains(r#""origin/feature""#));
+        assert!(json.contains(r#""is_remote":true"#));
+        let back: Branch = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, b);
+    }
+
+    #[test]
+    fn remote_round_trips_through_serde() {
+        let r = Remote {
+            name: "origin".into(),
+            url: "git@host:org/repo.git".into(),
+            fetch: Some("git@host:org/repo.git".into()),
+            push: None,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        let back: Remote = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, r);
+    }
+
+    #[test]
+    fn tag_round_trips_through_serde() {
+        let t = Tag {
+            name: "v1.0".into(),
+            target: "c".repeat(40),
+            annotated: true,
+            message: Some("first release".into()),
+        };
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(json.contains(r#""annotated":true"#));
+        let back: Tag = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, t);
+    }
+
+    #[test]
+    fn ref_types_are_ts_types() {
+        _assert_ts::<Branch>();
+        _assert_ts::<Remote>();
+        _assert_ts::<Tag>();
+    }
+
+    #[test]
+    fn op_ref_variants_round_trip() {
+        for json in [
+            r#"{"kind":"branch_delete","name":"side","remote":null,"force":false}"#,
+            r#"{"kind":"branch_delete","name":"side","remote":"origin","force":true}"#,
+            r#"{"kind":"branch_rename","name":"side","new_name":"side2"}"#,
+            r#"{"kind":"branch_set_upstream","branch":"side","remote":"origin","name":"main"}"#,
+            r#"{"kind":"branch_set_upstream","branch":"side","remote":null,"name":""}"#,
+            r#"{"kind":"remote_add","name":"upstream","url":"u"}"#,
+            r#"{"kind":"remote_remove","name":"origin"}"#,
+            r#"{"kind":"remote_fetch","remote":"origin","refspec":null}"#,
+            r#"{"kind":"tag_create","name":"v3","target":"abc","annotated":true,"message":null}"#,
+            r#"{"kind":"tag_checkout","name":"v1","force":false}"#,
+            r#"{"kind":"tag_delete","name":"v1","remote":null}"#,
+            r#"{"kind":"tag_push","remote":"origin","name":"v1","force":true}"#,
+        ] {
+            let op: Op = serde_json::from_str(json).unwrap();
+            assert_eq!(serde_json::to_string(&op).unwrap(), json, "round-trip: {json}");
+        }
     }
 
     fn sample_commit_detail() -> CommitDetail {

@@ -40,6 +40,8 @@ export interface Status {
   branch: string | null;
   /** Full OID (hex) of HEAD when detached; `null` when a branch is checked out. */
   detached_head: string | null;
+  /** Full OID (hex) of HEAD (branch tip or detached); `null` on an unborn branch. */
+  head: string | null;
   /** Commits on `branch` that are not on `upstream`. */
   ahead: number;
   /** Commits on `upstream` that are not on `branch`. */
@@ -75,6 +77,49 @@ export interface StatusChanged {
   repo: RepoId;
   status: Status;
 }
+// ── Refs: branches, remotes, tags (Rust `git_gotten_protocol`, SPEC §10.5) ──
+
+/** A branch (local or remote-tracking), with its sync state (SPEC §10.5). */
+export interface Branch {
+  /** Display name: `main`, or `origin/feature` for a remote-tracking branch. */
+  name: string;
+  /** `true` when HEAD is on this branch (always `false` for remote branches). */
+  is_current: boolean;
+  /** `true` for a remote-tracking branch (`refs/remotes/…`). */
+  is_remote: boolean;
+  /** The branch's upstream (e.g. `origin/main`); `null` when untracked. */
+  upstream: string | null;
+  /** Commits on the branch that are not on its upstream (0 when untracked). */
+  ahead: number;
+  /** Commits on the upstream that are not on the branch (0 when untracked). */
+  behind: number;
+  /** The branch's tip commit (full hex oid). */
+  tip: string;
+}
+
+/** A remote with its fetch/push urls (SPEC §10.5). */
+export interface Remote {
+  /** The remote's name (e.g. `origin`). */
+  name: string;
+  /** The url to display: the fetch url, falling back to the push url. */
+  url: string;
+  /** The fetch url (`remote.<name>.url`); `null` when only a push url is set. */
+  fetch: string | null;
+  /** The push url (`remote.<name>.pushurl`); `null` when unset. */
+  push: string | null;
+}
+
+/** A tag, with its resolved target (SPEC §10.5). */
+export interface Tag {
+  /** The tag name (e.g. `v1.0`). */
+  name: string;
+  /** The commit the tag points at (annotated tags are peeled to their commit). */
+  target: string;
+  /** `true` for an annotated tag (a tag object); `false` for a lightweight one. */
+  annotated: boolean;
+  /** The tag object's message (annotated tags); `null` for lightweight tags. */
+  message: string | null;
+}
 
 /** Risk classification of a git step or operation (Rust `Risk`, SPEC §8).
  *
@@ -96,6 +141,8 @@ export interface GitStep {
   risk: Risk;
   /** Structured blast radius when the step affects history; `null` for most steps. */
   effect: string | null;
+  /** Optional text piped to the process's stdin; `null` for steps that take no input. */
+  input: string | null;
 }
 
 /** What will change before a risky op runs (Rust `Preview`, SPEC §8). */
@@ -144,14 +191,31 @@ export type Op =
       co_authors?: string[];
     }
   | { kind: "checkout"; target: string; force: boolean }
-  | { kind: "push"; remote: string; branch: string | null; force: boolean }
+  | {
+      kind: "push";
+      remote: string;
+      branch: string | null;
+      force: boolean;
+      /** Record the remote branch as the push upstream (`-u`). */
+      set_upstream: boolean;
+    }
   | { kind: "branch_create"; name: string; from: string; checkout: boolean }
+  | { kind: "branch_delete"; name: string; remote: string | null; force: boolean }
+  | { kind: "branch_rename"; name: string; new_name: string }
+  | { kind: "branch_set_upstream"; branch: string; remote: string | null; name: string }
+  | { kind: "remote_add"; name: string; url: string }
+  | { kind: "remote_remove"; name: string }
+  | { kind: "remote_fetch"; remote: string; refspec: string | null }
   | { kind: "reset"; mode: "soft" | "mixed" | "hard"; target: string }
   | { kind: "cherry_pick"; hashes: string[] }
   | { kind: "stage"; path: string | null }
   | { kind: "unstage"; path: string | null }
   | { kind: "discard"; path: string }
-  | { kind: "stage_hunks"; path: string; selected: number[] };
+  | { kind: "stage_hunks"; path: string; selected: number[] }
+  | { kind: "tag_create"; name: string; target: string; annotated: boolean; message: string | null }
+  | { kind: "tag_checkout"; name: string; force: boolean }
+  | { kind: "tag_delete"; name: string; remote: string | null }
+  | { kind: "tag_push"; remote: string; name: string; force: boolean };
 
 /** The result of running a [`CommandPlan`] (Rust `OpResult`, safe failure, SPEC §8). */
 export interface OpResult {
