@@ -25,6 +25,11 @@
 //! [`Op::RemoteRemove`], [`Op::RemoteFetch`], [`Op::TagCreate`],
 //! [`Op::TagCheckout`], [`Op::TagDelete`], [`Op::TagPush`] — plus the
 //! `set_upstream` flag on [`Op::Push`].
+//! Stage 7 adds the sync + merge shapes (SPEC §10.4): [`Op::Pull`]
+//! (`git pull [--rebase]`), [`Op::Merge`] (`git merge --no-ff <source>`), and
+//! the `conflicts` field on [`OpResult`] / [`LogEntry`] (the unmerged files a
+//! merge/rebase/cherry-pick stopped on — the handoff to the stage-8 conflict
+//! view).
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -286,6 +291,19 @@ pub enum Op {
         #[serde(default)]
         set_upstream: bool,
     },
+    /// Pull from the current branch's upstream (`git pull [--rebase]`): fetch
+    /// the upstream, then merge it (or rebase onto it when `rebase` is set).
+    Pull {
+        /// Rebase the local commits onto the upstream instead of merging it.
+        rebase: bool,
+    },
+    /// Merge a branch (or commit-ish) into the current branch
+    /// (`git merge --no-ff <source>`): always produces a merge commit, so a
+    /// clean fast-forwardable merge is visible in the graph too.
+    Merge {
+        /// The source branch/commit to merge in.
+        source: String,
+    },
     /// Create a branch at a commit (`git branch <name> <from>`), optionally
     /// switching to it (graph context menu, SPEC §10.1).
     BranchCreate {
@@ -434,6 +452,11 @@ pub struct OpResult {
     pub stderr: String,
     /// Wall-clock duration of the whole plan, in milliseconds.
     pub duration_ms: u64,
+    /// The unmerged file paths when the op left the repository in a conflicted
+    /// state (a merge/rebase/cherry-pick that stopped on conflicts); empty
+    /// otherwise. The web routes a non-empty list to the conflict view.
+    #[serde(default)]
+    pub conflicts: Vec<String>,
 }
 
 /// One entry in the activity log (Rust → web, SPEC §9).
@@ -455,6 +478,10 @@ pub struct LogEntry {
     pub stdout: String,
     /// Captured stderr.
     pub stderr: String,
+    /// The unmerged file paths when the op stopped on conflicts (see
+    /// [`OpResult::conflicts`]).
+    #[serde(default)]
+    pub conflicts: Vec<String>,
 }
 
 /// Payload of the `op_started` event (Rust → web, SPEC §13).
@@ -876,6 +903,25 @@ mod tests {
     }
 
     #[test]
+    fn op_pull_round_trips() {
+        let op = Op::Pull { rebase: true };
+        let json = serde_json::to_string(&op).unwrap();
+        assert_eq!(json, r#"{"kind":"pull","rebase":true}"#);
+        let back: Op = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, op);
+    }
+
+    #[test]
+    fn op_merge_round_trips() {
+        let op = Op::Merge {
+            source: "side".into(),
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        assert_eq!(json, r#"{"kind":"merge","source":"side"}"#);
+        let back: Op = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, op);
+    }
+    #[test]
     fn command_plan_round_trips() {
         let plan = sample_plan();
         let json = serde_json::to_string(&plan).unwrap();
@@ -894,10 +940,18 @@ mod tests {
             stdout: "ok part\n".into(),
             stderr: "failed part\n".into(),
             duration_ms: 42,
+            conflicts: vec!["f.txt".into()],
         };
         let json = serde_json::to_string(&result).unwrap();
         let back: OpResult = serde_json::from_str(&json).unwrap();
         assert_eq!(back, result);
+        // A payload from an older build (no `conflicts` field) still decodes.
+        let old: OpResult = serde_json::from_str(&json.replace(
+            r#","conflicts":["f.txt"]"#,
+            "",
+        ))
+        .unwrap();
+        assert!(old.conflicts.is_empty());
     }
 
     #[test]
@@ -911,6 +965,7 @@ mod tests {
             ts: 1_700_000_000_000,
             stdout: "done\n".into(),
             stderr: String::new(),
+            conflicts: vec!["f.txt".into()],
         };
         let json = serde_json::to_string(&entry).unwrap();
         let back: LogEntry = serde_json::from_str(&json).unwrap();

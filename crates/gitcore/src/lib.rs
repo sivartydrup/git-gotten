@@ -9,6 +9,10 @@
 //! [`Status`] shape: ahead/behind vs the upstream ref, merge/rebase state detection,
 //! and per-file change kinds with binary sniffing).
 //!
+//! Stage 7 adds the sync + merge read side: [`Repo::unmerged_files`] (the
+//! unmerged paths of a stopped merge/rebase/cherry-pick — the stage-8
+//! conflict view's input).
+//!
 //! Stage 2 implements the command layer: [`Repo::plan`] (compile an [`Op`] into a
 //! visible [`CommandPlan`]) and the executor ([`GitExecutor`] runs plans through the
 //! real git binary, serialized per repo by [`OpQueue`]).
@@ -208,6 +212,21 @@ impl Repo {
     /// Compute the live status of this repository.
     pub fn status(&self) -> Result<Status, GitError> {
         compute_status(&self.inner)
+    }
+    /// The unmerged file paths — the files a merge/rebase/cherry-pick stopped
+    /// on (the stage-8 conflict view's input); empty outside a conflict.
+    ///
+    /// Derived from [`Self::status`] (unmerged paths read the index from disk,
+    /// so a stale cached handle still sees them), in the status's
+    /// deterministic path order.
+    pub fn unmerged_files(&self) -> Result<Vec<String>, GitError> {
+        Ok(self
+            .status()?
+            .changes
+            .iter()
+            .filter(|c| c.kind == ChangeKind::Conflicted)
+            .map(|c| c.path.clone())
+            .collect())
     }
     /// The working-tree diff of one file (SPEC §10.2): the file's staged
     /// (index-vs-HEAD) and unstaged (worktree-vs-index) hunks, each flagged,
@@ -552,7 +571,7 @@ pub(crate) fn upstream_of(repo: &gix::Repository, branch: &str) -> Option<Upstre
 }
 
 /// Count the commits reachable from each tip and set-difference them.
-fn ahead_behind(
+pub(crate) fn ahead_behind(
     repo: &gix::Repository,
     head: ObjectId,
     upstream: ObjectId,

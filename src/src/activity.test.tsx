@@ -49,6 +49,7 @@ const commitResult = {
   ok: true,
   stdout: "[main abc1234] fix: thing",
   stderr: "",
+  conflicts: [],
   duration_ms: 12,
 };
 
@@ -166,16 +167,16 @@ test("op_started / op_finished events drive the running state", async () => {
   expect(useActivityStore.getState()).toMatchObject({ running: true, runningDisplay: "git push origin main" });
 
   await act(async () => {
-    s.applyFinished({ id: 9, repo: "/repo/alpha", display: "git push origin main", ok: true, duration_ms: 87, ts: 1_000, stdout: "", stderr: "" });
+    s.applyFinished({ id: 9, repo: "/repo/alpha", display: "git push origin main", ok: true, duration_ms: 87, ts: 1_000, stdout: "", stderr: "", conflicts: [] });
   });
   expect(useActivityStore.getState()).toMatchObject({ running: false, runningDisplay: null });
 });
 
 test("loadHistory fills the ring newest-first and seeds the id counter", async () => {
   loadLog.mockResolvedValueOnce([
-    { id: 41, repo: "/r", display: "git push", ok: true, duration_ms: 10, ts: 1, stdout: "", stderr: "" },
-    { id: 42, repo: "/r", display: "git commit -m b", ok: false, duration_ms: 5, ts: 2, stdout: "", stderr: "err" },
-    { id: 43, repo: "/other", display: "git pull", ok: true, duration_ms: 7, ts: 3, stdout: "", stderr: "" },
+    { id: 41, repo: "/r", display: "git push", ok: true, duration_ms: 10, ts: 1, stdout: "", stderr: "", conflicts: [] },
+    { id: 42, repo: "/r", display: "git commit -m b", ok: false, duration_ms: 5, ts: 2, stdout: "", stderr: "err", conflicts: [] },
+    { id: 43, repo: "/other", display: "git pull", ok: true, duration_ms: 7, ts: 3, stdout: "", stderr: "", conflicts: [] },
   ]);
 
   await act(async () => {
@@ -204,6 +205,7 @@ test("record caps the ring at 500 entries", () => {
     ts: 1,
     stdout: "",
     stderr: "",
+    conflicts: [],
   }));
   useActivityStore.setState({ activities: many });
   useActivityStore.getState().record("/r", commitResult);
@@ -278,9 +280,10 @@ test("Dangerous (force-push) preview requires type-to-confirm before running", a
     plan: forcePlan,
     exit: 0,
     ok: true,
-    stdout: "To origin\n + abc..def main",
-    stderr: "",
-    duration_ms: 20,
+  stdout: "To origin\n + abc..def main",
+  stderr: "",
+  conflicts: [],
+  duration_ms: 20,
   });
   await act(async () => {
     await screen.getByRole("button", { name: /Run git push --force/ }).click();
@@ -294,8 +297,8 @@ test("Dangerous (force-push) preview requires type-to-confirm before running", a
 test("ActivityLog lists entries newest-first with outcome marks and shows the running state", async () => {
   useActivityStore.setState({
     activities: [
-      { id: 2, repo: "/r", display: "git commit -m b", ok: true, duration_ms: 30, ts: 2_000, stdout: "out", stderr: "" },
-      { id: 1, repo: "/r", display: "git push --force", ok: false, duration_ms: 90, ts: 1_000, stdout: "", stderr: "err" },
+      { id: 2, repo: "/r", display: "git commit -m b", ok: true, duration_ms: 30, ts: 2_000, stdout: "out", stderr: "", conflicts: [] },
+      { id: 1, repo: "/r", display: "git push --force", ok: false, duration_ms: 90, ts: 1_000, stdout: "", stderr: "err", conflicts: [] },
     ],
     running: true,
     runningDisplay: "git rebase origin/main",

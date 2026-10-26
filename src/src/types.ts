@@ -199,6 +199,8 @@ export type Op =
       /** Record the remote branch as the push upstream (`-u`). */
       set_upstream: boolean;
     }
+  | { kind: "pull"; rebase: boolean }
+  | { kind: "merge"; source: string }
   | { kind: "branch_create"; name: string; from: string; checkout: boolean }
   | { kind: "branch_delete"; name: string; remote: string | null; force: boolean }
   | { kind: "branch_rename"; name: string; new_name: string }
@@ -231,6 +233,11 @@ export interface OpResult {
   stderr: string;
   /** Wall-clock duration of the whole plan, in milliseconds. */
   duration_ms: number;
+  /**
+   * The conflicted file paths when the plan stopped on a merge/rebase/
+   * cherry-pick conflict (`[]` otherwise, SPEC §10.5).
+   */
+  conflicts: string[];
 }
 
 /** One entry in the activity log (Rust `LogEntry`, SPEC §9). */
@@ -250,6 +257,8 @@ export interface LogEntry {
   stdout: string;
   /** Captured stderr. */
   stderr: string;
+  /** The conflicted file paths (empty when the op ran clean). */
+  conflicts: string[];
 }
 
 /** Payload of the `op_started` event (Rust `OpStarted`, SPEC §13). */

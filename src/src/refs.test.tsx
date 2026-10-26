@@ -415,12 +415,12 @@ test("a finished op reloads the graph and the ref lists", async () => {
   await flush();
   // App subscribed to the finished-op event; the mock captured the callback.
   expect(onOpFinished).toHaveBeenCalled();
-  const cb = onOpFinished.mock.calls[0][0] as (p: { repo: string }) => void;
+  const cb = onOpFinished.mock.calls[0][0] as (p: { repo: string; conflicts: string[] }) => void;
 
   loadBranches.mockClear();
   loadGraph.mockClear();
   await act(async () => {
-    cb({ repo: REPO });
+    cb({ repo: REPO, conflicts: [] });
   });
   await flush();
 

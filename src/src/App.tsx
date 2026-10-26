@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useActivityStore, useBuildInfo, useGraphStore, useRefsStore, useRepoStore, useStagingStore } from "./store";
+import { useActivityStore, useBuildInfo, useGraphStore, useMainTab, useRefsStore, useRepoStore, useStagingStore } from "./store";
 import { onOpFinished, onOpStarted, onStatusChanged } from "./api";
 import { TopBar } from "./components/TopBar";
 import { RepoNav } from "./components/RepoNav";
@@ -12,7 +12,6 @@ import { FileDiff } from "./components/FileDiff";
 import { CommitPanel } from "./components/CommitPanel";
 import { RefsPanel, type RefsTab } from "./components/RefsPanel";
 
-type MainTab = "graph" | "files" | "branches";
 
 /**
  * The Files tab (SPEC §10.2): the changed-files list and the selected file's
@@ -41,7 +40,7 @@ function FilesTab() {
  */
 export default function App() {
   const { load } = useBuildInfo();
-  const [tab, setTab] = useState<MainTab>("graph");
+  const { tab, setTab } = useMainTab();
   const [refsTab, setRefsTab] = useState<RefsTab>("branches");
 
   useEffect(() => {

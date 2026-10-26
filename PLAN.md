@@ -375,8 +375,9 @@ git push -u origin main
 **Goal:** everyday sync flows and the (conflict-free) merge path.
 
 **Design:**
-- `crates/gitcore`: `fetch(remote, refspec?)`, `pull(rebase: bool)`, `push(force: bool)` (Stage 2 plans), `merge(source: Ref, strategy) -> MergeOutcome { merged | conflicted(files) }`.
-  - `merge` runs `git merge --no-ff <source>`; detects conflict → returns the conflicted file list (feeds Stage 8).
+- `crates/gitcore`: `fetch(remote, refspec?)`, `pull(rebase: bool)`, `push(force: bool)` (Stage 2 plans), `merge(source)`.
+ - `merge` runs `git merge --no-ff <source>` (no `strategy` param: the app always records a visible merge commit). The conflict handoff rides in `OpResult.conflicts` (the unmerged file list, populated by the app backend after a failed op; feeds Stage 8) rather than a separate `MergeOutcome` type.
+ - `pull` always passes an explicit `--rebase` / `--no-rebase`: git ≥ 2.21 refuses a bare `git pull` on a diverged branch without a `pull.rebase` default.
 - Web: a **Sync** control set (Fetch / Pull / Pull-Rebase / Push) in the top bar with ahead/behind-aware labels; a **Merge** action (pick source branch → Stage 2 preview of "N commits, M files" → run → route to conflict view if conflicted).
 
 **Tests (write first):** fixture with a local repo + local bare remote diverged by N commits → `pull`/`push` reconcile; `merge` of a diverged branch fast-forwards or 3-way merges cleanly; a seeded conflict returns the conflicted file list (handoff asserted here, resolved in Stage 8).

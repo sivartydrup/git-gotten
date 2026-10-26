@@ -12,7 +12,7 @@ use git_gotten_protocol::{
     Author, ChangeKind, CommandPlan, GitStep, Op, Preview, ResetMode, Risk, Status,
 };
 
-use crate::{upstream_of, GitError, Repo};
+use crate::{ahead_behind, upstream_of, GitError, Repo};
 
 /// Join a git argv into the `display` string shown in the UI.
 ///
@@ -72,6 +72,8 @@ impl Repo {
                 *force,
                 *set_upstream,
             ),
+            Op::Pull { rebase } => plan_pull(&status, *rebase),
+            Op::Merge { source } => plan_merge(self, &status, source),
             Op::BranchCreate {
                 name,
                 from,
@@ -340,6 +342,152 @@ fn plan_push(
             requires_type_to_confirm: force,
         }),
     })
+}
+/// `git pull [--rebase | --no-rebase]` — `Mutating`: fetch the current
+/// branch's upstream, then merge it (or rebase the local commits onto it
+/// when `rebase` is set).
+///
+/// A branch without an upstream has no tracking information, so `git pull`
+/// fails at run time; the preview says so instead of letting the user find
+/// out in the activity log.
+fn plan_pull(status: &Status, rebase: bool) -> Result<CommandPlan, GitError> {
+    let Some(branch) = status.branch.as_deref() else {
+        return Err(GitError::DetachedHead);
+    };
+    let mut argv = vec!["git".to_string(), "pull".to_string()];
+    // The reconciliation strategy is explicit on *both* forms: a bare
+    // `git pull` is refused by git ≥ 2.21 when the branches have diverged
+    // and no `pull.rebase` default is configured.
+    argv.push(if rebase { "--rebase" } else { "--no-rebase" }.to_string());
+    let display = format_argv(&argv);
+
+    let what = if rebase { "rebase onto" } else { "merge" };
+    let (upstream, lines) = match status.upstream.as_deref() {
+        Some(up) => (
+            up.to_string(),
+            vec![format!(
+                "fetch `{up}`, then {what} it ({ahead} ahead, {behind} behind)",
+                ahead = status.ahead,
+                behind = status.behind
+            )],
+        ),
+        None => (
+            "no upstream".to_string(),
+            vec![format!(
+                "no upstream for `{branch}` — git will fail until one is set (e.g. `git push -u origin {branch}`)"
+            )],
+        ),
+    };
+
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary: format!("pull from {upstream}"),
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+        }],
+        display,
+        preview: Some(Preview {
+            headline: format!("Pull from {upstream}"),
+            lines,
+            requires_type_to_confirm: false,
+        }),
+    })
+}
+
+/// `git merge --no-ff <source>` — `Mutating`: merge a branch/commit into the
+/// current branch. `--no-ff` forces a merge commit even when the merge is
+/// fast-forwardable, so a clean merge is always visible in the graph.
+///
+/// The preview counts what comes in: the commits on `source` that are not on
+/// HEAD, and the files they touch (a read-only diff — planning may run
+/// read-only git, SPEC §8). A conflict is not a planning error: the op runs,
+/// git stops with the conflicted files in the result (stage-8 handoff).
+fn plan_merge(repo: &Repo, status: &Status, source: &str) -> Result<CommandPlan, GitError> {
+    if source.trim().is_empty() {
+        return Err(GitError::EmptyTarget);
+    }
+    let source_commit = commit_ish(&repo.inner, source)?;
+    let source_oid = source_commit.id().detach();
+    let head_oid = repo
+        .inner
+        .head()
+        .map_err(GitError::Gix)?
+        .id()
+        .map(|id| id.detach())
+        .ok_or(GitError::NoCommits)?;
+
+    // Commits on `source` that are not on HEAD (the set difference runs from
+    // the source tip, mirroring `ahead_behind`'s `behind` side).
+    let incoming = if source_oid == head_oid {
+        0
+    } else {
+        ahead_behind(&repo.inner, head_oid, source_oid)?.1
+    };
+
+    // The files the incoming commits touch: a read-only symmetric diff from
+    // the merge base (what the merge would bring in).
+    let spec = format!("HEAD...{source}");
+    let files = crate::show::run_git_sync(&repo.path, &["diff", "--name-only", &spec])?
+        .lines()
+        .filter(|l| !l.is_empty())
+        .count();
+
+    let argv = vec![
+        "git".to_string(),
+        "merge".to_string(),
+        "--no-ff".to_string(),
+        source.to_string(),
+    ];
+    let display = format_argv(&argv);
+    let branch = from_label(status);
+
+    let lines = if incoming == 0 {
+        vec!["already up to date — nothing to merge".to_string()]
+    } else {
+        vec![format!(
+            "brings in {incoming} commit{}, {} file{}",
+            if incoming == 1 { "" } else { "s" },
+            files,
+            if files == 1 { "" } else { "s" }
+        )]
+    };
+
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary: format!("merge {source} into {branch}"),
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+        }],
+        display,
+        preview: Some(Preview {
+            headline: format!("Merge `{source}` into `{branch}`"),
+            lines,
+            requires_type_to_confirm: false,
+        }),
+    })
+}
+
+/// Resolve a commit-ish (branch name, tag name, or hex oid — annotated tags
+fn commit_ish<'a>(
+    repo: &'a gix::Repository,
+    spec: &str,
+) -> Result<gix::Commit<'a>, GitError> {
+    let spec = spec.trim();
+    let id = repo
+        .rev_parse_single(spec)
+        .map_err(|_| GitError::NoCommit {
+            hash: spec.to_string(),
+        })?
+        .detach();
+    repo.find_object(id)
+        .and_then(|o| o.peel_to_commit())
+        .map_err(|_| GitError::NoCommit {
+            hash: spec.to_string(),
+        })
 }
 
 /// A short lowercase label for a [`ChangeKind`], for preview lines.

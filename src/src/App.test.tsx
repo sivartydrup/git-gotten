@@ -205,6 +205,7 @@ test("commit flow: preview shows the exact command, confirm runs and records it"
     ok: true,
     stdout: "[main abc1234] fix: thing",
     stderr: "",
+    conflicts: [],
     duration_ms: 12,
   });
 

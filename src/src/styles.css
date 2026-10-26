@@ -114,6 +114,78 @@ code {
   color: var(--muted);
 }
 
+/* Stage 7: everyday-sync controls (SPEC §10.4) */
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sync-controls {
+  display: flex;
+  gap: 4px;
+}
+
+.sync-controls button,
+.merge-control > button {
+  background: var(--border);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sync-controls button:hover,
+.merge-control > button:hover,
+.merge-picker button:hover {
+  border-color: var(--accent);
+}
+
+.sync-controls button:disabled,
+.merge-control > button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.merge-control {
+  position: relative;
+}
+
+.merge-picker {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  min-width: 180px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  z-index: 20;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.merge-picker button {
+  background: none;
+  border: none;
+  color: var(--fg);
+  text-align: left;
+  padding: 4px 8px;
+  font-size: 13px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.merge-picker-empty {
+  color: var(--muted);
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
 .repo-nav {
   width: 260px;
   flex-shrink: 0;

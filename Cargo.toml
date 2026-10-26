@@ -33,7 +33,7 @@ git-gotten-testutil = { path = "crates/testutil" }
 # External crates (versions resolved to the latest stable as of stage-00)
 tauri = { version = "2.12", features = ["wry"] }
 tauri-build = { version = "2.7" }
-gix = { version = "0.89" }
+gix = { version = "0.89", features = ["revision"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1" }

@@ -151,6 +151,22 @@ function upsertRepo(repos: RepoMeta[], meta: RepoMeta): RepoMeta[] {
   next[index] = meta;
   return next;
 }
+// ── Main content tab (SPEC §7) ──────────────────────────────────────────────
+
+/** The main content tab of the shell. */
+export type MainTab = "graph" | "files" | "branches";
+
+interface MainTabState {
+  tab: MainTab;
+  setTab: (tab: MainTab) => void;
+}
+
+/** Client state for the main content tab (SPEC §7). */
+export const useMainTab = create<MainTabState>((set) => ({
+  tab: "graph",
+  setTab: (tab) => set({ tab }),
+}));
+
 
 /** One plan awaiting user confirmation in the preview dialog (SPEC §9). */
 interface PreviewState {
@@ -270,7 +286,13 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
       ts: Date.now(),
       stdout: result.stdout,
       stderr: result.stderr,
+      conflicts: result.conflicts,
     };
+    // A conflicted op (merge/rebase/cherry-pick) routes the user to the
+    // Files tab, where the conflicted files are listed (SPEC §10.5).
+    if (result.conflicts.length > 0) {
+      useMainTab.getState().setTab("files");
+    }
     set((s) => ({ activities: [entry, ...s.activities].slice(0, ACTIVITY_CAP) }));
   },
 
@@ -295,10 +317,13 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
       runningRisk: null,
       activities: s.activities.map((a) =>
         a.repo === entry.repo && a.display === entry.display
-          ? { ...a, ok: entry.ok, duration_ms: entry.duration_ms, ts: entry.ts, stdout: entry.stdout, stderr: entry.stderr }
+          ? { ...a, ok: entry.ok, duration_ms: entry.duration_ms, ts: entry.ts, stdout: entry.stdout, stderr: entry.stderr, conflicts: entry.conflicts }
           : a,
       ),
     }));
+    if (entry.conflicts.length > 0) {
+      useMainTab.getState().setTab("files");
+    }
   },
 
   clearError: () => set({ error: null }),

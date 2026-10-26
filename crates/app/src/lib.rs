@@ -10,6 +10,11 @@
 //! visible `CommandPlan`, `run_op` executes it through the git CLI (serialized
 //! per repo) and records it in the bounded in-memory activity log ([`LogBuffer`]),
 //! emitting `op_started` / `op_finished` so the web can show the command stream.
+//!
+//! Stage 7 completes the sync + merge surface (SPEC §10.4): a conflicted
+//! `run_op` (merge/rebase/cherry-pick) carries the unmerged file list in the
+//! [`OpResult`] and the activity-log entry, so the web can route to the
+//! conflict view.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
@@ -68,6 +73,13 @@ impl RepoRegistry {
     /// Re-derive a repository's live status, or `None` if it is not open.
     pub fn refresh_status(&self, id: &str) -> Option<Status> {
         self.repos.lock().get(id)?.status().ok()
+    }
+    /// The unmerged file paths of an open repository (`None` if it is not
+    /// open, `empty` when it is not in a conflicted state).
+    pub fn unmerged_files(&self, id: &str) -> Option<Vec<String>> {
+        let repos = self.repos.lock();
+        let repo = repos.get(id)?;
+        Some(repo.unmerged_files().ok()?)
     }
 
     /// Re-open a registered repository's `gix` handle in place.
@@ -252,11 +264,18 @@ impl Backend {
                 .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
             (repo.id.clone(), repo.path.clone())
         };
-        let result = self.executor.run_plan(&repo_id, &repo_path, plan).await;
+        let mut result = self.executor.run_plan(&repo_id, &repo_path, plan).await;
         // An op may have changed the repository's config or refs (`branch.*`,
         // remotes, tags): the registry's `gix` handle caches both at open time,
         // so refresh it to keep the read model and the next `plan` live.
         self.registry.refresh(&repo_id);
+        // If the op stopped on a conflict (a merge/rebase/cherry-pick), carry
+        // the unmerged file list in the result — the web routes it to the
+        // conflict view (SPEC §10.5). A clean op yields an empty list.
+        result.conflicts = self
+            .registry
+            .unmerged_files(&repo_id)
+            .unwrap_or_default();
         self.log.record(id, &result);
         Ok(result)
     }
@@ -326,6 +345,7 @@ impl LogBuffer {
             ts,
             stdout: result.stdout.clone(),
             stderr: result.stderr.clone(),
+            conflicts: result.conflicts.clone(),
         };
         let mut ring = self.entries.lock();
         ring.push_back(entry.clone());
@@ -755,6 +775,7 @@ mod tests {
             stdout: String::new(),
             stderr: String::new(),
             duration_ms: 1,
+            conflicts: Vec::new(),
         }
     }
 
@@ -922,4 +943,62 @@ mod tests {
         assert!(matches!(err, AppError::RepoNotOpen(_)), "got {err}");
     }
 
+
+    // ── Stage 7: sync + merge ─────────────────────────────────────────────
+
+    /// A diverged repo: `main` and `side` both edit the same line of
+    /// `f.txt` (a guaranteed merge conflict).
+    fn diverged_conflict_fixture() -> testutil::Fixture {
+        let fx = testutil::Fixture::new("app-sync");
+        fx.commit_file("f.txt", "base\n", "c1");
+        fx.git(&["checkout", "-b", "side"]);
+        fx.commit_file("f.txt", "side\n", "c-side");
+        fx.git(&["checkout", "main"]);
+        fx.commit_file("f.txt", "main\n", "c-main");
+        fx
+    }
+
+    /// A conflicted merge surfaces its unmerged files in the `OpResult` and
+    /// the activity-log entry — the handoff to the conflict view (stage 8).
+    #[tokio::test]
+    async fn run_op_reports_conflicted_merge_files() {
+        let (backend, _rx) = Backend::new();
+        let fx = diverged_conflict_fixture();
+        backend.open(fx.id()).unwrap();
+
+        let op = Op::Merge {
+            source: "side".into(),
+        };
+        let plan = backend.plan(fx.id(), &op).unwrap();
+        let result = backend.run_op(fx.id(), &plan).await.unwrap();
+
+        assert!(!result.ok, "the merge must stop on the conflict");
+        assert_eq!(result.conflicts, vec!["f.txt".to_string()]);
+        let entry = backend.last_entry(fx.id()).unwrap();
+        assert_eq!(entry.conflicts, vec!["f.txt".to_string()]);
+        // The read model agrees: mid-merge.
+        assert!(backend.load_status(fx.id()).unwrap().in_merge);
+    }
+
+    /// A clean merge (and every other op) reports no conflicts.
+    #[tokio::test]
+    async fn run_op_clean_merge_has_no_conflicts() {
+        let (backend, _rx) = Backend::new();
+        let mut fx = testutil::Fixture::new("app-sync-clean");
+        fx.commit_file("a.txt", "base\n", "c1");
+        fx.git(&["checkout", "-b", "side"]);
+        fx.commit_file("b.txt", "side\n", "c-side");
+        fx.git(&["checkout", "main"]);
+        fx.commit_file("c.txt", "main\n", "c-main");
+        backend.open(fx.id()).unwrap();
+
+        let op = Op::Merge {
+            source: "side".into(),
+        };
+        let plan = backend.plan(fx.id(), &op).unwrap();
+        let result = backend.run_op(fx.id(), &plan).await.unwrap();
+        assert!(result.ok, "stderr: {}", result.stderr);
+        assert!(result.conflicts.is_empty());
+        let _ = fx;
+    }
 }

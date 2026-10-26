@@ -34,9 +34,19 @@ pub(crate) const ENV_UNSET: &[&str] = &[
     "GIT_GIT_DIR",
 ];
 
-/// Environment set explicitly on every git child process: fail fast on credential
-/// prompts, never invoke a pager (output is piped either way).
-pub(crate) const ENV_SET: &[(&str, &str)] = &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_PAGER", "cat")];
+/// Environment set explicitly on every git child process: fail fast on
+/// credential prompts, never invoke a pager (output is piped either way),
+/// and never launch an *interactive* editor. The app has no terminal, so a
+/// `git merge` (which opens the editor for the merge message) must keep the
+/// default message and commit: `true` exits 0 without touching the message
+/// file. `GIT_EDITOR` outranks both `VISUAL`/`EDITOR` and `core.editor`, so
+/// one variable pins the behavior.
+pub(crate) const ENV_SET: &[(&str, &str)] = &[
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("GIT_PAGER", "cat"),
+    ("GIT_EDITOR", "true"),
+    ("GIT_SEQUENCE_EDITOR", "true"),
+];
 
 /// Locate and verify a git binary: search `PATH` for the platform executable,
 /// then check that it answers `git --version`. A missing or broken git is `Err(())`.
@@ -187,6 +197,7 @@ impl GitExecutor {
                     stdout,
                     stderr,
                     duration_ms: start.elapsed().as_millis() as u64,
+                    conflicts: Vec::new(),
                 };
             }
         };
@@ -257,6 +268,7 @@ impl GitExecutor {
             stdout,
             stderr,
             duration_ms: start.elapsed().as_millis() as u64,
+            conflicts: Vec::new(),
         }
     }
 }

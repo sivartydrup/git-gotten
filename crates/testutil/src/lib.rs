@@ -71,6 +71,7 @@ impl Fixture {
         git(&dir, &["config", "user.email", "test@example.com"]);
         git(&dir, &["config", "commit.gpgsign", "false"]);
         git(&dir, &["config", "tag.gpgsign", "false"]);
+        git(&dir, &["config", "core.editor", "true"]);
         git(&dir, &["config", "core.autocrlf", "false"]);
         Self {
             path: dir.canonicalize().unwrap_or_else(|e| {
