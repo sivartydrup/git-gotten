@@ -28,8 +28,13 @@
 //! Stage 7 adds the sync + merge shapes (SPEC §10.4): [`Op::Pull`]
 //! (`git pull [--rebase]`), [`Op::Merge`] (`git merge --no-ff <source>`), and
 //! the `conflicts` field on [`OpResult`] / [`LogEntry`] (the unmerged files a
-//! merge/rebase/cherry-pick stopped on — the handoff to the stage-8 conflict
-//! view).
+//! merge/rebase/cherry-pick stopped on).
+//! Stage 8 adds the conflict-resolution shapes (SPEC §10.5): [`ConflictFile`],
+//! [`ConflictSegment`], [`ConflictHunk`], [`ConflictSide`], [`HunkChoice`],
+//! [`ConflictResolution`], `Status.in_cherry_pick`, the
+//! [`GitStep::program`] (external-editor hand-off), and the ops
+//! [`Op::ResolveConflict`], [`Op::ContinueOp`], [`Op::AbortOp`],
+//! [`Op::OpenEditor`].
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -103,6 +108,9 @@ pub struct Status {
     pub in_merge: bool,
     /// True while a rebase is in progress (`.git/rebase-merge` or `rebase-apply`).
     pub in_rebase: bool,
+    /// True while a cherry-pick is in progress (`.git/CHERRY_PICK_HEAD` present).
+    #[serde(default)]
+    pub in_cherry_pick: bool,
 }
 
 /// Quick summary of an open repo, for the workspace nav (SPEC §7).
@@ -198,8 +206,9 @@ pub enum Risk {
 /// One literal git invocation inside a [`CommandPlan`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct GitStep {
-    /// The exact argv of the spawned process — `argv[0]` is the `git` binary.
-    /// Always a vector: no shell, no string interpolation (SPEC §16).
+    /// The exact argv of the spawned process — `argv[0]` is the program
+    /// (the `git` binary when [`Self::program`] is `None`). Always a vector:
+    /// no shell, no string interpolation (SPEC §16).
     pub argv: Vec<String>,
     /// One human-readable sentence of what this step does.
     pub summary: String,
@@ -211,6 +220,12 @@ pub struct GitStep {
     /// Optional text piped to the process's stdin (e.g. a patch for
     /// `git apply --cached`). `None` for steps that take no input.
     pub input: Option<String>,
+    /// The program to spawn instead of the `git` binary (the external-editor
+    /// hand-off, SPEC §10.5). `None` runs the resolved `git`; `Some` runs that
+    /// program with `argv[1..]` as its arguments. `argv[0]` always names the
+    /// program, so the `display` string is exactly what is spawned.
+    #[serde(default)]
+    pub program: Option<String>,
 }
 
 /// What will change before a risky op runs (SPEC §8), shown in the preview dialog.
@@ -433,6 +448,30 @@ pub enum Op {
         name: String,
         /// Overwrite the remote tag (`--force`): `Dangerous`.
         force: bool,
+    },
+    /// Resolve one conflicted file (SPEC §10.5): write the resolved content to
+    /// the worktree and stage it, clearing the unmerged index entries.
+    ResolveConflict {
+        /// The conflicted file (repo-relative path).
+        path: String,
+        /// How the file is resolved.
+        resolution: ConflictResolution,
+    },
+    /// Conclude the in-progress merge/rebase/cherry-pick
+    /// (`git merge --continue` / `git rebase --continue` / `git cherry-pick
+    /// --continue`): the in-progress operation is detected from the repository
+    /// state, so one op covers all three.
+    ContinueOp,
+    /// Abort the in-progress merge/rebase/cherry-pick (`… --abort`): restores
+    /// the pre-operation state. `Dangerous` — it discards the in-progress
+    /// resolution work.
+    AbortOp,
+    /// Open the given files in the configured external editor (`core.editor`,
+    /// falling back to `$VISUAL` / `$EDITOR`): the escape hatch for gnarly
+    /// conflicts (SPEC §10.5).
+    OpenEditor {
+        /// The files to open (repo-relative paths).
+        paths: Vec<String>,
     },
 }
 
@@ -683,6 +722,85 @@ pub struct FileDiff {
     pub hunks: Vec<Hunk>,
 }
 
+// ── Conflict resolution (SPEC §10.5, computed by `gitcore`) ────────────────
+
+/// The three versions of one conflict region (the 3-way view's building block):
+/// the common-ancestor, the current-branch, and the incoming-branch content of
+/// the same span of the file (from index stages 1 / 2 / 3).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ConflictHunk {
+    /// The base (common ancestor, stage 1) content of the region.
+    pub base: String,
+    /// The ours (stage 2, HEAD) content of the region.
+    pub ours: String,
+    /// The theirs (stage 3, the incoming ref) content of the region.
+    pub theirs: String,
+}
+
+/// One span of a file's 3-way diff: unchanged (common) text, or a [`ConflictHunk`]
+/// region where the two sides diverged. The sequence of segments of a file
+/// reconstructs its resolved content once each conflict region carries a choice.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub enum ConflictSegment {
+    /// Unchanged text, shared by both sides.
+    Common(String),
+    /// A conflict region with its three versions.
+    Conflict(ConflictHunk),
+}
+
+/// The full 3-way view of one conflicted file (the conflict editor's input,
+/// SPEC §10.5): the three side versions plus the parsed diff3 structure.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ConflictFile {
+    /// The file path (repo-relative).
+    pub path: String,
+    /// `true` when the file is binary (or not decodable as text): the 3-way
+    /// text fields and segments are empty, and only a whole-side resolution
+    /// ([`ConflictResolution::Side`]) is offered.
+    pub binary: bool,
+    /// The full base (common ancestor) version of the file; empty for binary.
+    pub base: String,
+    /// The full ours (HEAD) version of the file; empty for binary.
+    pub ours: String,
+    /// The full theirs (incoming) version of the file; empty for binary.
+    pub theirs: String,
+    /// The parsed 3-way structure in file order (empty for binary files).
+    /// The web renders this as the combined view; a conflict's [`HunkChoice`]
+    /// index space is the order of the `Conflict` segments.
+    pub segments: Vec<ConflictSegment>,
+}
+
+/// Which side of a conflict a whole-file resolution takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub enum ConflictSide {
+    /// Take the entire file from the ours (HEAD) version.
+    Ours,
+    /// Take the entire file from the theirs (incoming) version.
+    Theirs,
+}
+
+/// How the user resolves one conflict region (per the 3-way view).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub enum HunkChoice {
+    /// Keep the ours content of the region.
+    AcceptOurs,
+    /// Keep the theirs content of the region.
+    AcceptTheirs,
+    /// Keep both (ours then theirs, a union resolution).
+    AcceptBoth,
+    /// Use this exact text as the region's resolution (manual edit).
+    Custom(String),
+}
+
+/// How one conflicted file is resolved (the input of [`Op::ResolveConflict`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub enum ConflictResolution {
+    /// Per-region choices, in the order of the file's `Conflict` segments.
+    Hunks(Vec<HunkChoice>),
+    /// Take the whole file from one side.
+    Side(ConflictSide),
+}
+
 /// A commit identity (name + email) for the commit panel's author field.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct Author {
@@ -781,6 +899,7 @@ mod tests {
             ],
             in_merge: false,
             in_rebase: false,
+            in_cherry_pick: true,
         }
     }
 
@@ -845,6 +964,7 @@ mod tests {
                 risk: Risk::Dangerous,
                 effect: Some("force-push `main` — remote loses 1 commit".into()),
                 input: None,
+            program: None,
             }],
             display: "git push --force origin main".into(),
             preview: Some(Preview {

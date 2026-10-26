@@ -23,8 +23,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use git_gotten_protocol::{
-    Branch, CommandPlan, CommitDetail, FileDiff, Graph, LogEntry, Op, OpResult, OpStarted, Remote,
-    RepoId, RepoMeta, Risk, Status, StatusChanged, Tag,
+    Branch, CommandPlan, CommitDetail, ConflictFile, FileDiff, Graph, LogEntry, Op, OpResult,
+    OpStarted, Remote, RepoId, RepoMeta, Risk, Status, StatusChanged, Tag,
 };
 use gitcore::{GitError, GitExecutor};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
@@ -209,6 +209,17 @@ impl Backend {
             .get(id)
             .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
         Ok(repo.diff_file(path)?)
+    }
+
+    /// The 3-way view of one unmerged file in an open repository (IPC
+    /// `load_conflict`, the conflict editor, SPEC §10.5): the three side
+    /// versions (index stages 1/2/3) plus the parsed diff3 segments.
+    pub fn load_conflict(&self, id: &str, path: &str) -> Result<ConflictFile, AppError> {
+        let repos = self.registry.lock_repos();
+        let repo = repos
+            .get(id)
+            .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
+        Ok(repo.conflict_file(path)?)
     }
     /// The branches of an open repository (IPC `load_branches`, SPEC §10.5).
     pub fn load_branches(&self, id: &str) -> Result<Vec<Branch>, AppError> {
@@ -428,6 +439,15 @@ fn load_diff(
 ) -> Result<FileDiff, AppError> {
     state.load_diff(&repo, &path)
 }
+/// The 3-way view of one unmerged file (IPC `load_conflict`, SPEC §10.5).
+#[tauri::command]
+fn load_conflict(
+    repo: RepoId,
+    path: String,
+    state: State<'_, Backend>,
+) -> Result<ConflictFile, AppError> {
+    state.load_conflict(&repo, &path)
+}
 /// The branches of an open repository (IPC `load_branches`, SPEC §10.5).
 #[tauri::command]
 fn load_branches(repo: RepoId, state: State<'_, Backend>) -> Result<Vec<Branch>, AppError> {
@@ -563,6 +583,7 @@ pub fn run() {
             load_graph,
             load_commit,
             load_diff,
+            load_conflict,
             load_branches,
             load_remotes,
             load_tags,
@@ -582,6 +603,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use git_gotten_protocol::{ConflictResolution, ConflictSide};
     use git_gotten_testutil as testutil;
 
     #[test]
@@ -1000,5 +1022,112 @@ mod tests {
         assert!(result.ok, "stderr: {}", result.stderr);
         assert!(result.conflicts.is_empty());
         let _ = fx;
+    }
+
+    // ── Stage 8: conflict resolution ─────────────────────────────────────
+
+    /// The full path the web uses for conflict resolution: merge (stops on
+    /// the conflict) → `load_conflict` (3-way) → ResolveConflict →
+    /// ContinueOp — the merge commits with the chosen side.
+    #[tokio::test]
+    async fn run_op_resolves_and_continues_a_merge() {
+        let (backend, _rx) = Backend::new();
+        let fx = diverged_conflict_fixture();
+        backend.open(fx.id()).unwrap();
+
+        let merge = backend
+            .plan(fx.id(), &Op::Merge { source: "side".into() })
+            .unwrap();
+        let result = backend.run_op(fx.id(), &merge).await.unwrap();
+        assert!(!result.ok, "the merge stops on the conflict");
+        assert_eq!(result.conflicts, vec!["f.txt".to_string()]);
+
+        // The 3-way read sees all three sides from the index stages.
+        let cf = backend.load_conflict(fx.id(), "f.txt").unwrap();
+        assert_eq!(
+            (cf.base.as_str(), cf.ours.as_str(), cf.theirs.as_str()),
+            ("base\n", "main\n", "side\n")
+        );
+
+        let resolve = backend
+            .plan(
+                fx.id(),
+                &Op::ResolveConflict {
+                    path: "f.txt".into(),
+                    resolution: ConflictResolution::Side(ConflictSide::Ours),
+                },
+            )
+            .unwrap();
+        let result = backend.run_op(fx.id(), &resolve).await.unwrap();
+        assert!(result.ok, "stderr: {}", result.stderr);
+        assert!(
+            result.conflicts.is_empty(),
+            "resolving clears the unmerged list"
+        );
+
+        let cont = backend.plan(fx.id(), &Op::ContinueOp).unwrap();
+        assert_eq!(cont.display, "git merge --continue");
+        let result = backend.run_op(fx.id(), &cont).await.unwrap();
+        assert!(result.ok, "stderr: {}", result.stderr);
+        assert!(!backend.load_status(fx.id()).unwrap().in_merge);
+        assert_eq!(
+            std::fs::read_to_string(fx.path.join("f.txt")).unwrap(),
+            "main\n",
+            "the merge committed the chosen side"
+        );
+        let _ = fx;
+    }
+
+    /// Aborting a merge through the backend restores the pre-operation state.
+    #[tokio::test]
+    async fn run_op_aborts_a_merge() {
+        let (backend, _rx) = Backend::new();
+        let fx = diverged_conflict_fixture();
+        backend.open(fx.id()).unwrap();
+
+        let merge = backend
+            .plan(fx.id(), &Op::Merge { source: "side".into() })
+            .unwrap();
+        let result = backend.run_op(fx.id(), &merge).await.unwrap();
+        assert!(!result.ok, "the merge stops on the conflict");
+
+        let abort = backend.plan(fx.id(), &Op::AbortOp).unwrap();
+        assert_eq!(abort.display, "git merge --abort");
+        let result = backend.run_op(fx.id(), &abort).await.unwrap();
+        assert!(result.ok, "stderr: {}", result.stderr);
+        assert!(result.conflicts.is_empty());
+        assert!(!backend.load_status(fx.id()).unwrap().in_merge);
+        assert_eq!(
+            std::fs::read_to_string(fx.path.join("f.txt")).unwrap(),
+            "main\n",
+            "the worktree is back to its pre-merge state"
+        );
+        let _ = fx;
+    }
+
+    /// `load_conflict` on a non-conflicted path surfaces the git engine's
+    /// NoConflict error (serialized to its display string for the web).
+    #[test]
+    fn load_conflict_on_a_clean_path_errors() {
+        let (backend, _rx) = Backend::new();
+        let fx = testutil::Fixture::new("app-conflict-clean");
+        fx.commit_file("a.txt", "one\n", "c1");
+        backend.open(fx.id()).unwrap();
+
+        let err = backend.load_conflict(fx.id(), "a.txt").unwrap_err();
+        assert!(
+            matches!(err, AppError::Git(GitError::NoConflict { .. })),
+            "got {err}"
+        );
+    }
+
+    /// `load_conflict` on an unknown repo id is a RepoNotOpen.
+    #[test]
+    fn load_conflict_on_unknown_repo_errors() {
+        let (backend, _rx) = Backend::new();
+        let err = backend
+            .load_conflict("/does/not/exist", "f.txt")
+            .unwrap_err();
+        assert!(matches!(err, AppError::RepoNotOpen(_)), "got {err}");
     }
 }

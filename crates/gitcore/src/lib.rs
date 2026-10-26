@@ -10,19 +10,17 @@
 //! and per-file change kinds with binary sniffing).
 //!
 //! Stage 7 adds the sync + merge read side: [`Repo::unmerged_files`] (the
-//! unmerged paths of a stopped merge/rebase/cherry-pick — the stage-8
-//! conflict view's input).
+//! unmerged paths of a stopped merge/rebase/cherry-pick).
+//!
+//! Stage 8 adds the conflict-resolution engine: [`Repo::conflict_file`] (the
+//! 3-way view of an unmerged file from index stages 1/2/3, SPEC §10.5) and
+//! the in-progress-operation detection that the continue/abort plans use.
 //!
 //! Stage 2 implements the command layer: [`Repo::plan`] (compile an [`Op`] into a
 //! visible [`CommandPlan`]) and the executor ([`GitExecutor`] runs plans through the
 //! real git binary, serialized per repo by [`OpQueue`]).
 
-use std::collections::HashSet;
-use std::io::Read;
-use std::path::{Path, PathBuf};
-
-use gix::hash::ObjectId;
-
+mod conflict;
 mod diff;
 mod exec;
 mod plan;
@@ -30,12 +28,19 @@ mod show;
 
 /// Shared read-model types, re-exported so `gitcore::Status` etc. read naturally.
 pub use git_gotten_protocol::{
-    Author, Branch, ChangeKind, CommandPlan, CommitDetail, FileChange, FileDiff, FileStat,
-    GitStep, Graph, Hunk, Op, OpResult, Preview, RefLabel, Remote, RepoMeta, RepoId, Risk,
-    Status, Tag,
+    Author, Branch, ChangeKind, CommandPlan, CommitDetail, ConflictFile, FileChange, FileDiff,
+    FileStat, GitStep, Graph, Hunk, Op, OpResult, Preview, RefLabel, Remote, RepoMeta,
+    RepoId, Risk, Status, Tag,
 };
+pub use conflict::InProgressOp;
 pub use exec::{GitExecutor, OpQueue};
 pub use show::{numstat, patch};
+
+use std::collections::HashSet;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+
+use gix::hash::ObjectId;
 
 /// Errors surfaced by the git engine.
 ///
@@ -90,6 +95,25 @@ pub enum GitError {
     /// An op was requested with an empty target (switch target, remote url, …).
     #[error("target is empty")]
     EmptyTarget,
+
+    /// A conflict op was requested for a path that is not currently unmerged.
+    #[error("no conflict for '{path}': the file is not unmerged")]
+    NoConflict { path: String },
+
+    /// Continue/abort was requested but no merge/rebase/cherry-pick is in
+    /// progress.
+    #[error("no merge, rebase, or cherry-pick in progress")]
+    NoOpInProgress,
+
+    /// The per-hunk choices do not match the file's conflict regions (the
+    /// conflict changed between viewing and resolving).
+    #[error("the file has {expected} conflict region(s) but {given} choice(s) were given")]
+    ConflictMismatch { expected: usize, given: usize },
+
+    /// A per-hunk resolution was requested for a binary file (only a whole-side
+    /// resolution is possible there).
+    #[error("per-hunk resolution is not available for binary file '{path}'")]
+    BinaryConflict { path: String },
 
     /// A push was requested while HEAD is detached (there is no branch to push).
     #[error("cannot push: no branch checked out (detached HEAD)")]
@@ -227,6 +251,29 @@ impl Repo {
             .filter(|c| c.kind == ChangeKind::Conflicted)
             .map(|c| c.path.clone())
             .collect())
+    }
+    /// The full 3-way view of one unmerged file (IPC `load_conflict`,
+    /// SPEC §10.5): the three side versions (index stages 1/2/3) plus the
+    /// parsed diff3 segments — the conflict editor's input.
+    ///
+    /// A path that is not currently unmerged is [`GitError::NoConflict`].
+    /// Binary files (and non-UTF-8 sides) carry the `binary` flag with no
+    /// text fields — only a whole-side resolution is possible there.
+    pub fn conflict_file(&self, path: &str) -> Result<ConflictFile, GitError> {
+        let status = self.status()?;
+        let change = status
+            .changes
+            .iter()
+            .find(|c| c.path == path && c.kind == ChangeKind::Conflicted)
+            .ok_or_else(|| GitError::NoConflict { path: path.to_string() })?;
+        conflict::conflict_file(&self.path, path, change.binary)
+    }
+
+    /// The in-progress merge/rebase/cherry-pick, from the git-directory state
+    /// markers (`None` when the repository is not mid-operation). The
+    /// continue/abort plans and the status flags derive from the same markers.
+    pub fn in_progress_op(&self) -> Option<InProgressOp> {
+        conflict::in_progress_op(self.inner.path())
     }
     /// The working-tree diff of one file (SPEC §10.2): the file's staged
     /// (index-vs-HEAD) and unstaged (worktree-vs-index) hunks, each flagged,
@@ -762,6 +809,7 @@ fn compute_status(repo: &gix::Repository) -> Result<Status, GitError> {
     let git_dir = repo.path();
     let in_merge = git_dir.join("MERGE_HEAD").exists();
     let in_rebase = git_dir.join("rebase-merge").is_dir() || git_dir.join("rebase-apply").is_dir();
+    let in_cherry_pick = git_dir.join("CHERRY_PICK_HEAD").exists();
 
     Ok(Status {
         branch,
@@ -773,6 +821,7 @@ fn compute_status(repo: &gix::Repository) -> Result<Status, GitError> {
         changes,
         in_merge,
         in_rebase,
+        in_cherry_pick,
     })
 }
 

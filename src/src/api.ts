@@ -5,6 +5,7 @@ import type {
   BuildInfo,
   CommandPlan,
   CommitDetail,
+  ConflictFile,
   FileDiff,
   Graph,
   LogEntry,
@@ -96,6 +97,21 @@ export async function loadDiff(
     return null;
   }
   return await invoke<FileDiff>("load_diff", { repo, path });
+}
+
+/**
+ * Load the full 3-way view of one conflicted file (Rust `load_conflict`
+ * command, the conflict editor, SPEC §10.5): the three side versions plus
+ * the parsed diff3 segments. Returns `null` outside Tauri.
+ */
+export async function loadConflict(
+  repo: RepoId,
+  path: string,
+): Promise<ConflictFile | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<ConflictFile>("load_conflict", { repo, path });
 }
 /**
  * Load the branches of an open repository (Rust `load_branches` command,

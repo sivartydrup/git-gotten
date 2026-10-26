@@ -402,12 +402,11 @@ git push -u origin main
 
 **Design:**
 - `crates/gitcore`:
-  - `fn conflicts(&self) -> Vec<ConflictFile>` (paths in `UU`/`AA` state).
-  - `fn conflict_content(&self, path) -> ThreeWay { base, ours, theirs }` (from stage 1/2/3 of the index).
-  - `fn resolve_conflict(path, hunks: Vec<HunkChoice>)` (write resolved file, stage it; `HunkChoice { AcceptOurs | AcceptTheirs | AcceptBoth | Custom(String) }`).
-  - `fn continue_op()` (`git merge --continue` / `rebase --continue` / `cherry-pick --continue`), `fn abort_op()` (`… --abort`).
-  - `fn open_in_editor(path)` → hand off to `$EDITOR`/configured diff tool (Stage 2 executor).
-- Web: `ConflictView` — progress "k of N files resolved"; per file: **base/ours/theirs** (side-by-side or combined, user preference); per conflict-hunk: accept ours/theirs/both/manual (CodeMirror); **Continue** / **Abort** / **Open in $EDITOR**. A **recoverable-state banner** (top) whenever the repo is mid-merge/rebase/cherry-pick (from Stage 1 status), with Continue/Abort.
+ - `fn unmerged_files(&self) -> Vec<String>` (paths in `UU`/`AA` state — the Stage 7 read model) + `fn conflict_file(&self, path) -> ConflictFile` (the three index stages 1/2/3 **plus** the parsed diff3 `segments` that drive the combined view; binary files carry the flag with empty text).
+ - `Op::ResolveConflict { path, resolution }` (`ConflictResolution::Hunks(Vec<HunkChoice>)` — `AcceptOurs | AcceptTheirs | AcceptBoth | Custom(String)` — or `Side` for whole-file/binary) → write the resolved file + stage it.
+ - `Op::ContinueOp` (`git merge|rebase|cherry-pick --continue`, derived from the in-progress state) and `Op::AbortOp` (`… --abort`, `Dangerous`).
+ - `Op::OpenEditor { paths }` → a plan step that spawns the configured editor (`core.editor`/`$GIT_EDITOR`/`$EDITOR`) — the external-editor fallback.
+- Web: `ConflictView` — a recoverable-state **banner** (top, on every tab) whenever the repo is mid-merge/rebase/cherry-pick, with "k of N resolved" progress + Continue / Abort / Open-in-editor; the Conflicts tab lists the unmerged files and shows the selected file's **base/ours/theirs** (a Combined / Sides preference toggle); per conflict region: our / their / both / manual (a plain textarea — no CodeMirror dependency).
 
 **Tests (write first):** seed a real conflict (two branches editing the same line, merge) → `conflicts()` lists the file; `resolve_conflict` accepting ours / both / custom yields the expected file content; `continue_op` completes the merge and the commit is created; `abort_op` restores the pre-merge state. Rebase-stop and cherry-pick-stop variants of the same flow.
 

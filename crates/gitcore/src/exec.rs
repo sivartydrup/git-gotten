@@ -203,7 +203,11 @@ impl GitExecutor {
         };
 
         for step in &plan.steps {
-            let mut cmd = tokio::process::Command::new(&program);
+            // Steps normally run the resolved git binary; a step with an
+            // explicit `program` (the external-editor hand-off) runs that
+            // instead (resolved via PATH, like git).
+            let program = step.program.as_deref().unwrap_or(&program);
+            let mut cmd = tokio::process::Command::new(program);
             cmd.args(&step.argv[1..]);
             cmd.current_dir(cwd);
             // `spawn()` (unlike `output()`) inherits stdio by default, so the
@@ -247,7 +251,7 @@ impl GitExecutor {
                         Err(e) => {
                             exit = -1;
                             ok = false;
-                            stderr.push_str(&format!("failed to run git: {e}\n"));
+                            stderr.push_str(&format!("failed to run {program}: {e}\n"));
                             break;
                         }
                     }
@@ -255,7 +259,7 @@ impl GitExecutor {
                 Err(e) => {
                     exit = -1;
                     ok = false;
-                    stderr.push_str(&format!("failed to spawn git: {e}\n"));
+                    stderr.push_str(&format!("failed to spawn {program}: {e}\n"));
                     break;
                 }
             }
@@ -439,6 +443,7 @@ mod tests {
                 risk: Risk::Mutating,
                 effect: None,
                 input: None,
+            program: None,
             }],
             display: format!("git commit -m \"{message}\""),
             preview: None,
@@ -487,6 +492,7 @@ mod tests {
                 risk: Risk::Mutating,
                 effect: None,
                 input: None,
+            program: None,
             }],
             display: "git switch side".into(),
             preview: None,
@@ -540,6 +546,7 @@ mod tests {
                     risk: Risk::Mutating,
                     effect: None,
                     input: None,
+                program: None,
                 },
                 GitStep {
                     argv: vec![
@@ -551,6 +558,7 @@ mod tests {
                     risk: Risk::Mutating,
                     effect: None,
                     input: None,
+                program: None,
                 },
             ],
             display: "git commit -m \"never\" && git switch side".into(),
@@ -589,6 +597,7 @@ mod tests {
                 risk: Risk::ReadOnly,
                 effect: None,
                 input: Some("hello\n".to_string()),
+            program: None,
             }],
             display: "git hash-object -t blob --stdin".to_string(),
             preview: None,

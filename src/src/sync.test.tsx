@@ -107,6 +107,7 @@ const status: Status = {
   changes: [],
   in_merge: false,
   in_rebase: false,
+  in_cherry_pick: false,
 };
 
 /** A minimal `Mutating` plan (the shape the preview/confirm flow receives). */
@@ -120,6 +121,7 @@ function plan(display: string): CommandPlan {
         risk: "Mutating",
         effect: null,
         input: null,
+        program: null,
       },
     ],
     preview: {
@@ -288,7 +290,7 @@ test("merge picker lists other local branches and compiles the op", async () => 
 
 // ── conflicted merge → conflict view (SPEC §10.4/§10.5) ────────────────────
 
-test("a finished op with conflicts routes to the Files tab", async () => {
+test("a finished op with conflicts routes to the Conflicts tab", async () => {
   render(<App />);
   await flush();
   expect(screen.getByRole("tab", { name: "Graph" }).getAttribute("aria-selected")).toBe("true");
@@ -299,7 +301,7 @@ test("a finished op with conflicts routes to the Files tab", async () => {
   await act(async () => {
     cb!(entry(["f.txt"]));
   });
-  expect(screen.getByRole("tab", { name: "Files" }).getAttribute("aria-selected")).toBe("true");
+  expect(screen.getByRole("tab", { name: "Conflicts" }).getAttribute("aria-selected")).toBe("true");
   expect(screen.getByRole("tab", { name: "Graph" }).getAttribute("aria-selected")).toBe("false");
 });
 

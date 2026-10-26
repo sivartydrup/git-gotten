@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useActivityStore, useBuildInfo, useGraphStore, useMainTab, useRefsStore, useRepoStore, useStagingStore } from "./store";
+import { useActivityStore, useBuildInfo, useConflictStore, useGraphStore, useMainTab, useRefsStore, useRepoStore, useStagingStore } from "./store";
 import { onOpFinished, onOpStarted, onStatusChanged } from "./api";
 import { TopBar } from "./components/TopBar";
 import { RepoNav } from "./components/RepoNav";
@@ -11,6 +11,8 @@ import { FilesPanel } from "./components/FilesPanel";
 import { FileDiff } from "./components/FileDiff";
 import { CommitPanel } from "./components/CommitPanel";
 import { RefsPanel, type RefsTab } from "./components/RefsPanel";
+import { ConflictView } from "./components/ConflictView";
+import { ConflictBanner } from "./components/ConflictBanner";
 
 
 /**
@@ -42,6 +44,7 @@ export default function App() {
   const { load } = useBuildInfo();
   const { tab, setTab } = useMainTab();
   const [refsTab, setRefsTab] = useState<RefsTab>("branches");
+  const conflictedCount = useConflictStore((s) => s.files.length);
 
   useEffect(() => {
     void load();
@@ -52,6 +55,9 @@ export default function App() {
     let unlisten: (() => void) | null = null;
     void onStatusChanged((payload) => {
       useRepoStore.getState().applyStatus(payload);
+      // The conflicted-file list (and the 3-way selection) follows the
+      // live status: resolved files drop out, new ones appear.
+      useConflictStore.getState().applyStatus(payload.status);
     }).then((u) => {
       unlisten = u;
     });
@@ -78,6 +84,9 @@ export default function App() {
         // The op may have changed the index/worktree: the staged file's diff
         // (hunk states) must be re-read.
         useStagingStore.getState().reload();
+        // The op may have resolved (or opened) unmerged files: re-read the
+        // shown file's 3-way view.
+        void useConflictStore.getState().reload();
         // The op may have changed refs (branch/remote/tag): re-read them so
         // the tabs and the graph's ref labels stay live.
         void useRefsStore.getState().load(activeId);
@@ -103,6 +112,13 @@ export default function App() {
     }
     // The staging selection is per-repo: drop it when the repo changes.
     useStagingStore.getState().reset();
+    // Same for the conflict selection (the unmerged list re-derives from the
+    // live status of the newly active repo).
+    useConflictStore.getState().reset();
+    const status = activeId ? (useRepoStore.getState().status[activeId] ?? null) : null;
+    if (status) {
+      useConflictStore.getState().applyStatus(status);
+    }
   }, [activeId]);
   // The activity log follows the active repo (its command stream).
   useEffect(() => {
@@ -112,6 +128,7 @@ export default function App() {
   return (
     <main className="shell">
       <TopBar />
+      <ConflictBanner />
       <div className="workspace">
         <RepoNav />
         <div className="main">
@@ -137,6 +154,17 @@ export default function App() {
             <button
               type="button"
               role="tab"
+              aria-selected={tab === "conflicts"}
+              className={`tab ${tab === "conflicts" ? "active" : ""}`}
+              onClick={() => setTab("conflicts")}
+            >
+              Conflicts{conflictedCount > 0 && (
+                <span className="count">({conflictedCount})</span>
+              )}
+            </button>
+            <button
+              type="button"
+              role="tab"
               aria-selected={tab === "branches"}
               className={`tab ${tab === "branches" ? "active" : ""}`}
               onClick={() => setTab("branches")}
@@ -147,6 +175,7 @@ export default function App() {
           <div className="main-content">
             {tab === "graph" && <GraphCanvas />}
             {tab === "files" && <FilesTab />}
+            {tab === "conflicts" && <ConflictView />}
             {tab === "branches" && (
               <div className="refs-tab">
                 <div className="refs-subtabs">

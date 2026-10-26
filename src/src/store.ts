@@ -3,6 +3,7 @@ import {
   fetchBuildInfo,
   loadBranches,
   loadCommit,
+  loadConflict,
   loadDiff,
   loadGraph,
   loadLog,
@@ -18,8 +19,10 @@ import type {
   BuildInfo,
   CommandPlan,
   CommitDetail,
+  ConflictFile,
   FileDiff,
   Graph,
+  HunkChoice,
   LogEntry,
   Op,
   OpFinished,
@@ -154,7 +157,7 @@ function upsertRepo(repos: RepoMeta[], meta: RepoMeta): RepoMeta[] {
 // ── Main content tab (SPEC §7) ──────────────────────────────────────────────
 
 /** The main content tab of the shell. */
-export type MainTab = "graph" | "files" | "branches";
+export type MainTab = "graph" | "files" | "branches" | "conflicts";
 
 interface MainTabState {
   tab: MainTab;
@@ -289,9 +292,9 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
       conflicts: result.conflicts,
     };
     // A conflicted op (merge/rebase/cherry-pick) routes the user to the
-    // Files tab, where the conflicted files are listed (SPEC §10.5).
+    // Conflicts tab, where the 3-way resolution UI lives (SPEC §10.5).
     if (result.conflicts.length > 0) {
-      useMainTab.getState().setTab("files");
+      useMainTab.getState().setTab("conflicts");
     }
     set((s) => ({ activities: [entry, ...s.activities].slice(0, ACTIVITY_CAP) }));
   },
@@ -322,7 +325,7 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
       ),
     }));
     if (entry.conflicts.length > 0) {
-      useMainTab.getState().setTab("files");
+      useMainTab.getState().setTab("conflicts");
     }
   },
 
@@ -550,4 +553,122 @@ export const useStagingStore = create<StagingState>((set, get) => ({
   },
 
   reset: () => set({ file: null, diff: null, loading: false, error: null }),
+}));
+
+// ── Conflict resolution: 3-way view + per-region choices (SPEC §10.5) ─────
+
+interface ConflictState {
+  /** The unmerged paths of the active repo (live, from the status). */
+  files: string[];
+  /** The unmerged count at the start of the current operation — the
+   * denominator of the banner's "k of N resolved" progress. */
+  total: number;
+  /** The path whose 3-way view is shown (`null` = none selected). */
+  file: string | null;
+  /** The 3-way view of `file` (from `load_conflict`). */
+  conflict: ConflictFile | null;
+  /** The per-region choices for the shown file, in the order of its
+   * `Conflict` segments. Every region pre-selects "ours" (the UI default)
+   * until the user picks otherwise. */
+  choices: HunkChoice[];
+  /** `true` while a `load_conflict` round-trip is in flight. */
+  loading: boolean;
+  /** Last `load_conflict` failure (the Rust error string). */
+  error: string | null;
+  /** Sync the unmerged list (and the "k of N" baseline) from a live status. */
+  applyStatus: (status: Status) => void;
+  /** Select a file and load its 3-way view; `null` clears the selection. */
+  selectFile: (path: string | null) => void;
+  /** Record one region's choice (region index into the `Conflict` segments). */
+  setChoice: (index: number, choice: HunkChoice) => void;
+  /** Read `path`'s 3-way view into the shown-file state. */
+  load: (path: string) => Promise<void>;
+  /** Re-read the shown file's 3-way view (after an op mutates the tree). */
+  reload: () => Promise<void>;
+  /** Drop the selection and view (the active repo changed). */
+  reset: () => void;
+}
+
+/** Client state for the conflict-resolution UI (the Conflicts tab, SPEC §10.5). */
+export const useConflictStore = create<ConflictState>((set, get) => ({
+  files: [],
+  total: 0,
+  file: null,
+  conflict: null,
+  choices: [],
+  loading: false,
+  error: null,
+
+  applyStatus: (status) => {
+    const unmerged = status.changes
+      .filter((c) => c.kind === "Conflicted")
+      .map((c) => c.path);
+    const { file, total } = get();
+    // Baseline for "k of N": the first non-empty observation (and every
+    // later growth) is what the banner counts down from.
+    const newTotal = Math.max(total, unmerged.length);
+    if (file && !unmerged.includes(file)) {
+      // The shown file was resolved (in-app or externally): clear it.
+      set({ files: unmerged, total: newTotal, file: null, conflict: null, choices: [] });
+      return;
+    }
+    set({ files: unmerged, total: newTotal });
+  },
+
+  selectFile: (path) => {
+    set({ file: path, conflict: null, choices: [], error: null, loading: false });
+    if (path) {
+      void get().load(path);
+    }
+  },
+
+  setChoice: (index, choice) => {
+    const { choices } = get();
+    if (index < 0 || index >= choices.length) {
+      return;
+    }
+    const next = choices.slice();
+    next[index] = choice;
+    set({ choices: next });
+  },
+
+  load: async (path) => {
+    set({ loading: true, error: null });
+    try {
+      const repo = useRepoStore.getState().activeId;
+      const conflict = repo ? await loadConflict(repo, path) : null;
+      if (get().file !== path) {
+        return; // stale response: the selection moved on
+      }
+      const regions = conflict
+        ? conflict.segments.filter((s) => "Conflict" in s).length
+        : 0;
+      // Every region starts "ours" until the user decides per region.
+      const choices: HunkChoice[] = Array.from(
+        { length: regions },
+        () => "AcceptOurs"
+      );
+      set({ conflict, choices, loading: false });
+    } catch (e) {
+      if (get().file !== path) {
+        return;
+      }
+      set({
+        conflict: null,
+        choices: [],
+        loading: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+
+  reload: async () => {
+    const { file } = get();
+    if (file) {
+      await get().load(file);
+    }
+  },
+
+  reset: () =>
+    set({ files: [], total: 0, file: null, conflict: null, choices: [], loading: false, error: null }),
 }));

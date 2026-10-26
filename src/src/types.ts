@@ -54,6 +54,8 @@ export interface Status {
   in_merge: boolean;
   /** True while a rebase is in progress (`.git/rebase-merge` or `rebase-apply`). */
   in_rebase: boolean;
+  /** True while a cherry-pick is in progress (`.git/CHERRY_PICK_HEAD` present). */
+  in_cherry_pick: boolean;
 }
 
 /** Quick summary of an open repo, for the workspace nav (SPEC §7). */
@@ -143,6 +145,9 @@ export interface GitStep {
   effect: string | null;
   /** Optional text piped to the process's stdin; `null` for steps that take no input. */
   input: string | null;
+  /** The program to spawn when this step is not a git invocation (the
+   * external-editor hand-off); `null` for all git steps. */
+  program: string | null;
 }
 
 /** What will change before a risky op runs (Rust `Preview`, SPEC §8). */
@@ -217,7 +222,11 @@ export type Op =
   | { kind: "tag_create"; name: string; target: string; annotated: boolean; message: string | null }
   | { kind: "tag_checkout"; name: string; force: boolean }
   | { kind: "tag_delete"; name: string; remote: string | null }
-  | { kind: "tag_push"; remote: string; name: string; force: boolean };
+  | { kind: "tag_push"; remote: string; name: string; force: boolean }
+  | { kind: "resolve_conflict"; path: string; resolution: ConflictResolution }
+  | { kind: "continue_op" }
+  | { kind: "abort_op" }
+  | { kind: "open_editor"; paths: string[] };
 
 /** The result of running a [`CommandPlan`] (Rust `OpResult`, safe failure, SPEC §8). */
 export interface OpResult {
@@ -361,6 +370,55 @@ export interface FileDiff {
   hunks: Hunk[];
 }
 
+// ── Conflict resolution (Rust `git_gotten_protocol`, SPEC §10.5) ──────────
+
+/** The three versions of one conflict region (index stages 1 / 2 / 3). */
+export interface ConflictHunk {
+  /** The base (common ancestor, stage 1) content of the region. */
+  base: string;
+  /** The ours (stage 2, HEAD) content of the region. */
+  ours: string;
+  /** The theirs (stage 3, the incoming ref) content of the region. */
+  theirs: string;
+}
+
+/** One span of a file's 3-way diff: unchanged text, or a conflict region. */
+export type ConflictSegment =
+  | { Common: string }
+  | { Conflict: ConflictHunk };
+
+/** Which side a whole-file resolution takes. */
+export type ConflictSide = "Ours" | "Theirs";
+
+/** How the user resolves one conflict region. */
+export type HunkChoice =
+  | "AcceptOurs"
+  | "AcceptTheirs"
+  | "AcceptBoth"
+  | { Custom: string };
+
+/** How one conflicted file is resolved (the input of `resolve_conflict`). */
+export type ConflictResolution =
+  | { Hunks: HunkChoice[] }
+  | { Side: ConflictSide };
+
+/** The full 3-way view of one conflicted file (the `load_conflict` read). */
+export interface ConflictFile {
+  /** The file path (repo-relative). */
+  path: string;
+  /** `true` when the content is binary: the text fields and segments are
+   * empty, and only a whole-side resolution is offered. */
+  binary: boolean;
+  /** The full base (common ancestor) version of the file; empty for binary. */
+  base: string;
+  /** The full ours (HEAD) version of the file; empty for binary. */
+  ours: string;
+  /** The full theirs (incoming) version of the file; empty for binary. */
+  theirs: string;
+  /** The parsed 3-way structure in file order; the `Conflict` segments'
+   * order is the `HunkChoice` index space. */
+  segments: ConflictSegment[];
+}
 /** Full details of one commit, for the inspect drawer (Rust `CommitDetail`). */
 export interface CommitDetail {
   hash: string;

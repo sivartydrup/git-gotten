@@ -121,6 +121,7 @@ const status: Status = {
   changes: [],
   in_merge: false,
   in_rebase: false,
+  in_cherry_pick: false,
 };
 
 /** A minimal `Mutating` plan (the shape the preview/confirm flow receives). */
@@ -134,6 +135,7 @@ function plan(display: string): CommandPlan {
         risk: "Mutating",
         effect: null,
         input: null,
+        program: null,
       },
     ],
     preview: {

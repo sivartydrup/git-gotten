@@ -34,6 +34,7 @@ const commitPlan: CommandPlan = {
       risk: "Mutating",
       effect: null,
       input: null,
+      program: null,
     },
   ],
   preview: {
@@ -253,6 +254,7 @@ test("Dangerous (force-push) preview requires type-to-confirm before running", a
         risk: "Dangerous",
         effect: "force-push main — remote loses 2 commits",
         input: null,
+        program: null,
       },
     ],
     preview: {

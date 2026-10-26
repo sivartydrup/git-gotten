@@ -1,4 +1,4 @@
-import { useRepoStore, useStagingStore } from "../store";
+import { useConflictStore, useMainTab, useRepoStore, useStagingStore } from "../store";
 import type { ChangeKind, FileChange } from "../types";
 
 /** Git-status-style short labels for each change kind. */
@@ -81,9 +81,31 @@ export function FilesPanel() {
   }
 
   const { changes } = activeStatus;
-  const staged = changes.filter((c) => c.staged);
+  const conflicted = changes.filter((c) => c.kind === "Conflicted");
+  const staged = changes.filter((c) => c.staged && c.kind !== "Conflicted");
   const untracked = changes.filter((c) => !c.staged && c.kind === "Untracked");
-  const modified = changes.filter((c) => !c.staged && c.kind !== "Untracked");
+  const modified = changes.filter(
+    (c) => !c.staged && c.kind !== "Untracked" && c.kind !== "Conflicted"
+  );
+
+  const conflictFile = useConflictStore((s) => s.file);
+  const openConflict = (path: string) => {
+    useMainTab.getState().setTab("conflicts");
+    useConflictStore.getState().selectFile(path);
+  };
+
+  const renderConflictedGroup = conflicted.length > 0 ? (
+    <Group title="Conflicted" count={conflicted.length}>
+      {conflicted.map((c) => (
+        <FileRow
+          key={c.path}
+          change={c}
+          selected={conflictFile === c.path}
+          onSelect={openConflict}
+        />
+      ))}
+    </Group>
+  ) : null;
 
   const renderGroup = (title: string, group: FileChange[]) =>
     group.length > 0 ? (
@@ -108,6 +130,7 @@ export function FilesPanel() {
           `${changes.length} changed file${changes.length === 1 ? "" : "s"}`
         )}
       </p>
+      {renderConflictedGroup}
       {renderGroup("Staged", staged)}
       {renderGroup("Changes", modified)}
       {renderGroup("Untracked", untracked)}

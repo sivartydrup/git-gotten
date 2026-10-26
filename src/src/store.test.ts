@@ -49,6 +49,7 @@ const status: Status = {
   ],
   in_merge: false,
   in_rebase: false,
+  in_cherry_pick: false,
 };
 
 beforeEach(() => {

@@ -87,6 +87,7 @@ test("renders a seeded repo: nav entry, top-bar state, and changes", async () =>
     ],
     in_merge: false,
     in_rebase: false,
+    in_cherry_pick: false,
   };
   useRepoStore.setState({ repos: [meta], activeId: meta.id, status: { [meta.id]: status } });
 
@@ -129,6 +130,7 @@ test("shows a clean tree for a repo with no changes", async () => {
         changes: [],
         in_merge: false,
         in_rebase: true,
+        in_cherry_pick: false,
       },
     },
   });
@@ -177,6 +179,7 @@ test("commit flow: preview shows the exact command, confirm runs and records it"
         ],
         in_merge: false,
         in_rebase: false,
+        in_cherry_pick: false,
       },
     },
   });

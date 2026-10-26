@@ -9,21 +9,28 @@
 //! activity log, SPEC §8/§9): it is the exact argv, quoted only where necessary.
 
 use git_gotten_protocol::{
-    Author, ChangeKind, CommandPlan, GitStep, Op, Preview, ResetMode, Risk, Status,
+    Author, ChangeKind, CommandPlan, ConflictResolution, ConflictSide, GitStep, Op, Preview,
+    ResetMode, Risk, Status,
 };
 
-use crate::{ahead_behind, upstream_of, GitError, Repo};
+use crate::{ahead_behind, conflict, upstream_of, GitError, Repo};
 
 /// Join a git argv into the `display` string shown in the UI.
 ///
-/// The `git` program itself is never quoted (it is `argv[0]`, resolved separately).
-/// Arguments are wrapped in double quotes only when they are empty or contain
-/// whitespace or quotes, so simple commands read `git push origin main` while a
-/// message with spaces reads `git commit -m "fix: the thing"`.
+/// `argv[0]` is included, bare (never quoted): for normal steps it is the
+/// literal `git` (the resolved binary path is never shown), for the
+/// external-editor hand-off step it is the editor program. Arguments are
+/// wrapped in double quotes only when they are empty or contain whitespace
+/// or quotes, so simple commands read `git push origin main` while a message
+/// with spaces reads `git commit -m "fix: the thing"`.
 pub fn format_argv(argv: &[String]) -> String {
+    join_quoted(argv, 0)
+}
+
+fn join_quoted(argv: &[String], start: usize) -> String {
     let mut out = String::new();
-    for (i, arg) in argv.iter().enumerate() {
-        if i > 0 {
+    for (i, arg) in argv.iter().enumerate().skip(start) {
+        if i > start {
             out.push(' ');
         }
         if arg.is_empty() || arg.contains(' ') || arg.contains('"') {
@@ -46,9 +53,10 @@ pub fn format_argv(argv: &[String]) -> String {
 impl Repo {
     /// Compile `op` into a [`CommandPlan`], reading the current repository state.
     ///
-    /// Planning never *mutates*: the only git invocations it makes are read-only
-    /// diffs (the discard / stage-hunks previews). The same op compiled twice
-    /// against the same state yields the same plan.
+    /// Planning never *mutates*: the git invocations it makes are read-only
+    /// (the discard / stage-hunks / conflict previews — diffs, `ls-files`,
+    /// `show`, `merge-file`, `config`). The same op compiled twice against the
+    /// same state yields the same plan.
     pub fn plan(&self, op: &Op) -> Result<CommandPlan, GitError> {
         let status = self.status()?;
         match op {
@@ -112,6 +120,12 @@ impl Repo {
                 name,
                 force,
             } => plan_tag_push(self, remote, name, *force),
+            Op::ResolveConflict { path, resolution } => {
+                plan_resolve_conflict(self, &status, path, resolution)
+            }
+            Op::ContinueOp => plan_continue_op(self, &status),
+            Op::AbortOp => plan_abort_op(self, &status),
+            Op::OpenEditor { paths } => plan_open_editor(self, paths),
         }
     }
 }
@@ -208,6 +222,7 @@ fn plan_commit(
             risk: Risk::Mutating,
             effect: amend.then(|| "rewrites the last commit".to_string()),
             input: None,
+        program: None,
         }],
         display,
         preview: Some(preview),
@@ -243,6 +258,7 @@ fn plan_checkout(status: &Status, target: &str, force: bool) -> Result<CommandPl
             risk: Risk::Mutating,
             effect: None,
             input: None,
+        program: None,
         }],
         display,
         preview: Some(Preview {
@@ -334,6 +350,7 @@ fn plan_push(
             risk,
             effect,
             input: None,
+        program: None,
         }],
         display,
         preview: Some(Preview {
@@ -386,6 +403,7 @@ fn plan_pull(status: &Status, rebase: bool) -> Result<CommandPlan, GitError> {
             risk: Risk::Mutating,
             effect: None,
             input: None,
+        program: None,
         }],
         display,
         preview: Some(Preview {
@@ -461,6 +479,7 @@ fn plan_merge(repo: &Repo, status: &Status, source: &str) -> Result<CommandPlan,
             risk: Risk::Mutating,
             effect: None,
             input: None,
+        program: None,
         }],
         display,
         preview: Some(Preview {
@@ -579,6 +598,7 @@ fn plan_branch_create(
         risk: Risk::Mutating,
         effect: None,
         input: None,
+    program: None,
     }];
     if checkout {
         steps.push(GitStep {
@@ -587,6 +607,7 @@ fn plan_branch_create(
             risk: Risk::Mutating,
             effect: None,
             input: None,
+        program: None,
         });
     }
 
@@ -689,6 +710,7 @@ fn plan_branch_delete(
                 risk: Risk::Mutating,
                 effect,
                 input: None,
+            program: None,
             }
         }
         Some(remote) => {
@@ -715,6 +737,7 @@ fn plan_branch_delete(
                 risk: Risk::Mutating,
                 effect: Some(format!("the branch is deleted from {remote}")),
                 input: None,
+            program: None,
             }
         }
     };
@@ -776,6 +799,7 @@ fn plan_branch_rename(
             risk: Risk::Mutating,
             effect: None,
             input: None,
+        program: None,
         }],
         display,
         preview: Some(Preview {
@@ -850,6 +874,7 @@ fn plan_branch_set_upstream(
             risk: Risk::Mutating,
             effect: None,
             input: None,
+        program: None,
         }],
         display,
         preview: None,
@@ -887,6 +912,7 @@ fn plan_remote_add(repo: &Repo, name: &str, url: &str) -> Result<CommandPlan, Gi
             risk: Risk::Mutating,
             effect: None,
             input: None,
+        program: None,
         }],
         display,
         preview: None,
@@ -926,6 +952,7 @@ fn plan_remote_remove(repo: &Repo, name: &str) -> Result<CommandPlan, GitError> 
                 if count == 1 { "" } else { "es" }
             )),
             input: None,
+        program: None,
         }],
         display,
         preview: None,
@@ -961,6 +988,7 @@ fn plan_remote_fetch(
             risk: Risk::Mutating,
             effect: None,
             input: None,
+        program: None,
         }],
         display,
         preview: None,
@@ -1016,6 +1044,7 @@ fn plan_tag_create(
             risk: Risk::Mutating,
             effect: None,
             input: None,
+        program: None,
         }],
         display,
         preview: Some(Preview {
@@ -1060,6 +1089,7 @@ fn plan_tag_checkout(repo: &Repo, name: &str, force: bool) -> Result<CommandPlan
             risk: Risk::Mutating,
             effect: None,
             input: None,
+        program: None,
         }],
         display,
         preview: None,
@@ -1102,6 +1132,7 @@ fn plan_tag_delete(
                 risk: Risk::Mutating,
                 effect: None,
                 input: None,
+            program: None,
             }
         }
         Some(remote) => {
@@ -1124,6 +1155,7 @@ fn plan_tag_delete(
                 risk: Risk::Mutating,
                 effect: Some(format!("the tag is deleted from {remote}")),
                 input: None,
+            program: None,
             }
         }
     };
@@ -1184,6 +1216,7 @@ fn plan_tag_push(
             },
             effect,
             input: None,
+        program: None,
         }],
         display,
         preview: Some(Preview {
@@ -1253,6 +1286,7 @@ fn plan_reset(
             risk,
             effect,
             input: None,
+        program: None,
         }],
         display: format_argv(&[
             "git".to_string(),
@@ -1309,6 +1343,7 @@ fn plan_cherry_pick(
             risk: Risk::Mutating,
             effect: None,
             input: None,
+        program: None,
         }],
         display,
         preview: Some(Preview {
@@ -1354,6 +1389,7 @@ fn plan_stage(status: &Status, path: Option<&str>) -> Result<CommandPlan, GitErr
             risk: Risk::Mutating,
             effect: None,
             input: None,
+        program: None,
         }],
         display,
         preview: Some(preview),
@@ -1393,6 +1429,7 @@ fn plan_unstage(status: &Status, path: Option<&str>) -> Result<CommandPlan, GitE
             risk: Risk::Mutating,
             effect: None,
             input: None,
+        program: None,
         }],
         display,
         preview: Some(preview),
@@ -1464,6 +1501,7 @@ fn plan_discard(repo: &Repo, path: &str) -> Result<CommandPlan, GitError> {
             risk: Risk::Dangerous,
             effect: Some(format!("destroys the uncommitted changes in {path}")),
             input: None,
+        program: None,
         }],
         display,
         preview: Some(preview),
@@ -1528,12 +1566,259 @@ fn plan_stage_hunks(
             risk: Risk::Mutating,
             effect: Some(format!("updates the index for {path}; the worktree is untouched")),
             input: Some(patch),
+                program: None,
         }],
         display,
         preview: Some(preview),
     })
 }
 
+// ── Stage 8: conflict resolution (SPEC §10.5) ─────────────────────────────
+
+/// `git checkout --ours|--theirs -- <path>` + `git add -- <path>` (whole-side
+/// resolution) or `git apply` (stdin: the whole-file patch of the spliced
+/// 3-way) + `git add -- <path>` (per-hunk resolution) — `Mutating`.
+///
+/// Resolving writes the chosen content to the worktree and stages it, which
+/// clears the file's unmerged index entry. The continue/abort plans conclude
+/// or roll back the operation itself.
+fn plan_resolve_conflict(
+    repo: &Repo,
+    status: &Status,
+    path: &str,
+    resolution: &ConflictResolution,
+) -> Result<CommandPlan, GitError> {
+    if !status
+        .changes
+        .iter()
+        .any(|c| c.path == path && c.kind == ChangeKind::Conflicted)
+    {
+        return Err(GitError::NoConflict { path: path.to_string() });
+    }
+    let add_step = GitStep {
+        argv: vec![
+            "git".to_string(),
+            "add".to_string(),
+            "--".to_string(),
+            path.to_string(),
+        ],
+        summary: format!("stage the resolved {path}"),
+        risk: Risk::Mutating,
+        effect: None,
+        input: None,
+        program: None,
+    };
+    match resolution {
+        ConflictResolution::Side(side) => {
+            let (flag, what) = match side {
+                ConflictSide::Ours => ("--ours", "our"),
+                ConflictSide::Theirs => ("--theirs", "their"),
+            };
+            let steps = vec![
+                GitStep {
+                    argv: vec![
+                        "git".to_string(),
+                        "checkout".to_string(),
+                        flag.to_string(),
+                        "--".to_string(),
+                        path.to_string(),
+                    ],
+                    summary: format!("take the {what} version of {path}"),
+                    risk: Risk::Mutating,
+                    effect: None,
+                    input: None,
+                    program: None,
+                },
+                add_step,
+            ];
+            let display = steps
+                .iter()
+                .map(|s| format_argv(&s.argv))
+                .collect::<Vec<_>>()
+                .join(" && ");
+            Ok(CommandPlan {
+                display,
+                steps,
+                preview: Some(Preview {
+                    headline: format!("Resolve {path}: take the {what} version"),
+                    lines: vec![
+                        "the file is written and staged; the unmerged entry is cleared".to_string()
+                    ],
+                    requires_type_to_confirm: false,
+                }),
+            })
+        }
+        ConflictResolution::Hunks(choices) => {
+            let binary = status
+                .changes
+                .iter()
+                .find(|c| c.path == path)
+                .map(|c| c.binary)
+                .unwrap_or(false);
+            if binary {
+                return Err(GitError::BinaryConflict { path: path.to_string() });
+            }
+            // Re-derive the 3-way and splice the choices: the patch's preimage
+            // is the current worktree file, so a file that changed in an
+            // external editor between viewing and resolving makes `git apply`
+            // fail loudly (safe failure, SPEC §8).
+            let patch = conflict::resolve_patch(&repo.path, path, choices)?;
+            let count = choices.len();
+            let mut steps = Vec::new();
+            if let Some(patch) = patch {
+                steps.push(GitStep {
+                    argv: vec!["git".to_string(), "apply".to_string()],
+                    summary: format!("write the resolved {path}"),
+                    risk: Risk::Mutating,
+                    effect: Some(format!(
+                        "replaces the conflicted file content ({count} region choice(s))"
+                    )),
+                    input: Some(patch),
+                    program: None,
+                });
+            }
+            steps.push(add_step);
+            let display = steps
+                .iter()
+                .map(|s| format_argv(&s.argv))
+                .collect::<Vec<_>>()
+                .join(" && ");
+            Ok(CommandPlan {
+                display,
+                steps,
+                preview: Some(Preview {
+                    headline: format!("Resolve {path} ({count} region choice(s))"),
+                    lines: vec![
+                        "the resolved content is written and staged; the unmerged entry is cleared"
+                            .to_string()
+                    ],
+                    requires_type_to_confirm: false,
+                }),
+            })
+        }
+    }
+}
+
+/// `git <merge|rebase|cherry-pick> --continue` — `Mutating`. One plan for the
+/// three in-progress operations (detected from the repository state); git
+/// itself refuses when files are still unmerged.
+fn plan_continue_op(repo: &Repo, status: &Status) -> Result<CommandPlan, GitError> {
+    let Some(op) = repo.in_progress_op() else {
+        return Err(GitError::NoOpInProgress);
+    };
+    let label = op.label();
+    let unmerged = status
+        .changes
+        .iter()
+        .filter(|c| c.kind == ChangeKind::Conflicted)
+        .count();
+    let lines = if unmerged > 0 {
+        vec![format!(
+            "{unmerged} file(s) still unmerged — resolve them first; git will refuse"
+        )]
+    } else {
+        vec!["all conflicts resolved — this commits the operation's result".to_string()]
+    };
+    Ok(CommandPlan {
+        display: format!("git {label} --continue"),
+        steps: vec![GitStep {
+            argv: vec![
+                "git".to_string(),
+                label.to_string(),
+                "--continue".to_string(),
+            ],
+            summary: format!("conclude the {label} in progress"),
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+            program: None,
+        }],
+        preview: Some(Preview {
+            headline: format!("Complete the {label} in progress"),
+            lines,
+            requires_type_to_confirm: false,
+        }),
+    })
+}
+
+/// `git <merge|rebase|cherry-pick> --abort` — `Dangerous` (type-to-confirm):
+/// aborting discards the in-progress operation and any resolution work done
+/// during it, restoring the pre-operation state.
+fn plan_abort_op(repo: &Repo, status: &Status) -> Result<CommandPlan, GitError> {
+    let Some(op) = repo.in_progress_op() else {
+        return Err(GitError::NoOpInProgress);
+    };
+    let label = op.label();
+    let unmerged = status
+        .changes
+        .iter()
+        .filter(|c| c.kind == ChangeKind::Conflicted)
+        .count();
+    let mut lines =
+        vec!["restores the repository to its state before the operation started".to_string()];
+    if unmerged > 0 {
+        lines.push(format!(
+            "{unmerged} unresolved conflict file(s) and any edits made during the operation are discarded"
+        ));
+    }
+    Ok(CommandPlan {
+        display: format!("git {label} --abort"),
+        steps: vec![GitStep {
+            argv: vec![
+                "git".to_string(),
+                label.to_string(),
+                "--abort".to_string(),
+            ],
+            summary: format!("abort the {label} in progress"),
+            risk: Risk::Dangerous,
+            effect: Some(
+                "discards the in-progress operation and its resolution work".to_string(),
+            ),
+            input: None,
+            program: None,
+        }],
+        preview: Some(Preview {
+            headline: format!("Abort the {label} in progress"),
+            lines,
+            requires_type_to_confirm: true,
+        }),
+    })
+}
+
+/// Launch the configured external editor (resolved `core.editor` → `$VISUAL`
+/// → `$EDITOR` → `vi`) on the given paths — `Mutating` (the editor can modify
+/// the files; the app cannot see those edits until the files are re-read).
+/// `argv[0]` is the editor program, so the step carries an explicit
+/// [`GitStep::program`] and the display includes it.
+fn plan_open_editor(repo: &Repo, paths: &[String]) -> Result<CommandPlan, GitError> {
+    if paths.is_empty() || paths.iter().any(|p| p.trim().is_empty()) {
+        return Err(GitError::EmptySelection);
+    }
+    let mut argv = conflict::editor_argv(&repo.path);
+    let program = argv[0].clone();
+    argv.extend(paths.iter().cloned());
+    let count = paths.len();
+    Ok(CommandPlan {
+        display: format_argv(&argv),
+        steps: vec![GitStep {
+            argv,
+            summary: format!("open {count} file(s) in {program}"),
+            risk: Risk::Mutating,
+            effect: Some(format!(
+                "launches {program}; edits made in it are not visible to the app until the files are re-read"
+            )),
+            input: None,
+            program: Some(program.clone()),
+        }],
+        preview: Some(Preview {
+            headline: format!("Open {count} file(s) in the external editor"),
+            lines: vec![format!(
+                "launches `{program}` — the app resumes when the editor closes"
+            )],
+            requires_type_to_confirm: false,
+        }),
+    })
+}
 #[cfg(test)]
 mod tests {
     use super::*;
