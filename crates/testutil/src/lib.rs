@@ -54,6 +54,28 @@ pub struct Fixture {
     remotes: Vec<RemoteFixture>,
 }
 
+/// Canonicalize `dir`, stripping Windows' `\\?\` verbatim prefix.
+///
+/// `git` parses a `\\?\C:\…` argument as an SCP-style `host:path` remote and
+/// fails with "hostname contains invalid characters", so local remotes must be
+/// plain absolute paths.
+fn canonical_path(dir: &Path) -> PathBuf {
+    let path = dir
+        .canonicalize()
+        .unwrap_or_else(|e| panic!("failed to canonicalize {dir:?}: {e}"));
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path
+}
+
 impl Fixture {
     /// `git init -b main` + a local user identity, in a fresh unique temp dir.
     pub fn new(label: &str) -> Self {
@@ -71,7 +93,9 @@ impl Fixture {
         git(&dir, &["config", "user.email", "test@example.com"]);
         git(&dir, &["config", "commit.gpgsign", "false"]);
         git(&dir, &["config", "tag.gpgsign", "false"]);
-        git(&dir, &["config", "core.editor", "true"]);
+        // A real, portable no-op editor: `git --version <path>` exits 0 and
+        // leaves the file alone. (`true` has no Windows executable.)
+        git(&dir, &["config", "core.editor", "git --version"]);
         git(&dir, &["config", "core.autocrlf", "false"]);
         Self {
             path: dir.canonicalize().unwrap_or_else(|e| {
@@ -103,7 +127,7 @@ impl Fixture {
         if code != 0 {
             panic!("bare init failed: {stderr}");
         }
-        let remote_path = dir.canonicalize().unwrap();
+        let remote_path = canonical_path(&dir);
         self.git(&[
             "remote",
             "add",

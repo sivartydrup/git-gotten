@@ -1221,7 +1221,7 @@ code {
   flex: 0 1 160px;
 }
 
-// ── Refs tabs: branches, remotes, tags (SPEC §10.5) ──────────────────────────
+/* ── Refs tabs: branches, remotes, tags (SPEC §10.5) ───────────────────────── */
 
 .refs-subtabs {
   display: flex;

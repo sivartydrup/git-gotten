@@ -284,17 +284,17 @@ fn abort_outside_an_operation_errors() {
 
 #[test]
 fn open_editor_plan_uses_the_configured_editor() {
-    // The fixture pins `core.editor` to `true` (testutil): a program that
-    // exits 0 on any input — the hand-off shape, without launching a GUI.
+    // The fixture pins `core.editor` to `git --version` (testutil): a real
+    // program that exits 0 on any input — the hand-off shape, no GUI.
     let (fx, repo) = clean_fixture();
     let plan = repo
         .plan(&Op::OpenEditor {
             paths: vec!["a.txt".into()],
         })
         .unwrap();
-    assert_eq!(plan.steps[0].argv, vec!["true", "a.txt"]);
-    assert_eq!(plan.steps[0].program.as_deref(), Some("true"));
-    assert_eq!(plan.display, "true a.txt");
+    assert_eq!(plan.steps[0].argv, vec!["git", "--version", "a.txt"]);
+    assert_eq!(plan.steps[0].program.as_deref(), Some("git"));
+    assert_eq!(plan.display, "git --version a.txt");
     assert_eq!(plan.steps[0].risk, Risk::Mutating);
     let _ = fx;
 }
@@ -504,8 +504,8 @@ async fn cherry_pick_conflict_resolves_and_continues() {
 
 #[tokio::test]
 async fn editor_handoff_runs_and_succeeds() {
-    // `core.editor` is pinned to `true` by the fixture: the step runs a
-    // real program (argv[0] = `true`) that exits 0 — the hand-off shape.
+    // `core.editor` is pinned to `git --version` by the fixture: the step
+    // runs a real program that exits 0 — the hand-off shape.
     let (fx, repo) = clean_fixture();
     let result = run(
         &repo,

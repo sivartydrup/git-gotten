@@ -556,7 +556,9 @@ other\n\
         let patch = whole_file_patch("f.txt", Some("old line\nkept\n"), "new line\nkept\n").unwrap();
         let patch_path = fx.path.join("p.patch");
         std::fs::write(&patch_path, &patch).unwrap();
-        let (code, _, stderr) = fx.git_run(&["apply", "-p1", patch_path.to_str().unwrap()]);
+        // The patch path stays relative: git on Windows parses a verbatim
+        // `\\?\…` argument as an SCP-style remote instead of a local file.
+        let (code, _, stderr) = fx.git_run(&["apply", "-p1", "p.patch"]);
         assert_eq!(code, 0, "the whole-file patch must apply: {stderr}");
         assert_eq!(
             std::fs::read_to_string(fx.path.join("f.txt")).unwrap(),

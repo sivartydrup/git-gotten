@@ -1006,7 +1006,7 @@ mod tests {
     #[tokio::test]
     async fn run_op_clean_merge_has_no_conflicts() {
         let (backend, _rx) = Backend::new();
-        let mut fx = testutil::Fixture::new("app-sync-clean");
+        let fx = testutil::Fixture::new("app-sync-clean");
         fx.commit_file("a.txt", "base\n", "c1");
         fx.git(&["checkout", "-b", "side"]);
         fx.commit_file("b.txt", "side\n", "c-side");
