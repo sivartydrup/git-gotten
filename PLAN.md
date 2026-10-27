@@ -17,9 +17,28 @@ and an interactive lane-DAG branch graph as the centerpiece.
 ### Toolchain (install once, before Stage 0)
 - **Rust** (stable, via `rustup`) + `cargo`
 - **Node** (LTS) + `pnpm`
-- **Tauri v2** prerequisites for macOS (Xcode CLT, `libwebkit2gtk` is Linux-only — not needed on macOS) and the `tauri` CLI: `pnpm add -D @tauri-apps/cli`
-- **git** (the real binary the app shells out to)
+- **Tauri v2** prerequisites:
+  - **macOS**: Xcode CLT (`libwebkit2gtk` is Linux-only — not needed on macOS).
+  - **Windows**: **Visual Studio 2022 Build Tools** with the *Desktop development with
+    C++* workload (MSVC `link.exe` + Windows SDK), the **WebView2 runtime** (preinstalled
+    on Windows 11 and current Windows 10), and **Git for Windows** on `PATH` (the app and
+    every test fixture shell out to the real `git`). Use Rust's MSVC toolchain
+    (`stable-x86_64-pc-windows-msvc`); the GNU target needs an external mingw
+    (`dlltool.exe`) and is not supported for this project.
+  - `tauri` CLI: `pnpm add -D @tauri-apps/cli`.
+- **git** (the real binary the app shells out to) — must be on `PATH` when running tests.
 - Primary dev/test OS: **macOS**. Windows is used for the gates marked below.
+- **Windows build notes:**
+  - `cargo` must be on `PATH` (`%USERPROFILE%\.cargo\bin`) when invoking the Tauri CLI or
+    the web build hooks. rustc locates the VS/SDK install via the registry, so a
+    Developer Command Prompt is not required once Build Tools are installed.
+  - `crates/app/tauri.conf.json` bundles `["app"]` (macOS). For a Windows installer run
+    `pnpm tauri build -- --bundles msi` (or add `msi` at Stage 14).
+  - Test fixtures use a local bare remote; the remote path must not carry the Windows
+    `\\?\` verbatim prefix (git parses it as an SCP `host:path`), and the repo-local
+    `core.editor` no-op must be a real portable program (`git --version`, not `true`).
+  - Verified working set (2026-10-27): Rust 1.99.1 MSVC, VS Build Tools 17.14.42 +
+    Windows SDK 10.0.26100, WebView2 155.x, Node 24.22.1, pnpm 10.34.9, Git 2.56.0.
 
 ### The fixed per-stage workflow (do these, in order, every stage)
 1. **Design** — confirm the files, types, functions, and UI components this stage adds (they are enumerated per stage). If the design is ambiguous, resolve it *here* before writing code.

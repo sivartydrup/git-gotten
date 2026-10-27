@@ -5,9 +5,12 @@ need to know Git, yet fully transparent — every operation shows the exact Git 
 runs. Built for multiple repositories and full worktree support, with an interactive
 branching graph at its core. Inspired by GitKraken.
 
-> Status: **spec / pre-build.** No code yet. This document is the source of truth for
-> the design. Anything marked **(default — confirm)** was chosen by the author during
-> spec drafting and is a reasoned default, not a decision from the design interview.
+> Status: **in build** — stages 0–8 of 15 are complete; stage 9 is partial (cherry-pick
+> works, interactive rebase is pending). See [`README.md`](./README.md) for the current
+> state and [`PLAN.md`](./PLAN.md) for the stage plan. This document is the source of
+> truth for the design. Anything marked **(default — confirm)** was chosen by the author
+> during spec drafting and is a reasoned default, not a decision from the design
+> interview.
 
 ---
 
