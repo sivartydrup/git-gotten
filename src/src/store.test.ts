@@ -9,6 +9,7 @@ const { openRepo, loadStatus, loadGraph, loadCommit } = vi.hoisted(() => ({
 
 // Mock the IPC layer; per-test behavior is configured on the hoisted mocks.
 vi.mock("./api", () => ({
+  loadRebaseCommits: vi.fn().mockResolvedValue(null),
   fetchBuildInfo: vi.fn().mockResolvedValue(null),
   openRepo,
   loadStatus,

@@ -13,6 +13,7 @@ import type {
   OpFinished,
   OpResult,
   OpStarted,
+  RebaseCommit,
   Remote,
   RepoId,
   RepoMeta,
@@ -144,6 +145,21 @@ export async function loadTags(repo: RepoId): Promise<Tag[] | null> {
     return null;
   }
   return await invoke<Tag[]>("load_tags", { repo });
+}
+
+/**
+ * Load the commits an interactive rebase onto `target` would rewrite (Rust
+ * `load_rebase_commits` command, the RebaseDialog list, SPEC §10.4). Newest
+ * first, UI order. Returns the list, or `null` outside Tauri.
+ */
+export async function loadRebaseCommits(
+  repo: RepoId,
+  target: string,
+): Promise<RebaseCommit[] | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<RebaseCommit[]>("load_rebase_commits", { repo, target });
 }
 
 /**

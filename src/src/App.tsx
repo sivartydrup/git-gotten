@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { useActivityStore, useBuildInfo, useConflictStore, useGraphStore, useMainTab, useRefsStore, useRepoStore, useStagingStore } from "./store";
+import { useActivityStore, useBuildInfo, useConflictStore, useGraphStore, useMainTab, useRebaseStore, useRefsStore, useRepoStore, useStagingStore } from "./store";
 import { onOpFinished, onOpStarted, onStatusChanged } from "./api";
 import { TopBar } from "./components/TopBar";
 import { RepoNav } from "./components/RepoNav";
 import { ActivityLog } from "./components/ActivityLog";
 import { PreviewDialog } from "./components/PreviewDialog";
+import { RebaseDialog } from "./components/RebaseDialog";
 import { GraphCanvas } from "./components/GraphCanvas";
 import { InspectDrawer } from "./components/InspectDrawer";
 import { FilesPanel } from "./components/FilesPanel";
@@ -124,6 +125,10 @@ export default function App() {
   useEffect(() => {
     void useActivityStore.getState().loadHistory(activeId);
   }, [activeId]);
+  // The rebase dialog follows the active repo (its commit list is per-repo).
+  useEffect(() => {
+    useRebaseStore.getState().reset();
+  }, [activeId]);
 
   return (
     <main className="shell">
@@ -202,6 +207,7 @@ export default function App() {
       </div>
       <ActivityLog />
       <PreviewDialog />
+      <RebaseDialog />
     </main>
   );
 }

@@ -7,6 +7,7 @@ import {
   loadDiff,
   loadGraph,
   loadLog,
+  loadRebaseCommits,
   loadRemotes,
   loadStatus,
   loadTags,
@@ -28,6 +29,7 @@ import type {
   OpFinished,
   OpResult,
   OpStarted,
+  RebaseCommit,
   Remote,
   RepoId,
   Risk,
@@ -487,6 +489,56 @@ export const useRefsStore = create<RefsState>((set) => ({
       });
     }
   },
+}));
+
+// ── Interactive rebase: commit list + RebaseDialog (SPEC §10.4) ────────────
+
+interface RebaseState {
+  /** `true` while the RebaseDialog is open. */
+  open: boolean;
+  /** The commits the rebase would rewrite (newest first, UI order). */
+  commits: RebaseCommit[];
+  /** True while a `loadRebaseCommits` round-trip is in flight. */
+  loading: boolean;
+  /** Last `loadRebaseCommits` failure (the Rust error string). */
+  error: string | null;
+  /** Open the RebaseDialog. */
+  show: () => void;
+  /** Load the commits `target..HEAD` (SPEC §10.4). */
+  load: (repo: RepoId, target: string) => Promise<void>;
+  /** Close the dialog and drop the loaded list. */
+  reset: () => void;
+}
+
+/** Client state for the interactive-rebase flow (SPEC §10.4). */
+export const useRebaseStore = create<RebaseState>((set) => ({
+  open: false,
+  commits: [],
+  loading: false,
+  error: null,
+
+  show: () => set({ open: true }),
+
+  load: async (repo, target) => {
+    set({ loading: true, error: null });
+    try {
+      const commits = await loadRebaseCommits(repo, target);
+      if (!commits) {
+        // Outside Tauri: nothing to list, no error.
+        set({ commits: [], loading: false });
+        return;
+      }
+      set({ commits, loading: false });
+    } catch (e) {
+      set({
+        commits: [],
+        loading: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+
+  reset: () => set({ open: false, commits: [], loading: false, error: null }),
 }));
 
 // ── Staging: file list + per-file diff (SPEC §10.2) ─────────────────────────

@@ -9,7 +9,7 @@ GitGotten is a **Tauri v2** desktop app: a React + TypeScript UI over a Rust cor
 reads with [`gix`](https://github.com/GitoxideLabs/gitoxide) and writes with the real
 `git` CLI.
 
-> Status: **in build — stages 0–8 of 15 complete, stage 9 partial.** There is no release
+> Status: **in build — stages 0–9 of 15 complete, stage 10 next.** There is no release
 > yet. See [Status](#status) below, [`PLAN.md`](./PLAN.md) for the stage plan, and
 > [`SPEC.md`](./SPEC.md) for the full product design.
 
@@ -29,7 +29,7 @@ reads with [`gix`](https://github.com/GitoxideLabs/gitoxide) and writes with the
 
 ## Status
 
-As of **2026-10-27** (`stage-08`). Stage numbers match [`PLAN.md`](./PLAN.md).
+As of **2026-10-29** (`stage-09`). Stage numbers match [`PLAN.md`](./PLAN.md).
 
 | Stage | Area | State |
 |---|---|---|
@@ -42,12 +42,21 @@ As of **2026-10-27** (`stage-08`). Stage numbers match [`PLAN.md`](./PLAN.md).
 | 6 | Branches, remotes, tags | ✅ committed |
 | 7 | Sync: fetch / pull / pull --rebase / push; merge | ✅ committed |
 | 8 | Conflicts: 3-way view, resolve, continue/abort, `$EDITOR` hand-off | ✅ committed |
-| 9 | Interactive rebase + cherry-pick | 🟡 partial — cherry-pick implemented (clean + conflicting); no interactive rebase |
+| 9 | Interactive rebase + cherry-pick | ✅ committed |
 | 10 | Worktrees | ⬜ not started |
 | 11 | Stash, submodules, bisect | ⬜ not started |
 | 12 | Multi-repo workspace (groups, dashboard), persistence, theming | ⬜ not started |
 | 13 | Hardening: performance + reliability | ⬜ not started |
 | 14 | Distribution: packaging, signing, auto-updater | ⬜ not started (unsigned `.msi` builds work) |
+
+**Verification (macOS 25.6, arm64, 2026-10-29):**
+
+- `cargo test --workspace` — 289 passed.
+- `pnpm test` — 98 passed (10 files).
+- `pnpm build` — TypeScript + Vite production build passes.
+- Stage-09 flows (reorder / squash / reword / fixup / drop, `edit` pause + Continue,
+  mid-rebase conflict → resolve → complete, cherry-pick onto a branch (clean +
+  conflicting), published-history Danger gate) run against real `git` in fixture tests.
 
 **Verification (Windows 11, x64, 2026-10-27):**
 
@@ -60,8 +69,7 @@ As of **2026-10-27** (`stage-08`). Stage numbers match [`PLAN.md`](./PLAN.md).
   the watcher, conflict resolved in-app, `git merge --continue`, and
   `git push -u origin main` to a local bare remote.
 
-macOS is the primary platform per the plan; the stage history records its per-stage
-verification, but this checkout's Windows run has not been mirrored on macOS.
+Stage-09 has not been mirrored on Windows yet; the run above predates it.
 
 ## Features implemented today
 
@@ -76,7 +84,8 @@ verification, but this checkout's Windows run has not been mirrored on macOS.
 
 - Branch/commit DAG built with `gix`, laid out into lanes, rendered on HTML canvas.
 - Zoom/pan, click-to-inspect, hover, search filter, follow-HEAD, late-mount sizing.
-- Context actions: create branch at commit, reset (soft/mixed/hard), cherry-pick.
+- Context actions: create branch at commit, reset (soft/mixed/hard), cherry-pick onto a
+  chosen branch.
 
 **Staging & commits**
 
@@ -100,9 +109,20 @@ verification, but this checkout's Windows run has not been mirrored on macOS.
 - Per-region resolutions: ours, theirs, both, or manual text; applies a patch and stages it.
 - External editor resolved from `core.editor` → `$VISUAL` → `$EDITOR` → `vi`.
 
+**Rebase**
+
+- Interactive rebase dialog: reorder commits (drag or ↑/↓), squash / fixup / reword (with a
+  message editor), drop, and an `edit` pause that resumes through Continue. The todo is
+  prepared and run non-interactively via `GIT_SEQUENCE_EDITOR`, so the preview shows the
+  exact todo the rebase executes.
+- Rebase onto any branch from the Branches tab; the dialog defaults onto the current
+  branch's upstream.
+- Rebasing commits already on a remote is `Dangerous`: type-to-confirm with a
+  "rewrites N commits on a remote" warning.
+
 ## Not implemented yet
 
-Interactive rebase (squash/fixup/reorder/edit/drop); worktrees; stash, submodules, bisect;
+Worktrees; stash, submodules, bisect;
 multi-repo groups, pinned/reordered repos, cross-repo dashboard; persisted workspace config
 (`%APPDATA%\GitGotten` / macOS config dir); light/dark theming and the full design system;
 performance hardening on very large repositories; Windows/macOS signing, notarization, and

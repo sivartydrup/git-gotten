@@ -16,6 +16,10 @@
 //! 3-way view of an unmerged file from index stages 1/2/3, SPEC §10.5) and
 //! the in-progress-operation detection that the continue/abort plans use.
 //!
+//! Stage 9 adds the interactive-rebase read: [`Repo::rebase_commits`] (the
+//! `target..HEAD` range behind the RebaseDialog, SPEC §10.4); the rebase
+//! planners and the published-history risk live in [`plan`].
+//!
 //! Stage 2 implements the command layer: [`Repo::plan`] (compile an [`Op`] into a
 //! visible [`CommandPlan`]) and the executor ([`GitExecutor`] runs plans through the
 //! real git binary, serialized per repo by [`OpQueue`]).
@@ -29,8 +33,8 @@ mod show;
 /// Shared read-model types, re-exported so `gitcore::Status` etc. read naturally.
 pub use git_gotten_protocol::{
     Author, Branch, ChangeKind, CommandPlan, CommitDetail, ConflictFile, FileChange, FileDiff,
-    FileStat, GitStep, Graph, Hunk, Op, OpResult, Preview, RefLabel, Remote, RepoMeta,
-    RepoId, Risk, Status, Tag,
+    FileStat, GitStep, Graph, Hunk, Op, OpResult, Preview, RebaseCommit, RefLabel, Remote,
+    RepoMeta, RepoId, Risk, Status, Tag,
 };
 pub use conflict::InProgressOp;
 pub use exec::{GitExecutor, OpQueue};
@@ -138,6 +142,25 @@ pub enum GitError {
     /// A new remote would collide with an existing one.
     #[error("a remote named '{name}' already exists")]
     RemoteExists { name: String },
+
+    /// The interactive-rebase edits do not cover exactly the commits being
+    /// rebased (the todo must name every commit in `target..HEAD` once).
+    #[error("the rebase todo does not match the commits being rebased ({given} given, {expected} in range)")]
+    RebaseTodoMismatch { expected: usize, given: usize },
+
+    /// A squash/fixup was requested for the oldest rebased commit: there is no
+    /// earlier commit to fold it into.
+    #[error("the oldest rebased commit cannot be squashed or fixed up")]
+    RebaseTodoOrder,
+
+    /// A reword was submitted without its new message.
+    #[error("the rebase reword for '{hash}' has no message")]
+    RebaseEditNeedsMessage { hash: String },
+
+    /// A rebase commit message must be a single line (it is carried by a
+    /// todo `exec git commit --amend` line).
+    #[error("a rebase commit message must be a single line")]
+    RebaseMessageMultiLine,
 
     /// The `git` binary is not on the PATH, so no operation can be executed.
     #[error("git executable not found")]
@@ -274,6 +297,15 @@ impl Repo {
     /// continue/abort plans and the status flags derive from the same markers.
     pub fn in_progress_op(&self) -> Option<InProgressOp> {
         conflict::in_progress_op(self.inner.path())
+    }
+    /// Commits an interactive rebase onto `target` would rewrite (IPC
+    /// `load_rebase_commits`, SPEC §10.4): the range `target..HEAD`,
+    /// newest-first — the order the RebaseDialog lists them in.
+    pub fn rebase_commits(&self, target: &str) -> Result<Vec<RebaseCommit>, GitError> {
+        Ok(plan::rebase_range(self, target)?
+            .into_iter()
+            .map(|(hash, subject)| RebaseCommit { hash, subject })
+            .collect())
     }
     /// The working-tree diff of one file (SPEC §10.2): the file's staged
     /// (index-vs-HEAD) and unstaged (worktree-vs-index) hunks, each flagged,
@@ -1323,6 +1355,7 @@ mod tests {
         let plan = repo
             .plan(&Op::CherryPick {
                 hashes: vec![pick],
+                target: None,
             })
             .unwrap();
 

@@ -180,6 +180,24 @@ export interface Author {
   email: string;
 }
 
+/** The action an interactive-rebase todo takes on one commit (Rust `RebaseAction`, SPEC §10.4). */
+export type RebaseAction = "Pick" | "Reword" | "Squash" | "Fixup" | "Edit" | "Drop";
+
+/** One entry of an edited interactive-rebase todo (Rust `RebaseEdit`): UI order, newest commit first. */
+export interface RebaseEdit {
+  /** The commit this edit applies to (full hex oid). */
+  hash: string;
+  action: RebaseAction;
+  /** The new message for `Reword`/`Squash` (single line); `null` keeps git's own. */
+  message: string | null;
+}
+
+/** One commit an interactive rebase onto `target` would rewrite (the `load_rebase_commits` read, Rust `RebaseCommit`). */
+export interface RebaseCommit {
+  hash: string;
+  subject: string;
+}
+
 /** A user operation the core compiles into a [`CommandPlan`] (Rust `Op`, SPEC §13).
  *
  * The web sends intent, never argv: risk is always derived by the core.
@@ -214,7 +232,9 @@ export type Op =
   | { kind: "remote_remove"; name: string }
   | { kind: "remote_fetch"; remote: string; refspec: string | null }
   | { kind: "reset"; mode: "soft" | "mixed" | "hard"; target: string }
-  | { kind: "cherry_pick"; hashes: string[] }
+  | { kind: "cherry_pick"; hashes: string[]; target: string | null }
+  | { kind: "rebase"; target: string; edits: RebaseEdit[] }
+  | { kind: "rebase_onto"; target: string }
   | { kind: "stage"; path: string | null }
   | { kind: "unstage"; path: string | null }
   | { kind: "discard"; path: string }

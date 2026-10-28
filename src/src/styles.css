@@ -1523,3 +1523,75 @@ code {
   display: flex;
   margin-top: 12px;
 }
+
+/* Interactive rebase dialog (SPEC §10.4) */
+.rebase-state {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rebase-state.error {
+  color: var(--error);
+}
+
+.rebase-hint.error {
+  margin-top: 8px;
+  color: var(--error);
+  font-size: 12px;
+}
+
+.rebase-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.rebase-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: grab;
+}
+
+.rebase-row code.rebase-hash {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rebase-subject {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rebase-action {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+.rebase-message {
+  width: 180px;
+  box-sizing: border-box;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  padding: 4px 6px;
+  font-size: 12px;
+}

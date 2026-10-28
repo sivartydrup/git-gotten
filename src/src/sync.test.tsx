@@ -37,6 +37,7 @@ const {
 });
 
 vi.mock("./api", () => ({
+  loadRebaseCommits: vi.fn().mockResolvedValue(null),
   fetchBuildInfo: vi.fn().mockResolvedValue(null),
   openRepo: vi.fn().mockResolvedValue(null),
   loadStatus,

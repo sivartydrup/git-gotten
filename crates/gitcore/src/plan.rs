@@ -3,14 +3,18 @@
 //!
 //! Each `plan_*` reads repository state through the `gix` read-model (branch,
 //! upstream, staged files) to fill in the branch names, blast-radius effects, and
-//! preview lines. Planning is read-only: it runs no git command and mutates nothing.
+//! preview lines. Planning only runs read-only git and mutates nothing — except
+//! the interactive rebase, which writes the todo stub its own argv references
+//! (byte-for-byte the todo the preview shows, so the transparency contract holds).
 //!
 //! `display` is the single source of truth for the UI (inline hint, preview dialog,
 //! activity log, SPEC §8/§9): it is the exact argv, quoted only where necessary.
 
+use std::collections::{HashMap, HashSet};
+
 use git_gotten_protocol::{
     Author, ChangeKind, CommandPlan, ConflictResolution, ConflictSide, GitStep, Op, Preview,
-    ResetMode, Risk, Status,
+    RebaseAction, RebaseEdit, ResetMode, Risk, Status,
 };
 
 use crate::{ahead_behind, conflict, upstream_of, GitError, Repo};
@@ -55,8 +59,9 @@ impl Repo {
     ///
     /// Planning never *mutates*: the git invocations it makes are read-only
     /// (the discard / stage-hunks / conflict previews — diffs, `ls-files`,
-    /// `show`, `merge-file`, `config`). The same op compiled twice against the
-    /// same state yields the same plan.
+    /// `show`, `merge-file`, `config`), and the only file it writes is the
+    /// interactive rebase's todo stub ([`plan_rebase`]). The same op compiled
+    /// twice against the same state yields the same plan.
     pub fn plan(&self, op: &Op) -> Result<CommandPlan, GitError> {
         let status = self.status()?;
         match op {
@@ -88,7 +93,11 @@ impl Repo {
                 checkout,
             } => plan_branch_create(self, name, from, *checkout),
             Op::Reset { mode, target } => plan_reset(self, &status, *mode, target),
-            Op::CherryPick { hashes } => plan_cherry_pick(self, &status, hashes),
+            Op::CherryPick { hashes, target } => {
+                plan_cherry_pick(self, &status, hashes, target.as_deref())
+            }
+            Op::Rebase { target, edits } => plan_rebase(self, &status, target, edits),
+            Op::RebaseOnto { target } => plan_rebase_onto(self, &status, target),
             Op::Stage { path } => plan_stage(&status, path.as_deref()),
             Op::Unstage { path } => plan_unstage(&status, path.as_deref()),
             Op::Discard { path } => plan_discard(self, path),
@@ -1302,20 +1311,38 @@ fn plan_reset(
     })
 }
 
-/// `git cherry-pick <hash>…` — `Mutating`, applied onto the current branch.
+/// `git cherry-pick <hash>…` (preceded by `git switch <target>` when the pick
+/// targets another branch) — `Mutating`: re-apply commits onto the current
+/// branch, or onto `target` (SPEC §10.4).
 ///
 /// Every hash must exist. A conflicting pick fails at run time with git's
-/// output (safe failure, SPEC §8); the in-app conflict flow lands in Stage 8.
+/// output (safe failure, SPEC §8); the Stage 8 flow resolves and continues it
+/// on the target branch.
 fn plan_cherry_pick(
     repo: &Repo,
     status: &Status,
     hashes: &[String],
+    target: Option<&str>,
 ) -> Result<CommandPlan, GitError> {
     if hashes.is_empty() {
         return Err(GitError::EmptySelection);
     }
+    let target = target.map(str::trim).filter(|name| !name.is_empty());
+    // A target other than the current branch switches first: the pick lands
+    // where the user pointed, and a stopped pick continues on that branch.
+    let switch_to = match target {
+        Some(name) if status.branch.as_deref() != Some(name) => {
+            commit_ish(&repo.inner, name)?;
+            Some(name)
+        }
+        _ => None,
+    };
+    let onto = target.unwrap_or_else(|| status.branch.as_deref().unwrap_or("the detached HEAD"));
     let mut lines = Vec::new();
-    let mut argv = vec!["git".to_string(), "cherry-pick".to_string()];
+    if let Some(name) = switch_to {
+        lines.push(format!("switches to {name} first"));
+    }
+    let mut picked = Vec::new();
     for hash in hashes {
         let commit = repo.commit_at(hash)?;
         let subject = commit
@@ -1324,27 +1351,40 @@ fn plan_cherry_pick(
             .summary()
             .to_string();
         lines.push(format!("  {}: {subject}", short_hash(hash)));
-        argv.push(hash.clone());
+        picked.push(hash.clone());
     }
-    lines.push(format!(
-        "onto {}",
-        status
-            .branch
-            .clone()
-            .unwrap_or_else(|| "the detached HEAD".to_string())
-    ));
-    let display = format_argv(&argv);
-    let count = hashes.len();
+    lines.push(format!("onto {onto}"));
 
-    Ok(CommandPlan {
-        steps: vec![GitStep {
-            argv,
-            summary: "cherry-pick onto the current branch".to_string(),
+    let mut steps = Vec::new();
+    if let Some(name) = switch_to {
+        steps.push(GitStep {
+            argv: vec!["git".to_string(), "switch".to_string(), name.to_string()],
+            summary: format!("switch to {name}"),
             risk: Risk::Mutating,
             effect: None,
             input: None,
+            program: None,
+        });
+    }
+    let mut argv = vec!["git".to_string(), "cherry-pick".to_string()];
+    argv.extend(picked);
+    steps.push(GitStep {
+        argv,
+        summary: format!("cherry-pick onto {onto}"),
+        risk: Risk::Mutating,
+        effect: None,
+        input: None,
         program: None,
-        }],
+    });
+    let display = steps
+        .iter()
+        .map(|s| format_argv(&s.argv))
+        .collect::<Vec<_>>()
+        .join(" && ");
+    let count = hashes.len();
+
+    Ok(CommandPlan {
+        steps,
         display,
         preview: Some(Preview {
             headline: format!(
@@ -1353,6 +1393,296 @@ fn plan_cherry_pick(
             ),
             lines,
             requires_type_to_confirm: false,
+        }),
+    })
+}
+
+/// The commits `target..HEAD`: (full oid, subject), newest-first — git log's
+/// order, which is the UI order the RebaseDialog edits in. The target is
+/// resolved as a commit-ish first so an unknown ref fails at plan time.
+pub(crate) fn rebase_range(repo: &Repo, target: &str) -> Result<Vec<(String, String)>, GitError> {
+    let target = target.trim();
+    if target.is_empty() {
+        return Err(GitError::EmptyTarget);
+    }
+    commit_ish(&repo.inner, target)?;
+    let spec = format!("{target}..HEAD");
+    let out = crate::show::run_git_sync(&repo.path, &["log", "--format=%H\t%s", &spec])?;
+    Ok(out
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let (hash, subject) = line.split_once('\t').unwrap_or((line, ""));
+            (hash.to_string(), subject.to_string())
+        })
+        .collect())
+}
+
+/// How many commits of the rebase range are reachable from a remote-tracking
+/// tip — rebasing those rewrites published history (SPEC §8 protection).
+fn published_count(repo: &Repo, hashes: &[String]) -> Result<usize, GitError> {
+    let remote_refs = crate::show::run_git_sync(
+        &repo.path,
+        &["for-each-ref", "--format=%(refname)", "refs/remotes/"],
+    )?;
+    let tips: Vec<String> = remote_refs
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+    let mut published = 0;
+    for hash in hashes {
+        for tip in &tips {
+            match crate::show::run_git_sync(&repo.path, &["merge-base", "--is-ancestor", hash, tip])
+            {
+                Ok(_) => {
+                    published += 1;
+                    break;
+                }
+                // Exit 1 is git's "not an ancestor" — data, not failure.
+                Err(GitError::Command { exit: 1, .. }) => {}
+                Err(err) => return Err(err),
+            }
+        }
+    }
+    Ok(published)
+}
+
+/// The risk tier for rebasing `published` already-published commits:
+/// `Dangerous` (type-to-confirm) when any, `Mutating` otherwise (SPEC §8).
+fn rebase_risk(published: usize) -> (Risk, Option<String>) {
+    if published == 0 {
+        return (Risk::Mutating, None);
+    }
+    (
+        Risk::Dangerous,
+        Some(format!(
+            "rewrites {published} commit{} already on a remote",
+            if published == 1 { "" } else { "s" }
+        )),
+    )
+}
+
+fn published_warning(published: usize) -> String {
+    format!(
+        "rewrites {published} commit{} on a remote — published history will be rewritten",
+        if published == 1 { "" } else { "s" }
+    )
+}
+
+/// The todo line that rewrites a commit's message: `exec git commit --amend`.
+/// The message is single-quoted for git's exec shell (`'\''` escaping);
+/// `--allow-empty` lets the amend succeed on a commit with no tree change.
+/// The exec mechanism is git's own (the sequencer runs it through a shell) —
+/// the app's subprocesses stay argv-only (SPEC §16).
+fn amend_exec_line(message: &str) -> Result<String, GitError> {
+    if message.contains('\n') || message.contains('\r') {
+        return Err(GitError::RebaseMessageMultiLine);
+    }
+    Ok(format!(
+        "exec git commit --amend --allow-empty -m '{}'",
+        message.replace('\'', "'\\''")
+    ))
+}
+
+/// Write the prepared todo into a shell stub inside the git directory: git
+/// runs the stub as its sequence editor with the real todo file as `$1`, and
+/// the stub overwrites that file with the edited todo (quoted heredoc — no
+/// interpolation). The content is deterministic for the op: a preview plan
+/// writes the exact file the run plan then executes.
+fn write_rebase_todo_script(repo: &Repo, todo: &[String]) -> Result<String, GitError> {
+    let script = repo.inner.path().join("gitgotten-todo.sh");
+    let body = format!(
+        "#!/bin/sh\ncat > \"$1\" <<'GITGOTTEN_TODO'\n{}\nGITGOTTEN_TODO\n",
+        todo.join("\n")
+    );
+    std::fs::write(&script, body)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+    }
+    // The editor runs through git's bundled shell even on Windows, so the
+    // path must be in slash form (`C:/…` is what that shell understands).
+    Ok(script.to_string_lossy().replace('\\', "/"))
+}
+
+/// `git -c sequence.editor=sh '<git-dir>/gitgotten-todo.sh' rebase -i <target>` —
+/// `Mutating` (`Dangerous`, type-to-confirm, when rebased commits are already
+/// on a remote): drive `git rebase -i` non-interactively with the edited todo
+/// (SPEC §10.4). The todo runs through git's own sequencer, so a conflict or
+/// an `edit` pauses the rebase and the Stage 8 Continue/Abort flow resumes it.
+fn plan_rebase(
+    repo: &Repo,
+    status: &Status,
+    target: &str,
+    edits: &[RebaseEdit],
+) -> Result<CommandPlan, GitError> {
+    let branch = status.branch.as_ref().ok_or(GitError::DetachedHead)?;
+    let range = rebase_range(repo, target)?;
+    if edits.is_empty() {
+        return Err(GitError::EmptySelection);
+    }
+    // Resolve every edit hash to a full oid; the todo must name each commit of
+    // `target..HEAD` exactly once.
+    let subjects: HashMap<&str, &str> = range
+        .iter()
+        .map(|(hash, subject)| (hash.as_str(), subject.as_str()))
+        .collect();
+    let mut given = HashSet::new();
+    for edit in edits {
+        let oid = repo.commit_at(&edit.hash).map(|c| c.id().to_string())?;
+        given.insert(oid);
+    }
+    if given.len() != edits.len() || range.len() != given.len() {
+        return Err(GitError::RebaseTodoMismatch {
+            expected: range.len(),
+            given: edits.len(),
+        });
+    }
+    for (hash, _) in &range {
+        if !given.contains(hash.as_str()) {
+            return Err(GitError::RebaseTodoMismatch {
+                expected: range.len(),
+                given: edits.len(),
+            });
+        }
+    }
+
+    // UI order (newest-first) → git's todo (oldest-first). Reword and squash
+    // messages ride as `exec git commit --amend` lines: the todo below *is*
+    // what runs, and the preview lists it.
+    let mut todo: Vec<String> = Vec::new();
+    for (index, edit) in edits.iter().rev().enumerate() {
+        let oid = repo.commit_at(&edit.hash).map(|c| c.id().to_string())?;
+        match edit.action {
+            RebaseAction::Pick => todo.push(format!("pick {oid}")),
+            RebaseAction::Reword => {
+                let message = edit.message.as_deref().ok_or_else(|| {
+                    GitError::RebaseEditNeedsMessage {
+                        hash: edit.hash.clone(),
+                    }
+                })?;
+                todo.push(format!("pick {oid}"));
+                todo.push(amend_exec_line(message)?);
+            }
+            RebaseAction::Squash => {
+                if index == 0 {
+                    return Err(GitError::RebaseTodoOrder);
+                }
+                todo.push(format!("squash {oid}"));
+                if let Some(message) = edit.message.as_deref() {
+                    todo.push(amend_exec_line(message)?);
+                }
+            }
+            RebaseAction::Fixup => {
+                if index == 0 {
+                    return Err(GitError::RebaseTodoOrder);
+                }
+                todo.push(format!("fixup {oid}"));
+            }
+            RebaseAction::Edit => todo.push(format!("edit {oid}")),
+            // A drop is a todo entry that never gets written.
+            RebaseAction::Drop => {}
+        }
+    }
+
+    let script = write_rebase_todo_script(repo, &todo)?;
+    // Single-quoted for the shell git launches the editor through.
+    let config = format!("sequence.editor=sh '{}'", script.replace('\'', "'\\''"));
+    let target = target.trim();
+    let argv = vec![
+        "git".to_string(),
+        "-c".to_string(),
+        config,
+        "rebase".to_string(),
+        "-i".to_string(),
+        target.to_string(),
+    ];
+    let display = format_argv(&argv);
+
+    let range_hashes: Vec<String> = range.iter().map(|(hash, _)| hash.clone()).collect();
+    let published = published_count(repo, &range_hashes)?;
+    let (risk, effect) = rebase_risk(published);
+    let mut lines: Vec<String> = edits
+        .iter()
+        .map(|edit| {
+            let subject = subjects
+                .get(edit.hash.as_str())
+                .copied()
+                .unwrap_or_else(|| edit.hash.as_str());
+            let action = match edit.action {
+                RebaseAction::Pick => "pick".to_string(),
+                RebaseAction::Reword => {
+                    format!("reword → \"{}\"", edit.message.as_deref().unwrap_or(""))
+                }
+                RebaseAction::Squash => match edit.message.as_deref() {
+                    Some(message) => format!("squash → {message}"),
+                    None => "squash (git's combined message)".to_string(),
+                },
+                RebaseAction::Fixup => "fixup".to_string(),
+                RebaseAction::Edit => "edit (pause)".to_string(),
+                RebaseAction::Drop => "drop".to_string(),
+            };
+            format!("  {}: {action} {subject}", short_hash(&edit.hash))
+        })
+        .collect();
+    if published > 0 {
+        lines.push(published_warning(published));
+    }
+
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary: format!("rebase {branch} onto {target}"),
+            risk,
+            effect,
+            input: None,
+            program: None,
+        }],
+        display,
+        preview: Some(Preview {
+            headline: format!("Rebase {branch} onto {target}"),
+            lines,
+            requires_type_to_confirm: published > 0,
+        }),
+    })
+}
+
+/// `git rebase <target>` — `Mutating` (`Dangerous`, type-to-confirm, when
+/// rebased commits are already on a remote): non-interactive rebase of the
+/// current branch onto a branch/commit-ish (SPEC §10.4 "rebase-onto").
+fn plan_rebase_onto(repo: &Repo, status: &Status, target: &str) -> Result<CommandPlan, GitError> {
+    let branch = status.branch.as_ref().ok_or(GitError::DetachedHead)?;
+    let range = rebase_range(repo, target)?;
+    let hashes: Vec<String> = range.iter().map(|(hash, _)| hash.clone()).collect();
+    let published = published_count(repo, &hashes)?;
+    let (risk, effect) = rebase_risk(published);
+    let count = range.len();
+    let mut lines = vec![format!(
+        "rewrites {count} local commit{} above {target}",
+        if count == 1 { "" } else { "s" }
+    )];
+    if published > 0 {
+        lines.push(published_warning(published));
+    }
+    let target = target.trim();
+    let argv = vec!["git".to_string(), "rebase".to_string(), target.to_string()];
+    let display = format_argv(&argv);
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary: format!("rebase {branch} onto {target}"),
+            risk,
+            effect,
+            input: None,
+            program: None,
+        }],
+        display,
+        preview: Some(Preview {
+            headline: format!("Rebase {branch} onto {target}"),
+            lines,
+            requires_type_to_confirm: published > 0,
         }),
     })
 }
@@ -2166,7 +2496,8 @@ mod tests {
         );
         assert_eq!(
             repo.plan(&Op::CherryPick {
-                hashes: vec![head]
+                hashes: vec![head],
+                target: None,
             })
             .unwrap()
             .steps[0]
@@ -2361,6 +2692,7 @@ mod tests {
         let plan = repo
             .plan(&Op::CherryPick {
                 hashes: vec![pick.clone()],
+                target: None,
             })
             .unwrap();
 
@@ -2383,7 +2715,10 @@ mod tests {
     fn plan_cherry_pick_rejects_an_empty_selection() {
         let (_fx, repo) = branch_fixture();
         let err = repo
-            .plan(&Op::CherryPick { hashes: vec![] })
+            .plan(&Op::CherryPick {
+                hashes: vec![],
+                target: None,
+            })
             .unwrap_err();
         assert!(matches!(err, GitError::EmptySelection), "got {err:?}");
     }
@@ -2394,6 +2729,7 @@ mod tests {
         let err = repo
             .plan(&Op::CherryPick {
                 hashes: vec!["zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz".into()],
+                target: None,
             })
             .unwrap_err();
         assert!(matches!(err, GitError::NoCommit { .. }), "got {err:?}");

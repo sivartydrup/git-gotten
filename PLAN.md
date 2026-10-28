@@ -466,9 +466,9 @@ git push -u origin main
 **Commit & push:** `git add -A && git commit -m "stage-09: rebase interactive + cherry-pick" && git push origin main`
 
 **Acceptance criteria:**
-- [ ] Interactive rebase (reorder/squash/edit/fixup/drop) rewrites history exactly as configured.
-- [ ] Rebase + cherry-pick are conflict-aware (stop → resolve → continue).
-- [ ] Published-history rebase is `Dangerous` (type-to-confirm).
+- [x] Interactive rebase (reorder/squash/edit/fixup/drop) rewrites history exactly as configured.
+- [x] Rebase + cherry-pick are conflict-aware (stop → resolve → continue).
+- [x] Published-history rebase is `Dangerous` (type-to-confirm).
 
 ---
 

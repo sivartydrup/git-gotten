@@ -13,8 +13,9 @@ import { useGraphStore, useRepoStore } from "../store";
 import type { CommitDetail, Graph, Node } from "../types";
 
 // `loadCommit` is hoisted so interaction tests can drive its result.
-const { loadCommit } = vi.hoisted(() => ({
+const { loadCommit, planOp } = vi.hoisted(() => ({
   loadCommit: vi.fn().mockResolvedValue(null),
+  planOp: vi.fn().mockResolvedValue(null),
 }));
 
 // jsdom has no `PointerEvent` constructor: testing-library's createEvent
@@ -57,7 +58,7 @@ vi.mock("../api", () => ({
   openRepo: vi.fn().mockResolvedValue(null),
   loadStatus: vi.fn().mockResolvedValue(null),
   onStatusChanged: vi.fn().mockResolvedValue(null),
-  planOp: vi.fn().mockResolvedValue(null),
+  planOp,
   runOp: vi.fn().mockResolvedValue(null),
   loadLog: vi.fn().mockResolvedValue(null),
   onOpStarted: vi.fn().mockResolvedValue(null),
@@ -438,6 +439,59 @@ test("right-clicking a commit opens the context menu with the graph actions", ()
   expect(screen.getByText("Reset branch to here (hard) — discards changes")).toBeTruthy();
   expect(screen.getByText("View diff")).toBeTruthy();
   expect(screen.getByText("Copy hash")).toBeTruthy();
+});
+
+test("cherry-pick asks for a target branch and sends it with the op", () => {
+  planOp.mockClear();
+  useGraphStore.setState({ graph: threeNodeGraph(), loading: false });
+  useRepoStore.setState({ activeId: "/repo/alpha" });
+  const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("side");
+  render(<GraphCanvas />);
+  fireEvent.contextMenu(document.querySelector("canvas.graph-canvas")!, {
+    clientX: 18,
+    clientY: 55,
+  });
+  fireEvent.click(screen.getByText("Cherry-pick"));
+  expect(planOp).toHaveBeenCalledWith("/repo/alpha", {
+    kind: "cherry_pick",
+    hashes: ["d4e5f6"],
+    target: "side",
+  });
+  promptSpy.mockRestore();
+});
+
+test("a blank cherry-pick target picks onto the current branch", () => {
+  planOp.mockClear();
+  useGraphStore.setState({ graph: threeNodeGraph(), loading: false });
+  useRepoStore.setState({ activeId: "/repo/alpha" });
+  const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("  ");
+  render(<GraphCanvas />);
+  fireEvent.contextMenu(document.querySelector("canvas.graph-canvas")!, {
+    clientX: 18,
+    clientY: 55,
+  });
+  fireEvent.click(screen.getByText("Cherry-pick"));
+  expect(planOp).toHaveBeenCalledWith("/repo/alpha", {
+    kind: "cherry_pick",
+    hashes: ["d4e5f6"],
+    target: null,
+  });
+  promptSpy.mockRestore();
+});
+
+test("canceling the cherry-pick target prompt sends no op", () => {
+  planOp.mockClear();
+  useGraphStore.setState({ graph: threeNodeGraph(), loading: false });
+  useRepoStore.setState({ activeId: "/repo/alpha" });
+  const promptSpy = vi.spyOn(window, "prompt").mockReturnValue(null);
+  render(<GraphCanvas />);
+  fireEvent.contextMenu(document.querySelector("canvas.graph-canvas")!, {
+    clientX: 18,
+    clientY: 55,
+  });
+  fireEvent.click(screen.getByText("Cherry-pick"));
+  expect(planOp).not.toHaveBeenCalled();
+  promptSpy.mockRestore();
 });
 
 test("hovering a commit shows the tooltip and hover state", () => {

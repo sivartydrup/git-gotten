@@ -126,6 +126,13 @@ function BranchesTab({
                   {!b.is_remote && (
                     <RowButton label="Rename" disabled={running} onClick={() => setRenaming(b)} />
                   )}
+                  {!b.is_remote && !b.is_current && (
+                    <RowButton
+                      label="Rebase onto"
+                      disabled={running}
+                      onClick={() => act({ kind: "rebase_onto", target: b.name })}
+                    />
+                  )}
                   <RowButton
                     label="Delete"
                     disabled={running}

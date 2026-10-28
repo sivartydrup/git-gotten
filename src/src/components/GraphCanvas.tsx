@@ -716,7 +716,18 @@ export function GraphCanvas() {
           <MenuButton
             label="Cherry-pick"
             disabled={running}
-            onClick={() => runMenuOp({ kind: "cherry_pick", hashes: [menuNode.hash] })}
+            onClick={() => {
+              const name = window.prompt(
+                "Cherry-pick onto branch (blank = current branch)",
+              );
+              if (name !== null) {
+                runMenuOp({
+                  kind: "cherry_pick",
+                  hashes: [menuNode.hash],
+                  target: name.trim() || null,
+                });
+              }
+            }}
           />
           <MenuButton
             label="Reset branch to here (soft)"

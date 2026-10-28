@@ -3,6 +3,7 @@ import {
   useActivityStore,
   useBuildInfo,
   useGraphStore,
+  useRebaseStore,
   useRefsStore,
   useRepoStore,
 } from "../store";
@@ -26,6 +27,7 @@ export function TopBar() {
   const { branches, remotes, loading: refsLoading, load: loadRefs } = useRefsStore();
   const { busy, running } = useActivityStore();
   const [mergeOpen, setMergeOpen] = useState(false);
+  const { show: showRebase } = useRebaseStore();
 
   const meta = repos.find((r) => r.id === activeId) ?? null;
   const activeStatus = activeId ? status[activeId] ?? null : null;
@@ -173,6 +175,11 @@ export function TopBar() {
                       </div>
                     )}
                   </span>
+                )}
+                {activeStatus.branch && (
+                  <button type="button" disabled={disabled} onClick={showRebase}>
+                    Rebase…
+                  </button>
                 )}
               </span>
             )}

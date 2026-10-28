@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use git_gotten_protocol::{
     Branch, CommandPlan, CommitDetail, ConflictFile, FileDiff, Graph, LogEntry, Op, OpResult,
-    OpStarted, Remote, RepoId, RepoMeta, Risk, Status, StatusChanged, Tag,
+    OpStarted, RebaseCommit, Remote, RepoId, RepoMeta, Risk, Status, StatusChanged, Tag,
 };
 use gitcore::{GitError, GitExecutor};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
@@ -248,6 +248,16 @@ impl Backend {
         Ok(repo.tags()?)
     }
 
+    /// Commits an interactive rebase onto `target` would rewrite (IPC
+    /// `load_rebase_commits`, the RebaseDialog list, SPEC §10.4).
+    pub fn rebase_commits(&self, id: &str, target: &str) -> Result<Vec<RebaseCommit>, AppError> {
+        let repos = self.registry.lock_repos();
+        let repo = repos
+            .get(id)
+            .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
+        Ok(repo.rebase_commits(target)?)
+    }
+
     /// Compile `op` into its visible `CommandPlan` for an open repository.
     ///
     /// Read-only (gix state only) — the web calls this for the inline hints and the
@@ -466,6 +476,17 @@ fn load_tags(repo: RepoId, state: State<'_, Backend>) -> Result<Vec<Tag>, AppErr
     state.load_tags(&repo)
 }
 
+/// The commits an interactive rebase onto `target` would rewrite (IPC
+/// `load_rebase_commits`, the RebaseDialog list, SPEC §10.4).
+#[tauri::command]
+fn load_rebase_commits(
+    repo: RepoId,
+    target: String,
+    state: State<'_, Backend>,
+) -> Result<Vec<RebaseCommit>, AppError> {
+    state.rebase_commits(&repo, &target)
+}
+
 /// Compile an operation into its visible `CommandPlan` without running it (IPC
 /// `plan_op`): drives the inline command hints and the preview dialog, so the
 /// displayed command is always the Rust-side source of truth (SPEC §8).
@@ -587,6 +608,7 @@ pub fn run() {
             load_branches,
             load_remotes,
             load_tags,
+            load_rebase_commits,
             plan_op,
             run_op,
             load_log
@@ -1127,6 +1149,29 @@ mod tests {
         let (backend, _rx) = Backend::new();
         let err = backend
             .load_conflict("/does/not/exist", "f.txt")
+            .unwrap_err();
+        assert!(matches!(err, AppError::RepoNotOpen(_)), "got {err}");
+    }
+
+    #[test]
+    fn rebase_commits_lists_the_range_for_an_open_repo() {
+        let (backend, _rx) = Backend::new();
+        let fx = testutil::Fixture::new("app-rebase-commits");
+        fx.commit_file("a.txt", "base\n", "base");
+        fx.git(&["checkout", "-b", "feature"]);
+        fx.commit_file("b.txt", "one\n", "one");
+        fx.commit_file("c.txt", "two\n", "two");
+        backend.open(fx.id()).unwrap();
+        let commits = backend.rebase_commits(fx.id(), "main").unwrap();
+        let subjects: Vec<&str> = commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects, ["two", "one"]);
+    }
+
+    #[test]
+    fn rebase_commits_on_unknown_repo_errors() {
+        let (backend, _rx) = Backend::new();
+        let err = backend
+            .rebase_commits("/does/not/exist", "main")
             .unwrap_err();
         assert!(matches!(err, AppError::RepoNotOpen(_)), "got {err}");
     }

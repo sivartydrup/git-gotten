@@ -41,11 +41,16 @@ pub(crate) const ENV_UNSET: &[&str] = &[
 /// default message and commit: `true` exits 0 without touching the message
 /// file. `GIT_EDITOR` outranks both `VISUAL`/`EDITOR` and `core.editor`, so
 /// one variable pins the behavior.
+///
+/// `GIT_SEQUENCE_EDITOR` is deliberately *not* pinned: an env value would
+/// outrank the `sequence.editor` config the interactive-rebase plan passes
+/// with `git -c` (plan.rs), which is what injects the edited todo. With only
+/// `GIT_EDITOR` pinned, git uses the config for the todo and `true` for every
+/// commit-message editor (`squash`, `rebase --continue`).
 pub(crate) const ENV_SET: &[(&str, &str)] = &[
     ("GIT_TERMINAL_PROMPT", "0"),
     ("GIT_PAGER", "cat"),
     ("GIT_EDITOR", "true"),
-    ("GIT_SEQUENCE_EDITOR", "true"),
 ];
 
 /// Locate and verify a git binary: search `PATH` for the platform executable,

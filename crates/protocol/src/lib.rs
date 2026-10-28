@@ -35,6 +35,10 @@
 //! [`GitStep::program`] (external-editor hand-off), and the ops
 //! [`Op::ResolveConflict`], [`Op::ContinueOp`], [`Op::AbortOp`],
 //! [`Op::OpenEditor`].
+//! Stage 9 adds the interactive-rebase shapes (SPEC §10.4): [`RebaseAction`],
+//! [`RebaseEdit`], [`RebaseCommit`] (the range behind the RebaseDialog), the ops
+//! [`Op::Rebase`], [`Op::RebaseOnto`], and the `target` on [`Op::CherryPick`]
+//! (pick onto another branch).
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -269,6 +273,48 @@ pub enum ResetMode {
     Hard,
 }
 
+/// The action an interactive-rebase todo takes on one commit (SPEC §10.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub enum RebaseAction {
+    /// Re-apply the commit as-is.
+    Pick,
+    /// Re-apply with a new message ([`RebaseEdit::message`]).
+    Reword,
+    /// Fold into the previous rebased commit; a new message when given.
+    Squash,
+    /// Fold into the previous rebased commit, keeping its message.
+    Fixup,
+    /// Pause the rebase after this commit (`edit`); resume with `ContinueOp`.
+    Edit,
+    /// Remove the commit from the branch.
+    Drop,
+}
+
+/// One entry of the edited interactive-rebase todo ([`Op::Rebase::edits`]).
+///
+/// The web sends edits in *UI order* — newest commit first, like `git log` —
+/// and the core reverses them into git's oldest-first todo.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RebaseEdit {
+    /// The commit this edit applies to (full hex oid).
+    pub hash: Hash,
+    /// What the rebase does with it.
+    pub action: RebaseAction,
+    /// The new message for `Reword`/`Squash` (single line); `None` keeps git's own.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// One commit in the range an interactive rebase would rewrite (the
+/// `load_rebase_commits` read behind the RebaseDialog, SPEC §10.4).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RebaseCommit {
+    /// Full hex oid.
+    pub hash: Hash,
+    /// The commit message's first line.
+    pub subject: String,
+}
+
 /// A user operation, which the core compiles into a [`CommandPlan`] (SPEC §13
 /// `run_op`). The web sends intent, never argv: risk is always derived by the core.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -319,6 +365,23 @@ pub enum Op {
         /// The source branch/commit to merge in.
         source: String,
     },
+    /// Rewrite the commits above `target` per an edited todo (interactive
+    /// rebase, SPEC §10.4). Rebasing commits already on a remote is `Dangerous`
+    /// (type-to-confirm).
+    Rebase {
+        /// The branch/commit-ish to rebase onto.
+        target: String,
+        /// One edit per commit in `target..HEAD`, UI order (newest first);
+        /// the core rejects any todo that does not cover exactly that range.
+        edits: Vec<RebaseEdit>,
+    },
+    /// Move the current branch's commits above `target` onto it, keeping order
+    /// and messages (`git rebase <target>`, SPEC §10.4 "rebase-onto").
+    /// `Dangerous` when the rebased commits are already on a remote.
+    RebaseOnto {
+        /// The branch/commit-ish to rebase onto.
+        target: String,
+    },
     /// Create a branch at a commit (`git branch <name> <from>`), optionally
     /// switching to it (graph context menu, SPEC §10.1).
     BranchCreate {
@@ -342,6 +405,10 @@ pub enum Op {
     CherryPick {
         /// The commits to pick, in the order they should be applied.
         hashes: Vec<Hash>,
+        /// Branch to pick onto: switched to first when not the current branch;
+        /// `None` picks onto the current branch.
+        #[serde(default)]
+        target: Option<String>,
     },
     /// Stage (add) a file, or the whole tree when `path` is `None` (`git add`).
     Stage {
@@ -1041,6 +1108,58 @@ mod tests {
         let back: Op = serde_json::from_str(&json).unwrap();
         assert_eq!(back, op);
     }
+
+    #[test]
+    fn op_rebase_round_trips() {
+        let op = Op::Rebase {
+            target: "main".into(),
+            edits: vec![
+                RebaseEdit {
+                    hash: "aa".into(),
+                    action: RebaseAction::Pick,
+                    message: None,
+                },
+                RebaseEdit {
+                    hash: "bb".into(),
+                    action: RebaseAction::Squash,
+                    message: Some("B+C".into()),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"rebase","target":"main","edits":[{"hash":"aa","action":"Pick","message":null},{"hash":"bb","action":"Squash","message":"B+C"}]}"#
+        );
+        let back: Op = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, op);
+    }
+
+    #[test]
+    fn op_rebase_onto_round_trips() {
+        let op = Op::RebaseOnto {
+            target: "main".into(),
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        assert_eq!(json, r#"{"kind":"rebase_onto","target":"main"}"#);
+        let back: Op = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, op);
+    }
+
+    #[test]
+    fn op_cherry_pick_target_is_optional_on_the_wire() {
+        // An older payload (no `target`) still decodes.
+        let op: Op =
+            serde_json::from_str(r#"{"kind":"cherry_pick","hashes":["aa"]}"#).unwrap();
+        let Op::CherryPick { target, .. } = &op else {
+            panic!("wrong variant");
+        };
+        assert!(target.is_none());
+        assert_eq!(
+            serde_json::to_string(&op).unwrap(),
+            r#"{"kind":"cherry_pick","hashes":["aa"],"target":null}"#
+        );
+    }
     #[test]
     fn command_plan_round_trips() {
         let plan = sample_plan();
@@ -1114,6 +1233,9 @@ mod tests {
         _assert_ts::<OpResult>();
         _assert_ts::<LogEntry>();
         _assert_ts::<OpStarted>();
+        _assert_ts::<RebaseAction>();
+        _assert_ts::<RebaseEdit>();
+        _assert_ts::<RebaseCommit>();
     }
 
     fn sample_graph() -> Graph {
@@ -1223,7 +1345,7 @@ mod tests {
             r#"{"kind":"branch_create","name":"feature","from":"abc","checkout":true}"#,
             r#"{"kind":"branch_create","name":"hotfix","from":"def","checkout":false}"#,
             r#"{"kind":"reset","mode":"hard","target":"def"}"#,
-            r#"{"kind":"cherry_pick","hashes":["aa","bb"]}"#,
+            r#"{"kind":"cherry_pick","hashes":["aa","bb"],"target":null}"#,
         ] {
             let op: Op = serde_json::from_str(json).unwrap();
             assert_eq!(serde_json::to_string(&op).unwrap(), json);
