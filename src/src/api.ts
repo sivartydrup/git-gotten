@@ -20,6 +20,7 @@ import type {
   Status,
   StatusChanged,
   Tag,
+  Worktree,
 } from "./types";
 
 /**
@@ -145,6 +146,17 @@ export async function loadTags(repo: RepoId): Promise<Tag[] | null> {
     return null;
   }
   return await invoke<Tag[]>("load_tags", { repo });
+}
+
+/**
+ * Load the worktrees of an open repository — main first (Rust `load_worktrees`
+ * command, SPEC §10.7). Returns the list, or `null` outside Tauri.
+ */
+export async function loadWorktrees(repo: RepoId): Promise<Worktree[] | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<Worktree[]>("load_worktrees", { repo });
 }
 
 /**

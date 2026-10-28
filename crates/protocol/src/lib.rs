@@ -39,6 +39,9 @@
 //! [`RebaseEdit`], [`RebaseCommit`] (the range behind the RebaseDialog), the ops
 //! [`Op::Rebase`], [`Op::RebaseOnto`], and the `target` on [`Op::CherryPick`]
 //! (pick onto another branch).
+//! Stage 10 adds the worktree shapes (SPEC §10.7): [`Worktree`], the IPC
+//! `load_worktrees` read, and the ops [`Op::WorktreeAdd`] and
+//! [`Op::WorktreeRemove`] (force-removing a dirty worktree is `Dangerous`).
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -190,6 +193,27 @@ pub struct Tag {
     pub annotated: bool,
     /// The tag object's message (annotated tags); `None` for lightweight tags.
     pub message: Option<String>,
+}
+
+// ── Worktrees (SPEC §10.7) ─────────────────────────────────────────────────
+
+/// One checkout of a repository's shared object database: the main worktree or
+/// a linked `git worktree` checkout. The canonical absolute `path` doubles as
+/// the [`RepoId`] when the worktree is opened as the active repository.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Worktree {
+    /// Canonical absolute path of the worktree root.
+    pub path: String,
+    /// The checked-out branch; `None` when HEAD is detached there.
+    pub branch: Option<String>,
+    /// Object id HEAD points at in this worktree.
+    pub head: Hash,
+    /// `true` for the main worktree (the one with the shared `.git` directory).
+    pub is_main: bool,
+    /// Manually locked (`git worktree lock`).
+    pub locked: bool,
+    /// git considers it prunable (its working tree is gone).
+    pub prunable: bool,
 }
 
 /// Risk classification of a git step or operation (SPEC §8).
@@ -539,6 +563,28 @@ pub enum Op {
     OpenEditor {
         /// The files to open (repo-relative paths).
         paths: Vec<String>,
+    },
+    /// Add a linked worktree (`git worktree add [-b <new_branch>] <path> <committish>`,
+    /// SPEC §10.7). `Mutating`: git itself refuses to check out a branch that is
+    /// already checked out in another worktree, and that refusal surfaces as a
+    /// failed [`OpResult`] (clean error, not a crash).
+    WorktreeAdd {
+        /// Existing branch or commit to check out; the start point when `new_branch` is set.
+        committish: String,
+        /// Directory to create the worktree in.
+        path: String,
+        /// `Some` = create and check out this new branch; `None` = check out `committish`.
+        new_branch: Option<String>,
+    },
+    /// Remove a linked worktree (`git worktree remove [--force] <path>`).
+    /// A clean worktree is `Mutating`; force-removing a dirty one is
+    /// `Dangerous` (type-to-confirm — it discards uncommitted work). The main
+    /// worktree is never removable through this op.
+    WorktreeRemove {
+        /// The worktree's absolute path.
+        path: String,
+        /// Remove despite uncommitted changes (`--force`).
+        force: bool,
     },
 }
 
@@ -1413,6 +1459,24 @@ mod tests {
         _assert_ts::<Branch>();
         _assert_ts::<Remote>();
         _assert_ts::<Tag>();
+        _assert_ts::<Worktree>();
+        _assert_ts::<RefLabel>();
+    }
+    #[test]
+    fn worktree_round_trips_through_serde() {
+        let w = Worktree {
+            path: "/repos/demo-wt".into(),
+            branch: Some("side".into()),
+            head: "d".repeat(40),
+            is_main: false,
+            locked: true,
+            prunable: false,
+        };
+        let json = serde_json::to_string(&w).unwrap();
+        assert!(json.contains(r#""is_main":false"#));
+        assert!(json.contains(r#""locked":true"#));
+        let back: Worktree = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, w);
     }
 
     #[test]
@@ -1430,6 +1494,9 @@ mod tests {
             r#"{"kind":"tag_checkout","name":"v1","force":false}"#,
             r#"{"kind":"tag_delete","name":"v1","remote":null}"#,
             r#"{"kind":"tag_push","remote":"origin","name":"v1","force":true}"#,
+            r#"{"kind":"worktree_add","committish":"side","path":"/tmp/wt","new_branch":null}"#,
+            r#"{"kind":"worktree_add","committish":"abc123","path":"/tmp/wt","new_branch":"feature"}"#,
+            r#"{"kind":"worktree_remove","path":"/tmp/wt","force":true}"#,
         ] {
             let op: Op = serde_json::from_str(json).unwrap();
             assert_eq!(serde_json::to_string(&op).unwrap(), json, "round-trip: {json}");

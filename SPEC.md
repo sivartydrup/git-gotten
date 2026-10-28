@@ -5,7 +5,7 @@ need to know Git, yet fully transparent — every operation shows the exact Git 
 runs. Built for multiple repositories and full worktree support, with an interactive
 branching graph at its core. Inspired by GitKraken.
 
-> Status: **in build** — stages 0–9 of 15 are complete; stage 10 (worktrees) is next. See
+> Status: **in build** — stages 0–10 of 15 are complete; stage 11 (stash + submodules + bisect) is next. See
 > [`README.md`](./README.md) for the current
 > state and [`PLAN.md`](./PLAN.md) for the stage plan. This document is the source of
 > truth for the design. Anything marked **(default — confirm)** was chosen by the author

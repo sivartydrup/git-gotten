@@ -6,6 +6,7 @@ import {
   useRebaseStore,
   useRefsStore,
   useRepoStore,
+  useWorktreesStore,
 } from "../store";
 import type { Op } from "../types";
 
@@ -28,6 +29,8 @@ export function TopBar() {
   const { busy, running } = useActivityStore();
   const [mergeOpen, setMergeOpen] = useState(false);
   const { show: showRebase } = useRebaseStore();
+  const { worktrees } = useWorktreesStore();
+  const [wtOpen, setWtOpen] = useState(false);
 
   const meta = repos.find((r) => r.id === activeId) ?? null;
   const activeStatus = activeId ? status[activeId] ?? null : null;
@@ -47,8 +50,12 @@ export function TopBar() {
       return;
     }
     setMergeOpen(false);
+    setWtOpen(false);
     void useActivityStore.getState().requestPreview(activeId, op);
   };
+
+  // The worktree switcher labels checkouts by their directory name.
+  const baseName = (p: string) => p.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || p;
 
   return (
     <header className="topbar">
@@ -94,7 +101,36 @@ export function TopBar() {
             ) : (
               <span className="topbar-branch">{meta.branch ?? "detached"}</span>
             )}
-
+          {activeId && worktrees.length > 1 && (
+            <span className="merge-control">
+              <button
+                type="button"
+                disabled={disabled}
+                aria-expanded={wtOpen}
+                onClick={() => setWtOpen((o) => !o)}
+              >
+                Worktree: {baseName(activeId)}
+              </button>
+              {wtOpen && (
+                <div className="merge-picker" role="menu">
+                  {worktrees.map((w) => (
+                    <button
+                      key={w.path}
+                      type="button"
+                      role="menuitem"
+                      disabled={w.path === activeId}
+                      onClick={() => {
+                        setWtOpen(false);
+                        void useRepoStore.getState().open(w.path);
+                      }}
+                    >
+                      {baseName(w.path)} · {w.branch ?? w.head.slice(0, 7)}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </span>
+          )}
             {activeId && activeStatus && (
               <span className="topbar-actions">
                 <span className="sync-controls" title={upstream ?? "no upstream"}>

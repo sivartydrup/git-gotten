@@ -131,6 +131,7 @@ export interface CanvasCtx {
   ): void;
   arc(x: number, y: number, r: number, a0: number, a1: number): void;
   fillRect(x: number, y: number, w: number, h: number): void;
+  strokeRect(x: number, y: number, w: number, h: number): void;
   fill(): void;
   stroke(): void;
   fillText(text: string, x: number, y: number): void;
@@ -265,7 +266,9 @@ export function renderGraph(
       ctx.stroke();
     }
 
-    // Ref pills, stacked left of the dot (colored by their line's palette index).
+    // Ref pills, stacked left of the dot (colored by their line's palette
+    // index). Worktree checkouts (SPEC §10.7) get an *outlined* pill — the
+    // same placement/color rules, visibly distinct from filled ref pills.
     const shown = node.refs.slice(0, MAX_REF_PILLS);
     for (let i = 0; i < shown.length; i++) {
       const ref = shown[i];
@@ -274,12 +277,21 @@ export function renderGraph(
       if (px2 - pillW < MIN_X) {
         // Leftmost lanes sit near the canvas edge: slide the pill right so
         // the label is never clipped (the dot is drawn on top of it).
-        px2 += MIN_X - (px2 - pillW);
+        // Assign (not add) so the clamp is exact, not float-drifted.
+        px2 = MIN_X + pillW;
       }
       const py2 = y + (i < 2 ? -1 : 1) * (6 + Math.floor(i / 2) * 12);
-      ctx.fillStyle = paletteColor(ref.color);
-      ctx.fillRect(px2 - pillW, py2 - 6, pillW, 12);
-      ctx.fillStyle = "#ffffff";
+      const color = paletteColor(ref.color);
+      if (ref.kind === "Worktree") {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(px2 - pillW, py2 - 6, pillW, 12);
+        ctx.fillStyle = color;
+      } else {
+        ctx.fillStyle = color;
+        ctx.fillRect(px2 - pillW, py2 - 6, pillW, 12);
+        ctx.fillStyle = "#ffffff";
+      }
       ctx.font = "9px ui-monospace, monospace";
       ctx.fillText(ref.name, px2 - pillW + 4, py2 + 3);
     }

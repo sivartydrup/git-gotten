@@ -179,6 +179,7 @@ function recorder() {
     strokes: 0,
     fills: 0,
     rects: [] as { x: number; y: number; w: number; h: number }[],
+    strokeRects: [] as { x: number; y: number; w: number; h: number }[],
     texts: [] as { text: string; x: number; y: number; alpha: number }[],
     globalAlpha: 1,
     font: "",
@@ -196,6 +197,9 @@ function recorder() {
     },
     fillRect(x: number, y: number, w: number, h: number) {
       rec.rects.push({ x, y, w, h });
+    },
+    strokeRect(x: number, y: number, w: number, h: number) {
+      rec.strokeRects.push({ x, y, w, h });
     },
     fill() {
       rec.fills += 1;
@@ -324,6 +328,29 @@ test("renderGraph: leftmost-lane labels are clamped inside the canvas", () => {
   }
   const head = rec.texts.find((t) => t.text === "HEAD");
   expect(head?.x, "HEAD label x").toBeGreaterThanOrEqual(2);
+});
+
+test("renderGraph: worktree checkouts get outlined marker pills, branches stay filled", () => {
+  const g = straightGraph(2);
+  g.nodes[1].refs = [
+    { name: "main", kind: "Branch", color: 0 },
+    { name: "side", kind: "Worktree", color: 0 },
+  ];
+  const rec = recorder();
+  renderGraph(
+    rec,
+    800,
+    300,
+    identity,
+    { graph: g, selected: null, hovered: null, query: "" },
+    1,
+  );
+  expect(rec.rects.length).toBe(1);
+  expect(rec.strokeRects.length).toBe(1);
+  expect(rec.texts.some((t) => t.text === "side")).toBe(true);
+  for (const r of rec.strokeRects) {
+    expect(r.x).toBeGreaterThanOrEqual(2);
+  }
 });
 
 // ── Component smoke ──────────────────────────────────────────────────────────

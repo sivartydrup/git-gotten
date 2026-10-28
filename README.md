@@ -9,7 +9,7 @@ GitGotten is a **Tauri v2** desktop app: a React + TypeScript UI over a Rust cor
 reads with [`gix`](https://github.com/GitoxideLabs/gitoxide) and writes with the real
 `git` CLI.
 
-> Status: **in build — stages 0–9 of 15 complete, stage 10 next.** There is no release
+> Status: **in build — stages 0–10 of 15 complete, stage 11 next.** There is no release
 > yet. See [Status](#status) below, [`PLAN.md`](./PLAN.md) for the stage plan, and
 > [`SPEC.md`](./SPEC.md) for the full product design.
 
@@ -29,7 +29,7 @@ reads with [`gix`](https://github.com/GitoxideLabs/gitoxide) and writes with the
 
 ## Status
 
-As of **2026-10-29** (`stage-09`). Stage numbers match [`PLAN.md`](./PLAN.md).
+As of **2026-10-29** (`stage-10`). Stage numbers match [`PLAN.md`](./PLAN.md).
 
 | Stage | Area | State |
 |---|---|---|
@@ -43,7 +43,7 @@ As of **2026-10-29** (`stage-09`). Stage numbers match [`PLAN.md`](./PLAN.md).
 | 7 | Sync: fetch / pull / pull --rebase / push; merge | ✅ committed |
 | 8 | Conflicts: 3-way view, resolve, continue/abort, `$EDITOR` hand-off | ✅ committed |
 | 9 | Interactive rebase + cherry-pick | ✅ committed |
-| 10 | Worktrees | ⬜ not started |
+| 10 | Worktrees: list / add / switch / remove + graph checkout markers | ✅ committed |
 | 11 | Stash, submodules, bisect | ⬜ not started |
 | 12 | Multi-repo workspace (groups, dashboard), persistence, theming | ⬜ not started |
 | 13 | Hardening: performance + reliability | ⬜ not started |
@@ -51,12 +51,17 @@ As of **2026-10-29** (`stage-09`). Stage numbers match [`PLAN.md`](./PLAN.md).
 
 **Verification (macOS 25.6, arm64, 2026-10-29):**
 
-- `cargo test --workspace` — 289 passed.
-- `pnpm test` — 98 passed (10 files).
+- `cargo test --workspace` — 304 passed.
+- `pnpm test` — 109 passed (11 files).
 - `pnpm build` — TypeScript + Vite production build passes.
 - Stage-09 flows (reorder / squash / reword / fixup / drop, `edit` pause + Continue,
   mid-rebase conflict → resolve → complete, cherry-pick onto a branch (clean +
   conflicting), published-history Danger gate) run against real `git` in fixture tests.
+- Stage-10 flows (list main + linked + detached, add for an existing branch and with a
+  new branch, double-checkout refused by git as a clean error, clean remove, dirty
+  remove refused without force, force-remove as Dangerous type-to-confirm, switching
+  retargets status/graph, per-worktree graph markers) run against real `git` in
+  fixture tests.
 
 **Verification (Windows 11, x64, 2026-10-27):**
 
@@ -69,7 +74,7 @@ As of **2026-10-29** (`stage-09`). Stage numbers match [`PLAN.md`](./PLAN.md).
   the watcher, conflict resolved in-app, `git merge --continue`, and
   `git push -u origin main` to a local bare remote.
 
-Stage-09 has not been mirrored on Windows yet; the run above predates it.
+Stages 09–10 have not been mirrored on Windows yet; the run above predates them.
 
 ## Features implemented today
 
@@ -120,9 +125,19 @@ Stage-09 has not been mirrored on Windows yet; the run above predates it.
 - Rebasing commits already on a remote is `Dangerous`: type-to-confirm with a
   "rewrites N commits on a remote" warning.
 
+**Worktrees**
+
+- List every checkout of a repo (branch or detached commit, path, main/current/locked/
+  prunable); add a worktree for an existing branch, a specific commit, or a new branch;
+  remove (clean) or force-remove (Dangerous: type-to-confirm, names the lost work).
+- TopBar worktree switcher and a Worktrees tab; switching opens that worktree root as the
+  active repository, so status, graph, and every op retarget to it. The graph pins each
+  worktree's checkout with an outlined marker on the commit it looks at.
+- Checking a branch out in two worktrees is refused by git and surfaced as a clean error.
+
 ## Not implemented yet
 
-Worktrees; stash, submodules, bisect;
+Stash, submodules, bisect;
 multi-repo groups, pinned/reordered repos, cross-repo dashboard; persisted workspace config
 (`%APPDATA%\GitGotten` / macOS config dir); light/dark theming and the full design system;
 performance hardening on very large repositories; Windows/macOS signing, notarization, and

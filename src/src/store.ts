@@ -11,6 +11,7 @@ import {
   loadRemotes,
   loadStatus,
   loadTags,
+  loadWorktrees,
   openRepo,
   planOp,
   runOp,
@@ -37,6 +38,7 @@ import type {
   Status,
   StatusChanged,
   Tag,
+  Worktree,
 } from "./types";
 
 interface BuildInfoState {
@@ -159,7 +161,7 @@ function upsertRepo(repos: RepoMeta[], meta: RepoMeta): RepoMeta[] {
 // ── Main content tab (SPEC §7) ──────────────────────────────────────────────
 
 /** The main content tab of the shell. */
-export type MainTab = "graph" | "files" | "branches" | "conflicts";
+export type MainTab = "graph" | "files" | "branches" | "conflicts" | "worktrees";
 
 interface MainTabState {
   tab: MainTab;
@@ -484,6 +486,40 @@ export const useRefsStore = create<RefsState>((set) => ({
         branches: [],
         remotes: [],
         tags: [],
+        loading: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+}));
+
+// ── Worktrees (SPEC §10.7) ──────────────────────────────────────────────────
+
+interface WorktreesState {
+  /** The active repo's worktrees, main first (`[]` when none / outside Tauri). */
+  worktrees: Worktree[];
+  /** True while the `loadWorktrees` round-trip is in flight. */
+  loading: boolean;
+  /** Last worktree-load failure (the Rust error string). */
+  error: string | null;
+  /** Load the worktrees of `repo` (SPEC §10.7). */
+  load: (repo: RepoId) => Promise<void>;
+}
+
+/** Client state for the worktree switcher + management panel (SPEC §10.7). */
+export const useWorktreesStore = create<WorktreesState>((set) => ({
+  worktrees: [],
+  loading: false,
+  error: null,
+
+  load: async (repo) => {
+    set({ loading: true, error: null });
+    try {
+      const worktrees = await loadWorktrees(repo);
+      set({ worktrees: worktrees ?? [], loading: false });
+    } catch (e) {
+      set({
+        worktrees: [],
         loading: false,
         error: e instanceof Error ? e.message : String(e),
       });

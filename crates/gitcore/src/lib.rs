@@ -19,6 +19,9 @@
 //! Stage 9 adds the interactive-rebase read: [`Repo::rebase_commits`] (the
 //! `target..HEAD` range behind the RebaseDialog, SPEC §10.4); the rebase
 //! planners and the published-history risk live in [`plan`].
+//! Stage 10 adds the worktree read ([`Repo::worktrees`]) and the per-worktree
+//! checkout markers it pins onto [`Repo::graph`] (SPEC §10.7); the add/remove
+//! planners live in [`plan`].
 //!
 //! Stage 2 implements the command layer: [`Repo::plan`] (compile an [`Op`] into a
 //! visible [`CommandPlan`]) and the executor ([`GitExecutor`] runs plans through the
@@ -34,7 +37,7 @@ mod show;
 pub use git_gotten_protocol::{
     Author, Branch, ChangeKind, CommandPlan, CommitDetail, ConflictFile, FileChange, FileDiff,
     FileStat, GitStep, Graph, Hunk, Op, OpResult, Preview, RebaseCommit, RefLabel, Remote,
-    RepoMeta, RepoId, Risk, Status, Tag,
+    RepoMeta, RepoId, Risk, Status, Tag, Worktree,
 };
 pub use conflict::InProgressOp;
 pub use exec::{GitExecutor, OpQueue};
@@ -142,6 +145,17 @@ pub enum GitError {
     /// A new remote would collide with an existing one.
     #[error("a remote named '{name}' already exists")]
     RemoteExists { name: String },
+    /// No worktree is registered at the requested path.
+    #[error("no such worktree: {path}")]
+    WorktreeNotFound { path: String },
+
+    /// The main worktree *is* the repository; it cannot be removed from inside it.
+    #[error("cannot remove the main worktree")]
+    MainWorktree,
+
+    /// A worktree has uncommitted changes, so removing it requires force.
+    #[error("worktree '{path}' has uncommitted changes (remove with force)")]
+    WorktreeDirty { path: String },
 
     /// The interactive-rebase edits do not cover exactly the commits being
     /// rebased (the todo must name every commit in `target..HEAD` once).
@@ -382,7 +396,48 @@ impl Repo {
     pub fn graph(&self) -> Result<Graph, GitError> {
         let dag = graph::build_dag(&self.inner).map_err(GitError::Graph)?;
         let mut layout = graph::LaneLayout;
-        layout.compute(&dag).map_err(GitError::Graph)
+        let mut out = layout.compute(&dag).map_err(GitError::Graph)?;
+
+        // Stage 10: worktree checkout markers (SPEC §10.7). From two checkouts
+        // up, each worktree's HEAD commit gets a `Worktree`-kind ref label
+        // named after its branch (or short hash when detached), colored by the
+        // node's own line — the layout's recolor rule. A single-worktree repo
+        // needs none: the HEAD ring already says what is checked out.
+        let worktrees = self.worktrees()?;
+        if worktrees.len() > 1 {
+            for w in &worktrees {
+                let name = w
+                    .branch
+                    .clone()
+                    .unwrap_or_else(|| w.head.chars().take(7).collect());
+                let Some(node) = out.nodes.iter_mut().find(|n| n.hash == w.head) else {
+                    continue; // stale/prunable head: not in the graph
+                };
+                if node.refs.iter().any(|r| {
+                    r.kind == git_gotten_protocol::RefKind::Worktree && r.name == name
+                }) {
+                    continue; // another worktree already marks this commit
+                }
+                let color = out
+                    .lines
+                    .iter()
+                    .find(|l| {
+                        l.segments.iter().any(|s| {
+                            s.lane == node.lane
+                                && s.from_row <= node.row
+                                && node.row <= s.to_row
+                        })
+                    })
+                    .map(|l| l.color)
+                    .unwrap_or(0);
+                node.refs.push(RefLabel {
+                    name,
+                    kind: git_gotten_protocol::RefKind::Worktree,
+                    color,
+                });
+            }
+        }
+        Ok(out)
     }
 
     /// Full details of one commit (IPC `load_commit`, the inspect drawer, SPEC §10.1):
@@ -579,6 +634,63 @@ impl Repo {
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(out)
+    }
+
+    /// Every worktree of this repository — main first — for the worktree
+    /// switcher and the management panel (IPC `load_worktrees`, SPEC §10.7).
+    ///
+    /// Reads `git worktree list --porcelain`, git's own registry of
+    /// checkouts. Paths are canonicalized to match [`Self::id`] semantics; a
+    /// detached checkout reports `branch: None`. git always lists the main
+    /// worktree first — that is the entry flagged `is_main`.
+    pub fn worktrees(&self) -> Result<Vec<Worktree>, GitError> {
+        let out = show::run_git_sync(&self.path, &["worktree", "list", "--porcelain"])?;
+        let mut worktrees: Vec<Worktree> = Vec::new();
+        let mut current: Option<Worktree> = None;
+        for line in out.lines() {
+            if let Some(path) = line.strip_prefix("worktree ") {
+                let path = Path::new(path)
+                    .canonicalize()
+                    .unwrap_or_else(|_| PathBuf::from(path));
+                current = Some(Worktree {
+                    path: path.to_string_lossy().into_owned(),
+                    branch: None,
+                    head: String::new(),
+                    is_main: worktrees.is_empty(),
+                    locked: false,
+                    prunable: false,
+                });
+            } else if let Some(head) = line.strip_prefix("HEAD ") {
+                if let Some(w) = &mut current {
+                    w.head = head.trim().to_string();
+                }
+            } else if let Some(ref_) = line.strip_prefix("branch ") {
+                if let Some(w) = &mut current {
+                    w.branch = ref_.trim().strip_prefix("refs/heads/").map(str::to_string);
+                }
+            } else if line.starts_with("locked") {
+                if let Some(w) = &mut current {
+                    w.locked = true;
+                }
+            } else if line.starts_with("prunable") {
+                if let Some(w) = &mut current {
+                    w.prunable = true;
+                }
+            } else if line == "bare" {
+                // A bare entry has no working tree to report.
+                current = None;
+            } else if line == "detached" {
+                // branch stays None.
+            } else if line.is_empty() {
+                if let Some(w) = current.take() {
+                    worktrees.push(w);
+                }
+            }
+        }
+        if let Some(w) = current.take() {
+            worktrees.push(w);
+        }
+        Ok(worktrees)
     }
 
     /// Find a commit by its (short or full) hex object id.

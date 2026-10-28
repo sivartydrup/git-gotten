@@ -123,6 +123,22 @@ export interface Tag {
   message: string | null;
 }
 
+/** One checkout of a repository's shared object database (Rust `Worktree`, SPEC §10.7). */
+export interface Worktree {
+  /** Canonical absolute path of the worktree root (its `RepoId` when opened). */
+  path: string;
+  /** The checked-out branch; `null` when HEAD is detached there. */
+  branch: string | null;
+  /** Object id HEAD points at in this worktree. */
+  head: string;
+  /** `true` for the main worktree (the one with the shared `.git` directory). */
+  is_main: boolean;
+  /** Manually locked (`git worktree lock`). */
+  locked: boolean;
+  /** git considers it prunable (its working tree is gone). */
+  prunable: boolean;
+}
+
 /** Risk classification of a git step or operation (Rust `Risk`, SPEC §8).
  *
  * Ordered by severity: a plan's effective risk is its *maximum* step risk, and the
@@ -246,7 +262,15 @@ export type Op =
   | { kind: "resolve_conflict"; path: string; resolution: ConflictResolution }
   | { kind: "continue_op" }
   | { kind: "abort_op" }
-  | { kind: "open_editor"; paths: string[] };
+  | { kind: "open_editor"; paths: string[] }
+  | {
+      kind: "worktree_add";
+      /** Existing branch or commit to check out; the start point when `new_branch` is set. */
+      committish: string;
+      path: string;
+      new_branch: string | null;
+    }
+  | { kind: "worktree_remove"; path: string; force: boolean };
 
 /** The result of running a [`CommandPlan`] (Rust `OpResult`, safe failure, SPEC §8). */
 export interface OpResult {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useActivityStore, useBuildInfo, useConflictStore, useGraphStore, useMainTab, useRebaseStore, useRefsStore, useRepoStore, useStagingStore } from "./store";
+import { useActivityStore, useBuildInfo, useConflictStore, useGraphStore, useMainTab, useRebaseStore, useRefsStore, useRepoStore, useStagingStore, useWorktreesStore } from "./store";
 import { onOpFinished, onOpStarted, onStatusChanged } from "./api";
 import { TopBar } from "./components/TopBar";
 import { RepoNav } from "./components/RepoNav";
@@ -14,6 +14,7 @@ import { CommitPanel } from "./components/CommitPanel";
 import { RefsPanel, type RefsTab } from "./components/RefsPanel";
 import { ConflictView } from "./components/ConflictView";
 import { ConflictBanner } from "./components/ConflictBanner";
+import { WorktreesPanel } from "./components/WorktreesPanel";
 
 
 /**
@@ -91,6 +92,8 @@ export default function App() {
         // The op may have changed refs (branch/remote/tag): re-read them so
         // the tabs and the graph's ref labels stay live.
         void useRefsStore.getState().load(activeId);
+        // Worktree add/remove rewrites the checkout registry.
+        void useWorktreesStore.getState().load(activeId);
       }
     }).then((u) => {
       unlistenFinished = u;
@@ -108,6 +111,7 @@ export default function App() {
     if (activeId) {
       void useGraphStore.getState().load(activeId);
       void useRefsStore.getState().load(activeId);
+      void useWorktreesStore.getState().load(activeId);
     } else {
       useGraphStore.getState().closeDetail();
     }
@@ -176,6 +180,15 @@ export default function App() {
             >
               Branches
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "worktrees"}
+              className={`tab ${tab === "worktrees" ? "active" : ""}`}
+              onClick={() => setTab("worktrees")}
+            >
+              Worktrees
+            </button>
           </div>
           <div className="main-content">
             {tab === "graph" && <GraphCanvas />}
@@ -200,6 +213,7 @@ export default function App() {
                 <RefsPanel tab={refsTab} />
               </div>
             )}
+            {tab === "worktrees" && <WorktreesPanel />}
           </div>
           <CommitPanel />
         </div>

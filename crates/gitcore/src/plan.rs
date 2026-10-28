@@ -11,6 +11,7 @@
 //! activity log, SPEC §8/§9): it is the exact argv, quoted only where necessary.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use git_gotten_protocol::{
     Author, ChangeKind, CommandPlan, ConflictResolution, ConflictSide, GitStep, Op, Preview,
@@ -135,6 +136,12 @@ impl Repo {
             Op::ContinueOp => plan_continue_op(self, &status),
             Op::AbortOp => plan_abort_op(self, &status),
             Op::OpenEditor { paths } => plan_open_editor(self, paths),
+            Op::WorktreeAdd {
+                committish,
+                path,
+                new_branch,
+            } => plan_worktree_add(committish, path, new_branch.as_deref()),
+            Op::WorktreeRemove { path, force } => plan_worktree_remove(self, path, *force),
         }
     }
 }
@@ -1232,6 +1239,125 @@ fn plan_tag_push(
             headline: format!("Push tag {name} to {remote}"),
             lines: vec![preview_line],
             requires_type_to_confirm: force,
+        }),
+    })
+}
+
+/// `git worktree add [-b <new_branch>] <path> <committish>` — `Mutating`
+/// (SPEC §10.7). git itself refuses to check out a branch that is already
+/// checked out in another worktree; that refusal is deliberately *not*
+/// pre-checked — it surfaces through the executor as a failed `OpResult`
+/// carrying git's own message (transparency contract, SPEC §18).
+fn plan_worktree_add(
+    committish: &str,
+    path: &str,
+    new_branch: Option<&str>,
+) -> Result<CommandPlan, GitError> {
+    if committish.trim().is_empty() || path.trim().is_empty() {
+        return Err(GitError::EmptyTarget);
+    }
+    if let Some(name) = new_branch {
+        if invalid_ref_name(name) {
+            return Err(GitError::BadRefName {
+                name: name.to_string(),
+            });
+        }
+    }
+
+    let mut argv = vec!["git".to_string(), "worktree".to_string(), "add".to_string()];
+    if let Some(name) = new_branch {
+        argv.push("-b".to_string());
+        argv.push(name.to_string());
+    }
+    argv.push(path.to_string());
+    argv.push(committish.to_string());
+
+    let checkout = match new_branch {
+        Some(name) => format!("new branch {name} at {committish}"),
+        None => format!("check out {committish}"),
+    };
+    let display = format_argv(&argv);
+
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary: format!("add worktree at {path}"),
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+            program: None,
+        }],
+        display,
+        preview: Some(Preview {
+            headline: "Add worktree".to_string(),
+            lines: vec![checkout, format!("new directory {path}")],
+            requires_type_to_confirm: false,
+        }),
+    })
+}
+
+/// `git worktree remove [--force] <path>` — `Mutating` for a clean worktree;
+/// `Dangerous` (type-to-confirm, effect names the lost work) when `force`
+/// removes a dirty one (SPEC §10.7). Without `force` a dirty worktree is
+/// refused at plan time — the same rule git enforces. The main worktree is
+/// never removable from inside it.
+fn plan_worktree_remove(repo: &Repo, path: &str, force: bool) -> Result<CommandPlan, GitError> {
+    let want = Path::new(path)
+        .canonicalize()
+        .unwrap_or_else(|_| Path::new(path).to_path_buf());
+    let target = repo
+        .worktrees()?
+        .into_iter()
+        .find(|w| Path::new(&w.path) == want)
+        .ok_or_else(|| GitError::WorktreeNotFound {
+            path: path.to_string(),
+        })?;
+    if target.is_main {
+        return Err(GitError::MainWorktree);
+    }
+
+    // "Dirty" is exactly what `git worktree remove` refuses to discard:
+    // anything that worktree's own status reports. An unreadable worktree
+    // counts clean — git still has the final say.
+    let dirty = Repo::open(&want)
+        .and_then(|w| w.status())
+        .map(|s| !s.changes.is_empty())
+        .unwrap_or(false);
+    if dirty && !force {
+        return Err(GitError::WorktreeDirty {
+            path: target.path.clone(),
+        });
+    }
+
+    let mut argv = vec![
+        "git".to_string(),
+        "worktree".to_string(),
+        "remove".to_string(),
+    ];
+    if force {
+        argv.push("--force".to_string());
+    }
+    argv.push(target.path.clone());
+
+    let checked_out = target.branch.as_deref().unwrap_or("detached HEAD");
+    let effect = dirty
+        .then(|| "uncommitted changes in the worktree will be discarded".to_string());
+    let display = format_argv(&argv);
+
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary: format!("remove worktree {}", target.path),
+            risk: if dirty { Risk::Dangerous } else { Risk::Mutating },
+            effect,
+            input: None,
+            program: None,
+        }],
+        display,
+        preview: Some(Preview {
+            headline: "Remove worktree".to_string(),
+            lines: vec![format!("removes {checked_out} at {}", target.path)],
+            requires_type_to_confirm: dirty,
         }),
     })
 }

@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use git_gotten_protocol::{
     Branch, CommandPlan, CommitDetail, ConflictFile, FileDiff, Graph, LogEntry, Op, OpResult,
-    OpStarted, RebaseCommit, Remote, RepoId, RepoMeta, Risk, Status, StatusChanged, Tag,
+    OpStarted, RebaseCommit, Remote, RepoId, RepoMeta, Risk, Status, StatusChanged, Tag, Worktree,
 };
 use gitcore::{GitError, GitExecutor};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
@@ -246,6 +246,15 @@ impl Backend {
             .get(id)
             .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
         Ok(repo.tags()?)
+    }
+
+    /// The worktrees of an open repository (IPC `load_worktrees`, SPEC §10.7).
+    pub fn load_worktrees(&self, id: &str) -> Result<Vec<Worktree>, AppError> {
+        let repos = self.registry.lock_repos();
+        let repo = repos
+            .get(id)
+            .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
+        Ok(repo.worktrees()?)
     }
 
     /// Commits an interactive rebase onto `target` would rewrite (IPC
@@ -476,6 +485,12 @@ fn load_tags(repo: RepoId, state: State<'_, Backend>) -> Result<Vec<Tag>, AppErr
     state.load_tags(&repo)
 }
 
+/// The worktrees of an open repository (IPC `load_worktrees`, SPEC §10.7).
+#[tauri::command]
+fn load_worktrees(repo: RepoId, state: State<'_, Backend>) -> Result<Vec<Worktree>, AppError> {
+    state.load_worktrees(&repo)
+}
+
 /// The commits an interactive rebase onto `target` would rewrite (IPC
 /// `load_rebase_commits`, the RebaseDialog list, SPEC §10.4).
 #[tauri::command]
@@ -608,6 +623,7 @@ pub fn run() {
             load_branches,
             load_remotes,
             load_tags,
+            load_worktrees,
             load_rebase_commits,
             plan_op,
             run_op,
@@ -683,6 +699,62 @@ mod tests {
         let (backend, _rx) = Backend::new();
         let err = backend.load_status("/does/not/exist").unwrap_err();
         assert!(matches!(err, AppError::RepoNotOpen(_)), "got {err}");
+    }
+
+    #[tokio::test]
+    async fn worktree_add_remove_and_switch_retarget_the_active_repo() {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let wt = std::env::temp_dir().join(format!(
+            "gitgotten-app-wt-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+
+        let (backend, _rx) = Backend::new();
+        let fx = testutil::Fixture::new("app-worktree");
+        fx.commit_file("a.txt", "x\n", "c1");
+        fx.git(&["branch", "side"]);
+        backend.open(fx.id()).unwrap();
+
+        let plan = backend
+            .plan(
+                fx.id(),
+                &Op::WorktreeAdd {
+                    committish: "side".into(),
+                    path: wt.to_string_lossy().into_owned(),
+                    new_branch: None,
+                },
+            )
+            .unwrap();
+        let result = backend.run_op(fx.id(), &plan).await.unwrap();
+        assert!(result.ok, "stderr: {}", result.stderr);
+        assert!(backend
+            .load_worktrees(fx.id())
+            .unwrap()
+            .iter()
+            .any(|w| w.branch.as_deref() == Some("side")));
+
+        // The switcher retargets by opening the worktree root as the active
+        // repository: its status is the worktree's checkout (SPEC §10.7).
+        let wt_path = std::fs::canonicalize(&wt).unwrap();
+        let linked = backend.open(wt_path.to_str().unwrap()).unwrap();
+        assert_eq!(linked.branch.as_deref(), Some("side"));
+        let status = backend.load_status(&linked.id).unwrap();
+        assert_eq!(status.branch.as_deref(), Some("side"));
+
+        // Removing the worktree from the main repo is a clean Mutating op.
+        let plan = backend
+            .plan(
+                fx.id(),
+                &Op::WorktreeRemove {
+                    path: wt_path.to_string_lossy().into_owned(),
+                    force: false,
+                },
+            )
+            .unwrap();
+        let result = backend.run_op(fx.id(), &plan).await.unwrap();
+        assert!(result.ok, "stderr: {}", result.stderr);
+        assert_eq!(backend.load_worktrees(fx.id()).unwrap().len(), 1);
     }
 
     #[test]

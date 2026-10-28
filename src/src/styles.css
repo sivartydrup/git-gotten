@@ -1288,6 +1288,14 @@ code {
   font-size: 12px;
 }
 
+.refs-row .refs-path {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .badge.sync {
   color: var(--muted);
 }
