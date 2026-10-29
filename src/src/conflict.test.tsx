@@ -49,6 +49,10 @@ vi.mock("./api", () => ({
   loadRemotes: vi.fn().mockResolvedValue([]),
   loadTags: vi.fn().mockResolvedValue([]),
   loadConflict,
+  loadStashes: async () => [],
+  loadSubmodules: async () => [],
+  loadBisect: async () => ({ active: false, current: null, good: [], bad: [], remaining: 0, found: null, log: [] }),
+  bisectTest: async () => ({ active: false, current: null, good: [], bad: [], remaining: 0, found: null, log: [] }),
 }));
 
 import {

@@ -14,8 +14,8 @@ use std::path::Path;
 
 use git_gotten_protocol::{FileDiff, Hunk};
 
-use crate::show::run_git_sync_allow;
 use crate::GitError;
+use crate::show::run_git_sync_allow;
 
 /// The null device, per platform, for `git diff --no-index`.
 ///
@@ -23,11 +23,7 @@ use crate::GitError;
 /// cannot diff them; `--no-index` against the null device yields the
 /// file-vs-nothing diff (every line added).
 fn dev_null() -> &'static str {
-    if cfg!(windows) {
-        "NUL"
-    } else {
-        "/dev/null"
-    }
+    if cfg!(windows) { "NUL" } else { "/dev/null" }
 }
 
 /// `git diff -- <file>` — worktree vs index (the unstaged side).

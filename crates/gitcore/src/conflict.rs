@@ -84,11 +84,7 @@ const ENV_SET: &[(&str, &str)] = &[
 /// `allow_exit` tolerates one specific non-zero exit code as data (like
 /// `show::run_git_sync_allow`): `git merge-file` exits 1 when a conflict is
 /// present, which is the expected result, not an error.
-pub(crate) fn git_bytes(
-    cwd: &Path,
-    args: &[&str],
-    allow_exit: i32,
-) -> Result<Vec<u8>, GitError> {
+pub(crate) fn git_bytes(cwd: &Path, args: &[&str], allow_exit: i32) -> Result<Vec<u8>, GitError> {
     let program = super::exec::resolve_git()?;
     let mut cmd = std::process::Command::new(&program);
     cmd.args(args);
@@ -102,9 +98,10 @@ pub(crate) fn git_bytes(
     for key in ENV_UNSET {
         cmd.env_remove(key);
     }
-    let output = cmd
-        .output()
-        .map_err(|e| GitError::Command { exit: -1, detail: e.to_string() })?;
+    let output = cmd.output().map_err(|e| GitError::Command {
+        exit: -1,
+        detail: e.to_string(),
+    })?;
     let exit = output.status.code().unwrap_or(-1);
     if exit != 0 && exit != allow_exit {
         return Err(GitError::Command {
@@ -187,16 +184,17 @@ fn diff3_segments(
 ) -> Result<Vec<ConflictSegment>, GitError> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "gitgotten-conflict-{}-{seq}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| GitError::Command { exit: -1, detail: e.to_string() })?;
+    let dir = std::env::temp_dir().join(format!("gitgotten-conflict-{}-{seq}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| GitError::Command {
+        exit: -1,
+        detail: e.to_string(),
+    })?;
     let result = (|| {
         for (name, content) in [("ours", ours), ("base", base), ("theirs", theirs)] {
-            std::fs::write(dir.join(name), content)
-                .map_err(|e| GitError::Command { exit: -1, detail: e.to_string() })?;
+            std::fs::write(dir.join(name), content).map_err(|e| GitError::Command {
+                exit: -1,
+                detail: e.to_string(),
+            })?;
         }
         let out = git_bytes(
             &dir,
@@ -528,24 +526,20 @@ other\n\
     #[test]
     fn resolved_content_splices_the_choices() {
         let segments = parse_diff3("pre\n<<<<<<<\nO\n|||||||\nB\n=======\nT\n>>>>>>>\npost\n");
-        let ok = resolved_content(
-            &segments,
-            &[
-                HunkChoice::AcceptBoth,
-            ],
-        )
-        .unwrap();
+        let ok = resolved_content(&segments, &[HunkChoice::AcceptBoth]).unwrap();
         assert_eq!(ok, "pre\nO\nT\npost\n");
 
-        let ok = resolved_content(
-            &segments,
-            &[HunkChoice::Custom("X\n".into())],
-        )
-        .unwrap();
+        let ok = resolved_content(&segments, &[HunkChoice::Custom("X\n".into())]).unwrap();
         assert_eq!(ok, "pre\nX\npost\n");
 
         let err = resolved_content(&segments, &[]).unwrap_err();
-        assert!(matches!(err, GitError::ConflictMismatch { expected: 1, given: 0 }));
+        assert!(matches!(
+            err,
+            GitError::ConflictMismatch {
+                expected: 1,
+                given: 0
+            }
+        ));
     }
 
     #[test]
@@ -553,7 +547,8 @@ other\n\
         // A real repository: the patch must apply cleanly to the preimage.
         let fx = git_gotten_testutil::Fixture::new("patch");
         fx.write_file("f.txt", "old line\nkept\n");
-        let patch = whole_file_patch("f.txt", Some("old line\nkept\n"), "new line\nkept\n").unwrap();
+        let patch =
+            whole_file_patch("f.txt", Some("old line\nkept\n"), "new line\nkept\n").unwrap();
         let patch_path = fx.path.join("p.patch");
         std::fs::write(&patch_path, &patch).unwrap();
         // The patch path stays relative: git on Windows parses a verbatim
@@ -579,10 +574,7 @@ other\n\
 
     #[test]
     fn in_progress_op_reads_the_state_markers() {
-        let dir = std::env::temp_dir().join(format!(
-            "gitgotten-opstate-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("gitgotten-opstate-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(in_progress_op(&dir), None);
         std::fs::write(dir.join("CHERRY_PICK_HEAD"), "abc\n").unwrap();

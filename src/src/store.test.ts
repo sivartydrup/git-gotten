@@ -21,6 +21,10 @@ vi.mock("./api", () => ({
   onOpFinished: vi.fn().mockResolvedValue(null),
   loadGraph,
   loadCommit,
+  loadStashes: async () => [],
+  loadSubmodules: async () => [],
+  loadBisect: async () => ({ active: false, current: null, good: [], bad: [], remaining: 0, found: null, log: [] }),
+  bisectTest: async () => ({ active: false, current: null, good: [], bad: [], remaining: 0, found: null, log: [] }),
 }));
 
 import { useGraphStore, useRepoStore } from "./store";

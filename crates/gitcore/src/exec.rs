@@ -178,9 +178,7 @@ impl GitExecutor {
     /// is reported in the result. Spawning failures (no git binary) also land in
     /// the result, not as an `Err`.
     pub async fn run_plan(&self, id: &str, cwd: &Path, plan: &CommandPlan) -> OpResult {
-        self.queue
-            .run(id, self.exec_plan(cwd, plan.clone()))
-            .await
+        self.queue.run(id, self.exec_plan(cwd, plan.clone())).await
     }
 
     async fn exec_plan(&self, cwd: &Path, plan: CommandPlan) -> OpResult {
@@ -354,7 +352,11 @@ mod tests {
         }
 
         let results: Vec<String> = futures_join_all(&mut tasks).await;
-        assert_eq!(results, vec!["done".to_string(); 2], "no lock error: both ops complete");
+        assert_eq!(
+            results,
+            vec!["done".to_string(); 2],
+            "no lock error: both ops complete"
+        );
 
         let starts: Vec<u64> = starts.lock().unwrap().clone();
         let ends: Vec<u64> = ends.lock().unwrap().clone();
@@ -369,11 +371,7 @@ mod tests {
         } else {
             (starts[1], starts[0])
         };
-        let first_end = ends
-            .iter()
-            .copied()
-            .min()
-            .unwrap(); // the first op's end is the earliest end
+        let first_end = ends.iter().copied().min().unwrap(); // the first op's end is the earliest end
         assert!(
             s2 >= first_end - 5_000_000, // 5ms tolerance for scheduler latency
             "second op (start {s2}) began before the first ended ({first_end})"
@@ -448,7 +446,7 @@ mod tests {
                 risk: Risk::Mutating,
                 effect: None,
                 input: None,
-            program: None,
+                program: None,
             }],
             display: format!("git commit -m \"{message}\""),
             preview: None,
@@ -461,7 +459,9 @@ mod tests {
         let repo = Repo::open(&fx.path).unwrap();
         let executor = GitExecutor::new();
 
-        let result = executor.run_plan(&repo.id, &repo.path, &commit_plan("add b")).await;
+        let result = executor
+            .run_plan(&repo.id, &repo.path, &commit_plan("add b"))
+            .await;
 
         assert!(result.ok, "stderr: {}", result.stderr);
         assert_eq!(result.exit, 0);
@@ -488,16 +488,12 @@ mod tests {
 
         let plan = CommandPlan {
             steps: vec![GitStep {
-                argv: vec![
-                    "git".to_string(),
-                    "switch".to_string(),
-                    "side".to_string(),
-                ],
+                argv: vec!["git".to_string(), "switch".to_string(), "side".to_string()],
                 summary: "switch to side".into(),
                 risk: Risk::Mutating,
                 effect: None,
                 input: None,
-            program: None,
+                program: None,
             }],
             display: "git switch side".into(),
             preview: None,
@@ -516,7 +512,9 @@ mod tests {
         let repo = Repo::open(&fx.path).unwrap();
         let executor = GitExecutor::new();
 
-        let result = executor.run_plan(&repo.id, &repo.path, &commit_plan("nope")).await;
+        let result = executor
+            .run_plan(&repo.id, &repo.path, &commit_plan("nope"))
+            .await;
 
         assert!(!result.ok);
         assert_eq!(result.exit, 1);
@@ -551,19 +549,15 @@ mod tests {
                     risk: Risk::Mutating,
                     effect: None,
                     input: None,
-                program: None,
+                    program: None,
                 },
                 GitStep {
-                    argv: vec![
-                        "git".to_string(),
-                        "switch".to_string(),
-                        "side".to_string(),
-                    ],
+                    argv: vec!["git".to_string(), "switch".to_string(), "side".to_string()],
                     summary: "must not run".into(),
                     risk: Risk::Mutating,
                     effect: None,
                     input: None,
-                program: None,
+                    program: None,
                 },
             ],
             display: "git commit -m \"never\" && git switch side".into(),
@@ -602,7 +596,7 @@ mod tests {
                 risk: Risk::ReadOnly,
                 effect: None,
                 input: Some("hello\n".to_string()),
-            program: None,
+                program: None,
             }],
             display: "git hash-object -t blob --stdin".to_string(),
             preview: None,

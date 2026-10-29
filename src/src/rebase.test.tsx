@@ -24,6 +24,10 @@ vi.mock("./api", () => ({
   loadRemotes: vi.fn().mockResolvedValue([]),
   loadTags: vi.fn().mockResolvedValue([]),
   loadRebaseCommits,
+  loadStashes: async () => [],
+  loadSubmodules: async () => [],
+  loadBisect: async () => ({ active: false, current: null, good: [], bad: [], remaining: 0, found: null, log: [] }),
+  bisectTest: async () => ({ active: false, current: null, good: [], bad: [], remaining: 0, found: null, log: [] }),
 }));
 
 import { useActivityStore, useRebaseStore, useRefsStore, useRepoStore } from "./store";

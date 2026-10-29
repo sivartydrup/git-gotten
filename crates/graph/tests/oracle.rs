@@ -12,7 +12,7 @@
 //! reverse-ref order, so these fixtures pin that discipline down end to end.
 
 use git_gotten_testutil::Fixture;
-use graph::{build_dag, LaneLayout};
+use graph::{LaneLayout, build_dag};
 
 /// Parse `git log --graph --all --format=%H%x00%s` output into
 /// `(subject, lane, row)` in emission order.
@@ -37,12 +37,7 @@ fn parse_git_graph(out: &str) -> Vec<(String, i32, u32)> {
 
 /// Assert my layout matches git's graph for every commit in the fixture.
 fn assert_matches_git(fx: &Fixture) {
-    let git_out = fx.git(&[
-        "log",
-        "--graph",
-        "--all",
-        "--format=%H%x00%s",
-    ]);
+    let git_out = fx.git(&["log", "--graph", "--all", "--format=%H%x00%s"]);
     let git = parse_git_graph(&git_out);
 
     let repo = gix::open(&fx.path).expect("fixture must be a valid repository");
@@ -56,11 +51,12 @@ fn assert_matches_git(fx: &Fixture) {
         .collect();
 
     assert_eq!(mine.len(), git.len(), "commit counts differ");
-    for (i, ((gs, gl, gr), (ms, ml, mr))) in
-        git.iter().zip(mine.iter()).enumerate()
-    {
-        assert_eq!((gs, gl, gr), (ms, ml, mr),
-            "commit {i}: git says ({gs}, lane {gl}, row {gr}) but layout says ({ms}, lane {ml}, row {mr})");
+    for (i, ((gs, gl, gr), (ms, ml, mr))) in git.iter().zip(mine.iter()).enumerate() {
+        assert_eq!(
+            (gs, gl, gr),
+            (ms, ml, mr),
+            "commit {i}: git says ({gs}, lane {gl}, row {gr}) but layout says ({ms}, lane {ml}, row {mr})"
+        );
     }
 }
 

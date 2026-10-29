@@ -9,8 +9,8 @@ import {
   type Viewport,
 } from "./GraphCanvas";
 import { InspectDrawer } from "./InspectDrawer";
-import { useGraphStore, useRepoStore } from "../store";
-import type { CommitDetail, Graph, Node } from "../types";
+import { useBisectStore, useGraphStore, useMainTab, useRepoStore } from "../store";
+import type { BisectState, CommitDetail, Graph, Node } from "../types";
 
 // `loadCommit` is hoisted so interaction tests can drive its result.
 const { loadCommit, planOp } = vi.hoisted(() => ({
@@ -65,6 +65,10 @@ vi.mock("../api", () => ({
   onOpFinished: vi.fn().mockResolvedValue(null),
   loadGraph: vi.fn().mockResolvedValue(null),
   loadCommit,
+  loadStashes: async () => [],
+  loadSubmodules: async () => [],
+  loadBisect: async () => ({ active: false, current: null, good: [], bad: [], remaining: 0, found: null, log: [] }),
+  bisectTest: async () => ({ active: false, current: null, good: [], bad: [], remaining: 0, found: null, log: [] }),
 }));
 
 afterEach(() => {
@@ -176,6 +180,8 @@ function straightGraph(n: number): Graph {
 function recorder() {
   const rec = {
     arcs: 0,
+    arcRadii: [] as number[],
+    band: [] as { w: number; h: number; alpha: number }[],
     strokes: 0,
     fills: 0,
     rects: [] as { x: number; y: number; w: number; h: number }[],
@@ -192,11 +198,15 @@ function recorder() {
     moveTo() {},
     lineTo() {},
     bezierCurveTo() {},
-    arc() {
+    arc(_x: number, _y: number, r: number) {
       rec.arcs += 1;
+      rec.arcRadii.push(r);
     },
     fillRect(x: number, y: number, w: number, h: number) {
       rec.rects.push({ x, y, w, h });
+      if (rec.globalAlpha < 1) {
+        rec.band.push({ w, h, alpha: rec.globalAlpha });
+      }
     },
     strokeRect(x: number, y: number, w: number, h: number) {
       rec.strokeRects.push({ x, y, w, h });
@@ -351,6 +361,79 @@ test("renderGraph: worktree checkouts get outlined marker pills, branches stay f
   for (const r of rec.strokeRects) {
     expect(r.x).toBeGreaterThanOrEqual(2);
   }
+});
+
+test("renderGraph: an active bisect bands the suspect rows and rings its commits", () => {
+  const g = straightGraph(5);
+  const bisect: BisectState = {
+    active: true,
+    current: "h2",
+    good: ["h4"],
+    bad: ["h0", "h1"],
+    remaining: 1,
+    found: null,
+    log: ["git bisect start"],
+  };
+  const rec = recorder();
+  renderGraph(
+    rec,
+    800,
+    300,
+    identity,
+    { graph: g, selected: null, hovered: null, query: "", bisect },
+    1,
+  );
+  // One translucent band from the newest bad row to the oldest good row.
+  expect(rec.band).toHaveLength(1);
+  expect(rec.band[0].h).toBe(120); // rowY(4) - rowY(0) + ROW_H
+  expect(rec.band[0].alpha).toBeLessThan(1);
+  // 5 dots + HEAD ring + one ring per marked commit (h0, h1, h2, h4).
+  expect(rec.arcRadii.filter((r) => r === 8)).toHaveLength(5);
+});
+
+test("renderGraph: a converged bisect fills the culprit dot", () => {
+  const g = straightGraph(3);
+  const rec = recorder();
+  renderGraph(
+    rec,
+    800,
+    300,
+    identity,
+    {
+      graph: g,
+      selected: null,
+      hovered: null,
+      query: "",
+      bisect: {
+        active: true,
+        current: null,
+        good: ["h2"],
+        bad: ["h0"],
+        remaining: 0,
+        found: "h1",
+        log: [],
+      },
+    },
+    1,
+  );
+  const plainDots = rec.arcRadii.filter((r) => r === 5).length;
+  expect(plainDots).toBe(4); // 3 dots + the filled culprit override
+});
+
+test("renderGraph: no bisect in RenderState draws no band or extra ring", () => {
+  const g = straightGraph(5);
+  const rec = recorder();
+  renderGraph(
+    rec,
+    800,
+    300,
+    identity,
+    { graph: g, selected: null, hovered: null, query: "" },
+    1,
+  );
+  expect(rec.band).toHaveLength(0);
+  // Only the HEAD ring (radius DOT_R + 3) beyond the 5 dots.
+  expect(rec.arcRadii.filter((r) => r === 8)).toHaveLength(1);
 });
 
 // ── Component smoke ──────────────────────────────────────────────────────────
@@ -519,6 +602,21 @@ test("canceling the cherry-pick target prompt sends no op", () => {
   fireEvent.click(screen.getByText("Cherry-pick"));
   expect(planOp).not.toHaveBeenCalled();
   promptSpy.mockRestore();
+});
+
+test('the context menu offers "bisect from here", which drafts the bad ref and opens the tab', () => {
+  useGraphStore.setState({ graph: threeNodeGraph(), loading: false });
+  useRepoStore.setState({ activeId: "/repo/alpha" });
+  useMainTab.getState().setTab("graph");
+  render(<GraphCanvas />);
+  fireEvent.contextMenu(document.querySelector("canvas.graph-canvas")!, {
+    clientX: 18,
+    clientY: 55,
+  });
+  fireEvent.click(screen.getByText("bisect from here"));
+  expect(useBisectStore.getState().draftBad).toBe("d4e5f6");
+  expect(useMainTab.getState().tab).toBe("bisect");
+  useBisectStore.getState().setDraftBad(null);
 });
 
 test("hovering a commit shows the tooltip and hover state", () => {

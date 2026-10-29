@@ -6,9 +6,7 @@
 //! resolves through the Stage 8 flow and continues to completion.
 //! Requires a `git` binary on `PATH` (the stage's platform gate).
 
-use git_gotten_protocol::{
-    ConflictResolution, HunkChoice, Op, RebaseAction, RebaseEdit, Risk,
-};
+use git_gotten_protocol::{ConflictResolution, HunkChoice, Op, RebaseAction, RebaseEdit, Risk};
 use git_gotten_testutil as testutil;
 use gitcore::{GitError, GitExecutor, Repo};
 
@@ -91,7 +89,10 @@ fn plan_rebase_injects_the_edited_todo_as_the_sequence_editor() {
     assert!(argv[2].ends_with("gitgotten-todo.sh'"));
     assert_eq!(&argv[3..], ["rebase", "-i", "main"]);
     assert!(plan.display.starts_with("git -c \"sequence.editor=sh '"));
-    assert!(plan.display.ends_with("gitgotten-todo.sh'\" rebase -i main"));
+    assert!(
+        plan.display
+            .ends_with("gitgotten-todo.sh'\" rebase -i main")
+    );
 
     let todo = injected_todo(&plan);
     let lines: Vec<&str> = todo.lines().skip(2).collect(); // shebang + heredoc opener
@@ -225,7 +226,13 @@ fn plan_cherry_pick_with_a_target_switches_first() {
         plan.display,
         format!("git switch side && git cherry-pick {pick}")
     );
-    assert!(plan.preview.unwrap().lines.iter().any(|l| l.contains("side")));
+    assert!(
+        plan.preview
+            .unwrap()
+            .lines
+            .iter()
+            .any(|l| l.contains("side"))
+    );
     let _ = fx;
 }
 
@@ -326,14 +333,20 @@ async fn rebase_stop_resolves_and_continues_to_completion() {
     )
     .await;
     assert!(resolved.ok, "stderr: {}", resolved.stderr);
-    assert!(repo.status().unwrap().in_rebase, "the todo has a stop to conclude");
+    assert!(
+        repo.status().unwrap().in_rebase,
+        "the todo has a stop to conclude"
+    );
 
     let continued = run(&repo, &Op::ContinueOp).await;
     assert!(continued.ok, "stderr: {}", continued.stderr);
     let status = repo.status().unwrap();
     assert!(!status.in_rebase);
     assert!(!status.in_merge);
-    assert_eq!(std::fs::read_to_string(fx.path.join("f.txt")).unwrap(), "chosen\n");
+    assert_eq!(
+        std::fs::read_to_string(fx.path.join("f.txt")).unwrap(),
+        "chosen\n"
+    );
     assert_eq!(subjects(&fx, "main"), ["c-main", "c-side", "c1"]);
     let _ = fx;
 }
@@ -369,7 +382,12 @@ async fn rebasing_published_commits_is_dangerous_and_runs_after() {
         plan.steps[0].effect.as_deref(),
         Some("rewrites 1 commit already on a remote")
     );
-    assert!(preview.lines.iter().any(|l| l.contains("1 commit on a remote")));
+    assert!(
+        preview
+            .lines
+            .iter()
+            .any(|l| l.contains("1 commit on a remote"))
+    );
 
     let result = run(&repo, &op).await;
     assert!(result.ok, "stderr: {}", result.stderr);
@@ -419,7 +437,10 @@ async fn cherry_pick_onto_another_branch_switches_and_picks() {
     let status = repo.status().unwrap();
     assert_eq!(status.branch.as_deref(), Some("side"));
     assert_eq!(subjects(&fx, "side"), ["pickup", "base"]);
-    assert_eq!(std::fs::read_to_string(fx.path.join("p.txt")).unwrap(), "pick me\n");
+    assert_eq!(
+        std::fs::read_to_string(fx.path.join("p.txt")).unwrap(),
+        "pick me\n"
+    );
     let _ = fx;
 }
 
@@ -444,7 +465,11 @@ async fn cherry_pick_conflict_on_the_target_resolves_and_continues() {
     )
     .await;
     assert!(!picked.ok, "the pick was expected to conflict");
-    assert_eq!(picked.conflicts, Vec::<String>::new(), "the core does not fill conflicts");
+    assert_eq!(
+        picked.conflicts,
+        Vec::<String>::new(),
+        "the core does not fill conflicts"
+    );
     let status = repo.status().unwrap();
     assert_eq!(status.branch.as_deref(), Some("side"));
     assert!(status.in_cherry_pick);
@@ -464,7 +489,10 @@ async fn cherry_pick_conflict_on_the_target_resolves_and_continues() {
     let status = repo.status().unwrap();
     assert!(!status.in_cherry_pick);
     assert_eq!(status.branch.as_deref(), Some("side"));
-    assert_eq!(std::fs::read_to_string(fx.path.join("f.txt")).unwrap(), "chosen\n");
+    assert_eq!(
+        std::fs::read_to_string(fx.path.join("f.txt")).unwrap(),
+        "chosen\n"
+    );
     assert_eq!(subjects(&fx, "side"), ["c-main", "c-side", "c1"]);
     let _ = fx;
 }
@@ -475,10 +503,7 @@ async fn cherry_pick_conflict_on_the_target_resolves_and_continues() {
 fn rebase_commits_lists_the_range_newest_first() {
     let (fx, repo, [h1, h2, h3]) = feature_fixture();
     let commits = repo.rebase_commits("main").unwrap();
-    let listed: Vec<(String, String)> = commits
-        .into_iter()
-        .map(|c| (c.hash, c.subject))
-        .collect();
+    let listed: Vec<(String, String)> = commits.into_iter().map(|c| (c.hash, c.subject)).collect();
     assert_eq!(
         listed,
         [

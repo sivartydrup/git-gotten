@@ -5,10 +5,9 @@
 //! the layout on real-world shapes. The row-order/lanes *faithfulness* check
 //! against `git log --graph` lives in `oracle.rs`.
 
-
 use git_gotten_protocol::{RefKind, RefLabel};
 use git_gotten_testutil::{Fixture, RemoteFixture};
-use graph::{build_dag, to_svg, GraphError, LaneLayout, RawDag};
+use graph::{GraphError, LaneLayout, RawDag, build_dag, to_svg};
 
 /// Open the fixture with `gix` and build its DAG.
 fn dag_of(fx: &Fixture) -> RawDag {
@@ -97,11 +96,16 @@ fn classic_fixture_maps_the_dag() {
 
 #[test]
 fn classic_fixture_layouts_like_git_log_graph() {
-    let g = LaneLayout::default().compute(&dag_of(&classic_fixture())).unwrap();
+    let g = LaneLayout::default()
+        .compute(&dag_of(&classic_fixture()))
+        .unwrap();
 
     // Row order (git's --topo-order walk): merge, E, D, C, B, A.
     assert_eq!(
-        g.nodes.iter().map(|n| n.subject.as_str()).collect::<Vec<_>>(),
+        g.nodes
+            .iter()
+            .map(|n| n.subject.as_str())
+            .collect::<Vec<_>>(),
         vec!["merge feature", "E", "D", "C", "B", "A"]
     );
     // Lanes: mainline on the left; feature in its own lane, dead at the merge.
@@ -115,8 +119,16 @@ fn classic_fixture_layouts_like_git_log_graph() {
 
     // Two lines with distinct colors; the feature line is a single lane-1 run.
     assert_eq!(g.lines.len(), 2);
-    let feat = g.lines.iter().find(|l| l.name.as_deref() == Some("feature")).unwrap();
-    let main = g.lines.iter().find(|l| l.name.as_deref() == Some("main")).unwrap();
+    let feat = g
+        .lines
+        .iter()
+        .find(|l| l.name.as_deref() == Some("feature"))
+        .unwrap();
+    let main = g
+        .lines
+        .iter()
+        .find(|l| l.name.as_deref() == Some("main"))
+        .unwrap();
     assert_ne!(feat.color, main.color);
     assert_eq!(feat.segments.len(), 1);
     assert_eq!(feat.segments[0].lane, 1);
@@ -139,13 +151,14 @@ fn octopus_merge_records_all_parents() {
     let d = dag_of(&fx);
     let o = node(&d, "O");
     // An octopus merge records HEAD plus each merged branch: four parents.
-    assert_eq!(o.parents.len(), 4, "octopus merge of three branches has four parents");
+    assert_eq!(
+        o.parents.len(),
+        4,
+        "octopus merge of three branches has four parents"
+    );
     let g = LaneLayout::default().compute(&d).unwrap();
     // Every merge parent edge is present.
-    assert_eq!(
-        g.edges.iter().filter(|e| e.from == o.hash).count(),
-        4
-    );
+    assert_eq!(g.edges.iter().filter(|e| e.from == o.hash).count(), 4);
 }
 
 #[test]
@@ -157,7 +170,11 @@ fn annotated_tags_peel_to_their_commit() {
     fx.git(&["tag", "-a", "v1.0", "-m", "release", &a]);
 
     let d = dag_of(&fx);
-    assert_eq!(d.nodes.len(), 2, "a tag is not a node; it labels its commit");
+    assert_eq!(
+        d.nodes.len(),
+        2,
+        "a tag is not a node; it labels its commit"
+    );
     assert_eq!(
         node(&d, "A").refs,
         vec![RefLabel {
@@ -175,8 +192,15 @@ fn detached_head_is_marked_and_walked() {
     let fx = git_gotten_testutil::detached_fixture();
     let d = dag_of(&fx);
     assert_eq!(d.nodes.len(), 2);
-    let head = d.nodes.iter().find(|n| n.is_head).expect("exactly one HEAD");
-    assert_eq!(head.subject, "c1", "detached HEAD points at the older commit");
+    let head = d
+        .nodes
+        .iter()
+        .find(|n| n.is_head)
+        .expect("exactly one HEAD");
+    assert_eq!(
+        head.subject, "c1",
+        "detached HEAD points at the older commit"
+    );
     assert!(!d.nodes.iter().find(|n| n.subject == "c2").unwrap().is_head);
 }
 
@@ -207,7 +231,9 @@ fn diverged_remote_fixture() -> Fixture {
 
 #[test]
 fn diverged_remote_gets_two_lanes() {
-    let g = LaneLayout::default().compute(&dag_of(&diverged_remote_fixture())).unwrap();
+    let g = LaneLayout::default()
+        .compute(&dag_of(&diverged_remote_fixture()))
+        .unwrap();
 
     // O (origin/main, the newer ref name) emits first, C2 (main) next, base C
     // last. O and C2 each take their own lane; C converges on the leftmost.
@@ -220,23 +246,28 @@ fn diverged_remote_gets_two_lanes() {
     assert_eq!(at("C"), (2, 0));
 
     assert_eq!(g.lines.len(), 2);
-    let o_line = g.lines.iter().find(|l| l.name.as_deref() == Some("origin/main")).unwrap();
-    let main_line = g.lines.iter().find(|l| l.name.as_deref() == Some("main")).unwrap();
+    let o_line = g
+        .lines
+        .iter()
+        .find(|l| l.name.as_deref() == Some("origin/main"))
+        .unwrap();
+    let main_line = g
+        .lines
+        .iter()
+        .find(|l| l.name.as_deref() == Some("main"))
+        .unwrap();
     assert_ne!(o_line.color, main_line.color);
     assert_eq!(
-        g.nodes
-            .iter()
-            .find(|n| n.subject == "O")
-            .unwrap()
-            .refs[0]
-            .kind,
+        g.nodes.iter().find(|n| n.subject == "O").unwrap().refs[0].kind,
         RefKind::Remote
     );
 }
 
 #[test]
 fn svg_rendering_covers_every_graph_element() {
-    let g = LaneLayout::default().compute(&dag_of(&classic_fixture())).unwrap();
+    let g = LaneLayout::default()
+        .compute(&dag_of(&classic_fixture()))
+        .unwrap();
     let svg = to_svg(&g);
     assert!(svg.starts_with("<svg") && svg.ends_with("</svg>\n"));
     // One circle per node, one path per edge, at least one line stroke.
@@ -250,4 +281,3 @@ fn svg_rendering_covers_every_graph_element() {
     assert!(svg.contains("main") && svg.contains("feature"));
     assert!(svg.contains("merge feature"));
 }
-

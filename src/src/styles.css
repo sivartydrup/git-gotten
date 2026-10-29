@@ -1603,3 +1603,96 @@ code {
   padding: 4px 6px;
   font-size: 12px;
 }
+
+/* ── Stage 11: stash, submodules, bisect ─────────────────────────────────── */
+
+.badge.submodule {
+  background: var(--border);
+  color: var(--muted);
+}
+
+.submodules .refs-head {
+  gap: 8px;
+}
+
+.submodule-commit {
+  width: 240px;
+  margin-top: 0;
+}
+
+.stash-push {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stash-push .dialog-check {
+  margin-top: 0;
+}
+
+.refs-row {
+  flex-wrap: wrap;
+}
+
+.refs-row .refs-date,
+.refs-row .refs-branch {
+  color: var(--muted);
+  font-size: 11px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.stash-files {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 8px;
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+}
+
+.stash-files .refs-path {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.bisect-found {
+  padding: 6px 8px;
+  border: 1px solid var(--success, #58b368);
+  border-radius: 4px;
+  color: var(--success, #58b368);
+  font-size: 13px;
+}
+
+.bisect-state,
+.bisect-sets {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.bisect-good {
+  color: var(--success, #58b368);
+}
+
+.bisect-bad {
+  color: var(--error, #e05252);
+}
+
+.bisect-controls .dialog-input {
+  margin-top: 0;
+}
+
+.bisect-log {
+  margin: 8px 0 0;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  max-height: 220px;
+  overflow: auto;
+}

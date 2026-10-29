@@ -17,6 +17,10 @@ vi.mock("../api", () => ({
   onOpFinished: vi.fn().mockResolvedValue(null),
   loadGraph: vi.fn().mockResolvedValue(null),
   loadCommit: vi.fn().mockResolvedValue(null),
+  loadStashes: async () => [],
+  loadSubmodules: async () => [],
+  loadBisect: async () => ({ active: false, current: null, good: [], bad: [], remaining: 0, found: null, log: [] }),
+  bisectTest: async () => ({ active: false, current: null, good: [], bad: [], remaining: 0, found: null, log: [] }),
 }));
 
 afterEach(() => {

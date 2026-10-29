@@ -100,14 +100,14 @@ fn plan_pull_defaults_to_merge() {
     assert_step(&plan, "git pull --no-rebase", Risk::Mutating);
     let preview = plan.preview.as_ref().expect("pull previews");
     assert!(
-        preview
-            .lines
-            .iter()
-            .any(|l| l.contains("origin/main")),
+        preview.lines.iter().any(|l| l.contains("origin/main")),
         "preview must name the upstream: {:?}",
         preview.lines
     );
-    assert!(!preview.requires_type_to_confirm, "pull never type-to-confirms");
+    assert!(
+        !preview.requires_type_to_confirm,
+        "pull never type-to-confirms"
+    );
     let _ = fx;
 }
 
@@ -128,10 +128,7 @@ fn plan_pull_without_upstream_warns_instead_of_running() {
     let plan = repo.plan(&Op::Pull { rebase: false }).unwrap();
     let preview = plan.preview.as_ref().expect("pull previews");
     assert!(
-        preview
-            .lines
-            .iter()
-            .any(|l| l.contains("no upstream")),
+        preview.lines.iter().any(|l| l.contains("no upstream")),
         "preview must warn about the missing upstream: {:?}",
         preview.lines
     );
@@ -141,9 +138,7 @@ fn plan_pull_without_upstream_warns_instead_of_running() {
 fn plan_pull_on_detached_head_errors() {
     let fx = testutil::detached_fixture();
     let repo = Repo::open(&fx.path).unwrap();
-    let err = repo
-        .plan(&Op::Pull { rebase: false })
-        .unwrap_err();
+    let err = repo.plan(&Op::Pull { rebase: false }).unwrap_err();
     assert!(matches!(err, gitcore::GitError::DetachedHead), "got {err}");
 }
 
@@ -228,10 +223,7 @@ fn plan_merge_of_an_ancestor_says_up_to_date() {
         .unwrap();
     let preview = plan.preview.as_ref().expect("merge previews");
     assert!(
-        preview
-            .lines
-            .iter()
-            .any(|l| l.contains("up to date")),
+        preview.lines.iter().any(|l| l.contains("up to date")),
         "preview must say up to date: {:?}",
         preview.lines
     );
@@ -246,7 +238,10 @@ fn plan_merge_unknown_source_errors() {
             source: "nope".into(),
         })
         .unwrap_err();
-    assert!(matches!(err, gitcore::GitError::NoCommit { .. }), "got {err}");
+    assert!(
+        matches!(err, gitcore::GitError::NoCommit { .. }),
+        "got {err}"
+    );
     let _ = fx;
 }
 
@@ -269,7 +264,13 @@ async fn clean_merge_produces_a_merge_commit() {
     let (fx, mut repo) = diverged_fixture();
     // `side` carries one commit on a different file: the merge is
     // conflict-free, `--no-ff` forces the merge commit.
-    let result = run(&repo, &Op::Merge { source: "side".into() }).await;
+    let result = run(
+        &repo,
+        &Op::Merge {
+            source: "side".into(),
+        },
+    )
+    .await;
     assert!(result.ok, "stderr: {}", result.stderr);
     repo.refresh().unwrap();
 
@@ -283,10 +284,7 @@ async fn clean_merge_produces_a_merge_commit() {
         fx.git(&["rev-parse", "HEAD^2"]),
         fx.git(&["rev-parse", "side"])
     );
-    assert_eq!(
-        fx.git(&["log", "-1", "--format=%s"]),
-        "Merge branch 'side'"
-    );
+    assert_eq!(fx.git(&["log", "-1", "--format=%s"]), "Merge branch 'side'");
 }
 
 #[tokio::test]
@@ -300,16 +298,19 @@ async fn conflicted_merge_stops_and_reports_the_files() {
     fx.commit_file("f.txt", "main\n", "c-main");
     let mut repo = Repo::open(&fx.path).unwrap();
 
-    let result = run(&repo, &Op::Merge { source: "side".into() }).await;
+    let result = run(
+        &repo,
+        &Op::Merge {
+            source: "side".into(),
+        },
+    )
+    .await;
     assert!(!result.ok, "the merge must stop on the conflict");
     repo.refresh().unwrap();
 
     // The handoff to the conflict view (stage 8): the unmerged file list and
     // the mid-merge state.
-    assert_eq!(
-        repo.unmerged_files().unwrap(),
-        vec!["f.txt".to_string()]
-    );
+    assert_eq!(repo.unmerged_files().unwrap(), vec!["f.txt".to_string()]);
     let status = repo.status().unwrap();
     assert!(status.in_merge, "repo must be mid-merge");
     assert!(
@@ -341,16 +342,10 @@ fn unmerged_files_is_empty_outside_a_conflict() {
 fn unmerged_files_cleared_after_abort() {
     let fx = testutil::merge_conflict_fixture();
     let mut repo = Repo::open(&fx.path).unwrap();
-    assert_eq!(
-        repo.unmerged_files().unwrap(),
-        vec!["f.txt".to_string()]
-    );
+    assert_eq!(repo.unmerged_files().unwrap(), vec!["f.txt".to_string()]);
     // Abort the merge (stage 8's `abort_op` runs the same git command) and
     // the unmerged state must be gone.
     fx.git(&["merge", "--abort"]);
     repo.refresh().unwrap();
-    assert!(
-        repo.unmerged_files().unwrap().is_empty(),
-        "after abort"
-    );
+    assert!(repo.unmerged_files().unwrap().is_empty(), "after abort");
 }

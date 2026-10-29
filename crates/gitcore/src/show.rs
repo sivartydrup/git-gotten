@@ -13,8 +13,8 @@ use std::process::Command;
 
 use git_gotten_protocol::{FileDiff, FileStat};
 
-use crate::exec::{resolve_git, ENV_SET, ENV_UNSET};
 use crate::GitError;
+use crate::exec::{ENV_SET, ENV_UNSET, resolve_git};
 
 /// Run `git <args>` synchronously in `cwd` and return its stdout.
 ///
@@ -66,10 +66,7 @@ pub(crate) fn run_git_sync_allow(
 /// `-M` forces rename detection so a rename reports one line (the new name, in
 /// git's `{old => new}` brace form).
 pub fn numstat(cwd: &Path, hash: &str) -> Result<Vec<FileStat>, GitError> {
-    let out = run_git_sync(
-        cwd,
-        &["show", "-M", "--numstat", "--format=", hash],
-    )?;
+    let out = run_git_sync(cwd, &["show", "-M", "--numstat", "--format=", hash])?;
     Ok(parse_numstat(&out))
 }
 
@@ -78,10 +75,7 @@ pub fn numstat(cwd: &Path, hash: &str) -> Result<Vec<FileStat>, GitError> {
 /// Root commits diff against the empty tree (git does this for `show`); the
 /// caller skips merge commits (≥2 parents have no default diff).
 pub fn patch(cwd: &Path, hash: &str) -> Result<Vec<FileDiff>, GitError> {
-    let out = run_git_sync(
-        cwd,
-        &["show", "-M", "--patch", "--format=", hash],
-    )?;
+    let out = run_git_sync(cwd, &["show", "-M", "--patch", "--format=", hash])?;
     Ok(split_patch(&out))
 }
 

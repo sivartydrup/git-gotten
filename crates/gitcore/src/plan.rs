@@ -14,11 +14,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use git_gotten_protocol::{
-    Author, ChangeKind, CommandPlan, ConflictResolution, ConflictSide, GitStep, Op, Preview,
-    RebaseAction, RebaseEdit, ResetMode, Risk, Status,
+    Author, BisectState, BisectVerdict, ChangeKind, CommandPlan, ConflictResolution, ConflictSide,
+    GitStep, Op, Preview, RebaseAction, RebaseEdit, ResetMode, Risk, Status,
 };
 
-use crate::{ahead_behind, conflict, upstream_of, GitError, Repo};
+use crate::{GitError, Repo, ahead_behind, conflict, upstream_of};
 
 /// Join a git argv into the `display` string shown in the UI.
 ///
@@ -116,7 +116,9 @@ impl Repo {
             } => plan_branch_set_upstream(self, branch, remote.as_deref(), name),
             Op::RemoteAdd { name, url } => plan_remote_add(self, name, url),
             Op::RemoteRemove { name } => plan_remote_remove(self, name),
-            Op::RemoteFetch { remote, refspec } => plan_remote_fetch(self, remote, refspec.as_deref()),
+            Op::RemoteFetch { remote, refspec } => {
+                plan_remote_fetch(self, remote, refspec.as_deref())
+            }
             Op::TagCreate {
                 name,
                 target,
@@ -142,6 +144,19 @@ impl Repo {
                 new_branch,
             } => plan_worktree_add(committish, path, new_branch.as_deref()),
             Op::WorktreeRemove { path, force } => plan_worktree_remove(self, path, *force),
+            Op::StashPush { include_untracked } => plan_stash_push(&status, *include_untracked),
+            Op::StashApply { id } => plan_stash_op(self, "apply", *id),
+            Op::StashPop { id } => plan_stash_op(self, "pop", *id),
+            Op::StashDrop { id } => plan_stash_op(self, "drop", *id),
+            Op::StashDropAll => plan_stash_drop_all(self),
+            Op::SubmoduleInit { path } => plan_submodule_init(self, path),
+            Op::SubmoduleUpdate { path, commit } => {
+                plan_submodule_update(self, path, commit.as_deref())
+            }
+            Op::BisectStart { good, bad, extra } => plan_bisect_start(self, good, bad, extra),
+            Op::BisectVerdict { verdict } => plan_bisect_verdict(self, *verdict),
+            Op::BisectTest { command } => plan_bisect_test(self, command),
+            Op::BisectReset => plan_bisect_reset(self),
         }
     }
 }
@@ -238,7 +253,7 @@ fn plan_commit(
             risk: Risk::Mutating,
             effect: amend.then(|| "rewrites the last commit".to_string()),
             input: None,
-        program: None,
+            program: None,
         }],
         display,
         preview: Some(preview),
@@ -274,7 +289,7 @@ fn plan_checkout(status: &Status, target: &str, force: bool) -> Result<CommandPl
             risk: Risk::Mutating,
             effect: None,
             input: None,
-        program: None,
+            program: None,
         }],
         display,
         preview: Some(Preview {
@@ -366,7 +381,7 @@ fn plan_push(
             risk,
             effect,
             input: None,
-        program: None,
+            program: None,
         }],
         display,
         preview: Some(Preview {
@@ -419,7 +434,7 @@ fn plan_pull(status: &Status, rebase: bool) -> Result<CommandPlan, GitError> {
             risk: Risk::Mutating,
             effect: None,
             input: None,
-        program: None,
+            program: None,
         }],
         display,
         preview: Some(Preview {
@@ -495,7 +510,7 @@ fn plan_merge(repo: &Repo, status: &Status, source: &str) -> Result<CommandPlan,
             risk: Risk::Mutating,
             effect: None,
             input: None,
-        program: None,
+            program: None,
         }],
         display,
         preview: Some(Preview {
@@ -507,10 +522,7 @@ fn plan_merge(repo: &Repo, status: &Status, source: &str) -> Result<CommandPlan,
 }
 
 /// Resolve a commit-ish (branch name, tag name, or hex oid — annotated tags
-fn commit_ish<'a>(
-    repo: &'a gix::Repository,
-    spec: &str,
-) -> Result<gix::Commit<'a>, GitError> {
+fn commit_ish<'a>(repo: &'a gix::Repository, spec: &str) -> Result<gix::Commit<'a>, GitError> {
     let spec = spec.trim();
     let id = repo
         .rev_parse_single(spec)
@@ -614,7 +626,7 @@ fn plan_branch_create(
         risk: Risk::Mutating,
         effect: None,
         input: None,
-    program: None,
+        program: None,
     }];
     if checkout {
         steps.push(GitStep {
@@ -623,7 +635,7 @@ fn plan_branch_create(
             risk: Risk::Mutating,
             effect: None,
             input: None,
-        program: None,
+            program: None,
         });
     }
 
@@ -632,10 +644,7 @@ fn plan_branch_create(
         lines.push("then switch to the new branch".to_string());
     }
     let exists_name = format!("refs/heads/{name}");
-    let exists = repo
-        .inner
-        .find_reference(exists_name.as_str())
-        .is_ok();
+    let exists = repo.inner.find_reference(exists_name.as_str()).is_ok();
     if exists {
         lines.push(format!("branch `{name}` already exists — git will fail"));
     }
@@ -692,7 +701,11 @@ fn plan_branch_delete(
             let argv = vec![
                 "git".to_string(),
                 "branch".to_string(),
-                if force { "-D".to_string() } else { "-d".to_string() },
+                if force {
+                    "-D".to_string()
+                } else {
+                    "-d".to_string()
+                },
                 name.to_string(),
             ];
 
@@ -705,10 +718,7 @@ fn plan_branch_delete(
                 if !effect.is_empty() {
                     effect.push_str("; ");
                 }
-                effect.push_str(&format!(
-                    "the remote branch {} is kept",
-                    up.name
-                ));
+                effect.push_str(&format!("the remote branch {} is kept", up.name));
             }
             let effect = (!effect.is_empty()).then_some(effect);
 
@@ -716,8 +726,10 @@ fn plan_branch_delete(
             if force {
                 lines.push("force: deletes even unmerged work".to_string());
             } else {
-                lines.push("git refuses if the branch has unmerged commits (use force to override)"
-                    .to_string());
+                lines.push(
+                    "git refuses if the branch has unmerged commits (use force to override)"
+                        .to_string(),
+                );
             }
 
             GitStep {
@@ -726,7 +738,7 @@ fn plan_branch_delete(
                 risk: Risk::Mutating,
                 effect,
                 input: None,
-            program: None,
+                program: None,
             }
         }
         Some(remote) => {
@@ -753,7 +765,7 @@ fn plan_branch_delete(
                 risk: Risk::Mutating,
                 effect: Some(format!("the branch is deleted from {remote}")),
                 input: None,
-            program: None,
+                program: None,
             }
         }
     };
@@ -771,14 +783,15 @@ fn plan_branch_delete(
 }
 
 /// `git branch --move <name> <new_name>` — `Mutating`.
-fn plan_branch_rename(
-    repo: &Repo,
-    name: &str,
-    new_name: &str,
-) -> Result<CommandPlan, GitError> {
+fn plan_branch_rename(repo: &Repo, name: &str, new_name: &str) -> Result<CommandPlan, GitError> {
     if invalid_ref_name(name) || invalid_ref_name(new_name) {
         return Err(GitError::BadRefName {
-            name: if invalid_ref_name(name) { name } else { new_name }.to_string(),
+            name: if invalid_ref_name(name) {
+                name
+            } else {
+                new_name
+            }
+            .to_string(),
         });
     }
     if repo
@@ -815,7 +828,7 @@ fn plan_branch_rename(
             risk: Risk::Mutating,
             effect: None,
             input: None,
-        program: None,
+            program: None,
         }],
         display,
         preview: Some(Preview {
@@ -890,7 +903,7 @@ fn plan_branch_set_upstream(
             risk: Risk::Mutating,
             effect: None,
             input: None,
-        program: None,
+            program: None,
         }],
         display,
         preview: None,
@@ -928,7 +941,7 @@ fn plan_remote_add(repo: &Repo, name: &str, url: &str) -> Result<CommandPlan, Gi
             risk: Risk::Mutating,
             effect: None,
             input: None,
-        program: None,
+            program: None,
         }],
         display,
         preview: None,
@@ -956,7 +969,12 @@ fn plan_remote_remove(repo: &Repo, name: &str) -> Result<CommandPlan, GitError> 
         .filter(|r| String::from_utf8_lossy(r.name().as_bstr()).starts_with(&prefix))
         .count();
 
-    let argv = vec!["git".to_string(), "remote".to_string(), "remove".to_string(), name.to_string()];
+    let argv = vec![
+        "git".to_string(),
+        "remote".to_string(),
+        "remove".to_string(),
+        name.to_string(),
+    ];
     let display = format_argv(&argv);
     Ok(CommandPlan {
         steps: vec![GitStep {
@@ -968,7 +986,7 @@ fn plan_remote_remove(repo: &Repo, name: &str) -> Result<CommandPlan, GitError> 
                 if count == 1 { "" } else { "es" }
             )),
             input: None,
-        program: None,
+            program: None,
         }],
         display,
         preview: None,
@@ -1004,7 +1022,7 @@ fn plan_remote_fetch(
             risk: Risk::Mutating,
             effect: None,
             input: None,
-        program: None,
+            program: None,
         }],
         display,
         preview: None,
@@ -1060,7 +1078,7 @@ fn plan_tag_create(
             risk: Risk::Mutating,
             effect: None,
             input: None,
-        program: None,
+            program: None,
         }],
         display,
         preview: Some(Preview {
@@ -1105,7 +1123,7 @@ fn plan_tag_checkout(repo: &Repo, name: &str, force: bool) -> Result<CommandPlan
             risk: Risk::Mutating,
             effect: None,
             input: None,
-        program: None,
+            program: None,
         }],
         display,
         preview: None,
@@ -1114,11 +1132,7 @@ fn plan_tag_checkout(repo: &Repo, name: &str, force: bool) -> Result<CommandPlan
 
 /// `git tag -d <name>` (or `git push <remote> --delete <name>` when `remote` is
 /// set) — `Mutating` either way.
-fn plan_tag_delete(
-    repo: &Repo,
-    name: &str,
-    remote: Option<&str>,
-) -> Result<CommandPlan, GitError> {
+fn plan_tag_delete(repo: &Repo, name: &str, remote: Option<&str>) -> Result<CommandPlan, GitError> {
     if invalid_ref_name(name) {
         return Err(GitError::BadRefName {
             name: name.to_string(),
@@ -1148,7 +1162,7 @@ fn plan_tag_delete(
                 risk: Risk::Mutating,
                 effect: None,
                 input: None,
-            program: None,
+                program: None,
             }
         }
         Some(remote) => {
@@ -1171,7 +1185,7 @@ fn plan_tag_delete(
                 risk: Risk::Mutating,
                 effect: Some(format!("the tag is deleted from {remote}")),
                 input: None,
-            program: None,
+                program: None,
             }
         }
     };
@@ -1219,8 +1233,9 @@ fn plan_tag_push(
 
     let effect = force.then(|| format!("force-push `{name}` — the remote tag will be replaced"));
     let display = format_argv(&argv);
-    let preview_line =
-        effect.clone().unwrap_or_else(|| "the tag is published to the remote".to_string());
+    let preview_line = effect
+        .clone()
+        .unwrap_or_else(|| "the tag is published to the remote".to_string());
     Ok(CommandPlan {
         steps: vec![GitStep {
             argv: argv.clone(),
@@ -1232,7 +1247,7 @@ fn plan_tag_push(
             },
             effect,
             input: None,
-        program: None,
+            program: None,
         }],
         display,
         preview: Some(Preview {
@@ -1340,15 +1355,18 @@ fn plan_worktree_remove(repo: &Repo, path: &str, force: bool) -> Result<CommandP
     argv.push(target.path.clone());
 
     let checked_out = target.branch.as_deref().unwrap_or("detached HEAD");
-    let effect = dirty
-        .then(|| "uncommitted changes in the worktree will be discarded".to_string());
+    let effect = dirty.then(|| "uncommitted changes in the worktree will be discarded".to_string());
     let display = format_argv(&argv);
 
     Ok(CommandPlan {
         steps: vec![GitStep {
             argv,
             summary: format!("remove worktree {}", target.path),
-            risk: if dirty { Risk::Dangerous } else { Risk::Mutating },
+            risk: if dirty {
+                Risk::Dangerous
+            } else {
+                Risk::Mutating
+            },
             effect,
             input: None,
             program: None,
@@ -1358,6 +1376,389 @@ fn plan_worktree_remove(repo: &Repo, path: &str, force: bool) -> Result<CommandP
             headline: "Remove worktree".to_string(),
             lines: vec![format!("removes {checked_out} at {}", target.path)],
             requires_type_to_confirm: dirty,
+        }),
+    })
+}
+
+// ── Stage 11: stashes (SPEC §10.6) ─────────────────────────────────────────
+
+/// `git stash push [-u]` — `Mutating`: the worktree is cleaned, but the
+/// snapshot is recoverable from the stash list.
+fn plan_stash_push(status: &Status, include_untracked: bool) -> Result<CommandPlan, GitError> {
+    let mut argv = vec!["git".to_string(), "stash".to_string(), "push".to_string()];
+    if include_untracked {
+        argv.push("-u".to_string());
+    }
+    let count = status.changes.len();
+    let mut lines = vec![format!("stashes {count} uncommitted change(s)")];
+    if include_untracked {
+        lines.push("untracked files are included".to_string());
+    }
+    let display = format_argv(&argv);
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary: "stash the uncommitted changes".to_string(),
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+            program: None,
+        }],
+        display,
+        preview: Some(Preview {
+            headline: "Stash changes".to_string(),
+            lines,
+            requires_type_to_confirm: false,
+        }),
+    })
+}
+
+/// `git stash apply|pop|drop stash@{id}` — apply keeps the entry, pop applies
+/// and removes it (both `Mutating`), drop discards the snapshot without
+/// applying it: `Dangerous` (type-to-confirm, SPEC §10.6). An unknown list
+/// position is refused at plan time with the stash it names.
+fn plan_stash_op(repo: &Repo, verb: &str, id: u32) -> Result<CommandPlan, GitError> {
+    let stash = repo
+        .stashes()?
+        .into_iter()
+        .find(|s| s.id == id)
+        .ok_or(GitError::StashNotFound { id })?;
+    let argv = vec![
+        "git".to_string(),
+        "stash".to_string(),
+        verb.to_string(),
+        stash.name.clone(),
+    ];
+    let dangerous = verb == "drop";
+    let effect =
+        dangerous.then(|| "the stash is deleted without applying it; its work is gone".to_string());
+    let display = format_argv(&argv);
+    let headline = format!("{} stash", verb[..1].to_uppercase() + &verb[1..]);
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary: format!("{verb} {}", stash.name),
+            risk: if dangerous {
+                Risk::Dangerous
+            } else {
+                Risk::Mutating
+            },
+            effect,
+            input: None,
+            program: None,
+        }],
+        display,
+        preview: Some(Preview {
+            headline,
+            lines: vec![
+                format!("{} — {}", stash.name, stash.message),
+                format!("{} file(s): {}", stash.files.len(), stash.files.join(", ")),
+            ],
+            requires_type_to_confirm: dangerous,
+        }),
+    })
+}
+
+/// `git stash clear` — the SPEC §10.6 drop-all action: deletes every saved
+/// snapshot. `Dangerous` (type-to-confirm); an empty stash list is refused at
+/// plan time so the UI never confirms a no-op.
+fn plan_stash_drop_all(repo: &Repo) -> Result<CommandPlan, GitError> {
+    let stashes = repo.stashes()?;
+    if stashes.is_empty() {
+        return Err(GitError::NoStashes);
+    }
+    let argv = vec!["git".to_string(), "stash".to_string(), "clear".to_string()];
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv: argv.clone(),
+            summary: format!("delete {} stash(es)", stashes.len()),
+            risk: Risk::Dangerous,
+            effect: Some("every stash snapshot is deleted; their work is gone".to_string()),
+            input: None,
+            program: None,
+        }],
+        display: format_argv(&argv),
+        preview: Some(Preview {
+            headline: "Clear all stashes".to_string(),
+            lines: stashes
+                .iter()
+                .map(|s| format!("{} — {}", s.name, s.message))
+                .collect(),
+            requires_type_to_confirm: true,
+        }),
+    })
+}
+
+// ── Stage 11: submodules (SPEC §10.8) ──────────────────────────────────────
+
+/// Look up a registered submodule by path; unknown paths are a clean error.
+fn submodule_at(repo: &Repo, path: &str) -> Result<git_gotten_protocol::Submodule, GitError> {
+    repo.submodules()?
+        .into_iter()
+        .find(|s| s.path == path)
+        .ok_or_else(|| GitError::SubmoduleNotFound {
+            path: path.to_string(),
+        })
+}
+
+/// `git submodule update --init <path>` — `Mutating`: creates the checkout at
+/// the recorded commit.
+fn plan_submodule_init(repo: &Repo, path: &str) -> Result<CommandPlan, GitError> {
+    let sub = submodule_at(repo, path)?;
+    let argv = vec![
+        "git".to_string(),
+        "submodule".to_string(),
+        "update".to_string(),
+        "--init".to_string(),
+        sub.path.clone(),
+    ];
+    let display = format_argv(&argv);
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary: format!("initialize submodule {}", sub.path),
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+            program: None,
+        }],
+        display,
+        preview: Some(Preview {
+            headline: "Initialize submodule".to_string(),
+            lines: vec![
+                format!("{} ← {}", sub.path, sub.url),
+                format!("checked out at {}", sub.recorded),
+            ],
+            requires_type_to_confirm: false,
+        }),
+    })
+}
+
+/// `git submodule update <path>` (to the recorded gitlink) followed — when a
+/// specific commit is asked for — by `git -C <path> checkout <commit>`
+/// (SPEC §10.8). `Mutating`: local changes inside the submodule checkout can
+/// be overwritten, so the preview names the current state.
+fn plan_submodule_update(
+    repo: &Repo,
+    path: &str,
+    commit: Option<&str>,
+) -> Result<CommandPlan, GitError> {
+    let sub = submodule_at(repo, path)?;
+    let commit = match commit {
+        Some(c) if !c.trim().is_empty() => Some(c.trim().to_string()),
+        Some(_) => return Err(GitError::EmptyTarget),
+        None => None,
+    };
+    let mut steps = vec![GitStep {
+        argv: vec![
+            "git".to_string(),
+            "submodule".to_string(),
+            "update".to_string(),
+            sub.path.clone(),
+        ],
+        summary: format!("update submodule {} to the recorded commit", sub.path),
+        risk: Risk::Mutating,
+        effect: None,
+        input: None,
+        program: None,
+    }];
+    if let Some(c) = &commit {
+        steps.push(GitStep {
+            argv: vec![
+                "git".to_string(),
+                "-C".to_string(),
+                sub.path.clone(),
+                "checkout".to_string(),
+                c.clone(),
+            ],
+            summary: format!("check {} out at {c}", sub.path),
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+            program: None,
+        });
+    }
+    let display = steps
+        .iter()
+        .map(|s| format_argv(&s.argv))
+        .collect::<Vec<_>>()
+        .join(" && ");
+    let mut lines = match &sub.head {
+        Some(h) if sub.differs => vec![format!("currently at {h}, recorded at {}", sub.recorded)],
+        Some(h) => vec![format!("currently at {h}, already synced")],
+        None => vec![format!(
+            "not initialized; update will check out {}",
+            sub.recorded
+        )],
+    };
+    if let Some(c) = &commit {
+        lines.push(format!("then checks {c} out inside the submodule"));
+    }
+    Ok(CommandPlan {
+        steps,
+        display,
+        preview: Some(Preview {
+            headline: "Update submodule".to_string(),
+            lines,
+            requires_type_to_confirm: false,
+        }),
+    })
+}
+
+// ── Stage 11: bisect (SPEC §10.9) ──────────────────────────────────────────
+
+/// A bisect step needs a running session; verdict/test/reset without one is a
+/// clean plan-time error (the same rule git enforces).
+fn require_bisect(repo: &Repo) -> Result<BisectState, GitError> {
+    let state = repo.bisect_state()?;
+    if state.active {
+        Ok(state)
+    } else {
+        Err(GitError::NoBisectInProgress)
+    }
+}
+
+/// `git bisect start <bad> <good> [extra…]` — `Mutating`: HEAD detaches and
+/// every step checks out a candidate. The preview counts the candidates git
+/// will test (planning runs only read-only `rev-list`).
+fn plan_bisect_start(
+    repo: &Repo,
+    good: &str,
+    bad: &str,
+    extra: &[String],
+) -> Result<CommandPlan, GitError> {
+    if good.trim().is_empty() || bad.trim().is_empty() {
+        return Err(GitError::EmptyTarget);
+    }
+    let mut argv = vec![
+        "git".to_string(),
+        "bisect".to_string(),
+        "start".to_string(),
+        bad.to_string(),
+        good.to_string(),
+    ];
+    argv.extend(extra.iter().cloned());
+    let mut args: Vec<&str> = vec!["rev-list", "--count", bad, "--not", good];
+    args.extend(extra.iter().map(String::as_str));
+    let count_out = crate::show::run_git_sync(&repo.path, &args)?;
+    // Same semantics as `bisect::state`: the bad tip itself is already decided,
+    // so it is not a candidate under test.
+    let candidates: u64 = count_out
+        .trim()
+        .parse::<u64>()
+        .unwrap_or(0)
+        .saturating_sub(1);
+    let display = format_argv(&argv);
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary: "start a bisect session".to_string(),
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+            program: None,
+        }],
+        display,
+        preview: Some(Preview {
+            headline: "Start bisect".to_string(),
+            lines: vec![
+                format!("{bad} is bad, {good} is good"),
+                format!("{candidates} commit(s) under test"),
+            ],
+            requires_type_to_confirm: false,
+        }),
+    })
+}
+
+/// `git bisect good|bad` — `Mutating`: marks the checked-out candidate and
+/// advances the session to the next one (or converges).
+fn plan_bisect_verdict(repo: &Repo, verdict: BisectVerdict) -> Result<CommandPlan, GitError> {
+    let state = require_bisect(repo)?;
+    let word = match verdict {
+        BisectVerdict::Good => "good",
+        BisectVerdict::Bad => "bad",
+    };
+    let argv = vec!["git".to_string(), "bisect".to_string(), word.to_string()];
+    let display = format_argv(&argv);
+    let current = state.current.unwrap_or_default();
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary: format!("mark the current bisect candidate {word}"),
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+            program: None,
+        }],
+        display,
+        preview: Some(Preview {
+            headline: format!("Mark {word}"),
+            lines: vec![
+                format!("marks {current} {word}"),
+                format!("{} commit(s) still untested", state.remaining),
+            ],
+            requires_type_to_confirm: false,
+        }),
+    })
+}
+
+/// Run the bisect test command against the checked-out candidate (SPEC §10.9).
+/// The command string is split on whitespace into argv and spawned directly —
+/// no shell, no shell grammar (shortcut: quoted arguments are not supported;
+/// upgrade to a shell-lexer if real-world commands need them). Exit 0 marks
+/// the commit good (git's `bisect run` convention).
+fn plan_bisect_test(repo: &Repo, command: &str) -> Result<CommandPlan, GitError> {
+    let state = require_bisect(repo)?;
+    let argv: Vec<String> = command.split_whitespace().map(str::to_string).collect();
+    let Some(program) = argv.first().cloned() else {
+        return Err(GitError::EmptyTarget);
+    };
+    let display = format_argv(&argv);
+    let current = state.current.unwrap_or_default();
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary: format!("run the bisect test against {current}"),
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+            program: Some(program),
+        }],
+        display,
+        preview: Some(Preview {
+            headline: "Run bisect test".to_string(),
+            lines: vec![
+                format!("runs against the checked-out commit {current}"),
+                "exit 0 marks it good; any other exit marks it bad".to_string(),
+            ],
+            requires_type_to_confirm: false,
+        }),
+    })
+}
+
+/// `git bisect reset` — `Mutating`: ends the session and restores the original
+/// branch/checkout.
+fn plan_bisect_reset(repo: &Repo) -> Result<CommandPlan, GitError> {
+    require_bisect(repo)?;
+    let argv = vec!["git".to_string(), "bisect".to_string(), "reset".to_string()];
+    let display = format_argv(&argv);
+    Ok(CommandPlan {
+        steps: vec![GitStep {
+            argv,
+            summary: "end the bisect session".to_string(),
+            risk: Risk::Mutating,
+            effect: None,
+            input: None,
+            program: None,
+        }],
+        display,
+        preview: Some(Preview {
+            headline: "Reset bisect".to_string(),
+            lines: vec![
+                "the bisect session ends".to_string(),
+                "the original branch and commit are restored".to_string(),
+            ],
+            requires_type_to_confirm: false,
         }),
     })
 }
@@ -1421,7 +1822,7 @@ fn plan_reset(
             risk,
             effect,
             input: None,
-        program: None,
+            program: None,
         }],
         display: format_argv(&[
             "git".to_string(),
@@ -1684,11 +2085,12 @@ fn plan_rebase(
         match edit.action {
             RebaseAction::Pick => todo.push(format!("pick {oid}")),
             RebaseAction::Reword => {
-                let message = edit.message.as_deref().ok_or_else(|| {
-                    GitError::RebaseEditNeedsMessage {
-                        hash: edit.hash.clone(),
-                    }
-                })?;
+                let message =
+                    edit.message
+                        .as_deref()
+                        .ok_or_else(|| GitError::RebaseEditNeedsMessage {
+                            hash: edit.hash.clone(),
+                        })?;
                 todo.push(format!("pick {oid}"));
                 todo.push(amend_exec_line(message)?);
             }
@@ -1818,7 +2220,12 @@ fn plan_rebase_onto(repo: &Repo, status: &Status, target: &str) -> Result<Comman
 fn plan_stage(status: &Status, path: Option<&str>) -> Result<CommandPlan, GitError> {
     let (argv, summary, headline) = match path {
         Some(p) => (
-            vec!["git".to_string(), "add".to_string(), "--".to_string(), p.to_string()],
+            vec![
+                "git".to_string(),
+                "add".to_string(),
+                "--".to_string(),
+                p.to_string(),
+            ],
             format!("stage {p}"),
             format!("Stage {p}"),
         ),
@@ -1845,7 +2252,7 @@ fn plan_stage(status: &Status, path: Option<&str>) -> Result<CommandPlan, GitErr
             risk: Risk::Mutating,
             effect: None,
             input: None,
-        program: None,
+            program: None,
         }],
         display,
         preview: Some(preview),
@@ -1858,7 +2265,13 @@ fn plan_stage(status: &Status, path: Option<&str>) -> Result<CommandPlan, GitErr
 fn plan_unstage(status: &Status, path: Option<&str>) -> Result<CommandPlan, GitError> {
     let (argv, summary, headline) = match path {
         Some(p) => (
-            vec!["git".to_string(), "reset".to_string(), "-q".to_string(), "--".to_string(), p.to_string()],
+            vec![
+                "git".to_string(),
+                "reset".to_string(),
+                "-q".to_string(),
+                "--".to_string(),
+                p.to_string(),
+            ],
             format!("unstage {p} (worktree untouched)"),
             format!("Unstage {p}"),
         ),
@@ -1870,7 +2283,10 @@ fn plan_unstage(status: &Status, path: Option<&str>) -> Result<CommandPlan, GitE
     };
     let lines = vec![match path {
         Some(p) => format!("  {p} (content kept in the worktree)"),
-        None => format!("  {} changed files (content kept in the worktree)", status.changes.len()),
+        None => format!(
+            "  {} changed files (content kept in the worktree)",
+            status.changes.len()
+        ),
     }];
     let preview = Preview {
         headline,
@@ -1885,7 +2301,7 @@ fn plan_unstage(status: &Status, path: Option<&str>) -> Result<CommandPlan, GitE
             risk: Risk::Mutating,
             effect: None,
             input: None,
-        program: None,
+            program: None,
         }],
         display,
         preview: Some(preview),
@@ -1957,7 +2373,7 @@ fn plan_discard(repo: &Repo, path: &str) -> Result<CommandPlan, GitError> {
             risk: Risk::Dangerous,
             effect: Some(format!("destroys the uncommitted changes in {path}")),
             input: None,
-        program: None,
+            program: None,
         }],
         display,
         preview: Some(preview),
@@ -1971,11 +2387,7 @@ fn plan_discard(repo: &Repo, path: &str) -> Result<CommandPlan, GitError> {
 /// staged hunks first, then unstaged); only unstaged hunks are stageable, and
 /// a selection that no longer matches the current diff is an error (the file
 /// changed between viewing and staging — re-read rather than apply stale bytes).
-fn plan_stage_hunks(
-    repo: &Repo,
-    path: &str,
-    selected: &[usize],
-) -> Result<CommandPlan, GitError> {
+fn plan_stage_hunks(repo: &Repo, path: &str, selected: &[usize]) -> Result<CommandPlan, GitError> {
     let untracked = repo
         .status()?
         .changes
@@ -1995,8 +2407,8 @@ fn plan_stage_hunks(
     if selected.is_empty() {
         return Err(GitError::EmptySelection);
     }
-    let patch = crate::diff::build_apply_patch(&unstaged_raw, &selected)
-        .ok_or(GitError::EmptySelection)?;
+    let patch =
+        crate::diff::build_apply_patch(&unstaged_raw, &selected).ok_or(GitError::EmptySelection)?;
 
     let total = unstaged.len();
     let count = selected.len();
@@ -2020,9 +2432,11 @@ fn plan_stage_hunks(
             argv,
             summary: format!("stage {count} of {total} hunks in {path}"),
             risk: Risk::Mutating,
-            effect: Some(format!("updates the index for {path}; the worktree is untouched")),
+            effect: Some(format!(
+                "updates the index for {path}; the worktree is untouched"
+            )),
             input: Some(patch),
-                program: None,
+            program: None,
         }],
         display,
         preview: Some(preview),
@@ -2049,7 +2463,9 @@ fn plan_resolve_conflict(
         .iter()
         .any(|c| c.path == path && c.kind == ChangeKind::Conflicted)
     {
-        return Err(GitError::NoConflict { path: path.to_string() });
+        return Err(GitError::NoConflict {
+            path: path.to_string(),
+        });
     }
     let add_step = GitStep {
         argv: vec![
@@ -2098,7 +2514,7 @@ fn plan_resolve_conflict(
                 preview: Some(Preview {
                     headline: format!("Resolve {path}: take the {what} version"),
                     lines: vec![
-                        "the file is written and staged; the unmerged entry is cleared".to_string()
+                        "the file is written and staged; the unmerged entry is cleared".to_string(),
                     ],
                     requires_type_to_confirm: false,
                 }),
@@ -2112,7 +2528,9 @@ fn plan_resolve_conflict(
                 .map(|c| c.binary)
                 .unwrap_or(false);
             if binary {
-                return Err(GitError::BinaryConflict { path: path.to_string() });
+                return Err(GitError::BinaryConflict {
+                    path: path.to_string(),
+                });
             }
             // Re-derive the 3-way and splice the choices: the patch's preimage
             // is the current worktree file, so a file that changed in an
@@ -2146,7 +2564,7 @@ fn plan_resolve_conflict(
                     headline: format!("Resolve {path} ({count} region choice(s))"),
                     lines: vec![
                         "the resolved content is written and staged; the unmerged entry is cleared"
-                            .to_string()
+                            .to_string(),
                     ],
                     requires_type_to_confirm: false,
                 }),
@@ -2220,16 +2638,10 @@ fn plan_abort_op(repo: &Repo, status: &Status) -> Result<CommandPlan, GitError> 
     Ok(CommandPlan {
         display: format!("git {label} --abort"),
         steps: vec![GitStep {
-            argv: vec![
-                "git".to_string(),
-                label.to_string(),
-                "--abort".to_string(),
-            ],
+            argv: vec!["git".to_string(), label.to_string(), "--abort".to_string()],
             summary: format!("abort the {label} in progress"),
             risk: Risk::Dangerous,
-            effect: Some(
-                "discards the in-progress operation and its resolution work".to_string(),
-            ),
+            effect: Some("discards the in-progress operation and its resolution work".to_string()),
             input: None,
             program: None,
         }],
@@ -2284,7 +2696,10 @@ mod tests {
 
     #[test]
     fn format_argv_leaves_simple_args_bare() {
-        let argv: Vec<String> = ["git", "push", "origin", "main"].into_iter().map(String::from).collect();
+        let argv: Vec<String> = ["git", "push", "origin", "main"]
+            .into_iter()
+            .map(String::from)
+            .collect();
         assert_eq!(format_argv(&argv), "git push origin main");
     }
 
@@ -2301,7 +2716,12 @@ mod tests {
 
     #[test]
     fn format_argv_escapes_embedded_quotes() {
-        let argv = vec!["git".into(), "commit".into(), "-m".into(), "say \"hi\"".into()];
+        let argv = vec![
+            "git".into(),
+            "commit".into(),
+            "-m".into(),
+            "say \"hi\"".into(),
+        ];
         assert_eq!(format_argv(&argv), r#"git commit -m "say \"hi\"""#);
     }
 
@@ -2338,7 +2758,12 @@ mod tests {
         assert_eq!(plan.display, r#"git commit -m "add b""#);
         assert_eq!(
             plan.steps[0].argv,
-            vec!["git".to_string(), "commit".to_string(), "-m".to_string(), "add b".into()]
+            vec![
+                "git".to_string(),
+                "commit".to_string(),
+                "-m".to_string(),
+                "add b".into()
+            ]
         );
         assert_eq!(plan.steps[0].risk, Risk::Mutating);
         assert!(plan.steps[0].effect.is_none());
@@ -2367,7 +2792,10 @@ mod tests {
         assert!(plan.steps[0].effect.as_deref() == Some("rewrites the last commit"));
         let preview = plan.preview.as_ref().unwrap();
         assert!(
-            preview.lines.iter().any(|l| l.contains("rewrites the last commit")),
+            preview
+                .lines
+                .iter()
+                .any(|l| l.contains("rewrites the last commit")),
             "preview must warn about the history rewrite: {preview:?}"
         );
     }
@@ -2386,7 +2814,12 @@ mod tests {
             })
             .unwrap();
         let preview = plan.preview.as_ref().unwrap();
-        assert!(preview.lines.iter().any(|l| l.contains("no staged changes")));
+        assert!(
+            preview
+                .lines
+                .iter()
+                .any(|l| l.contains("no staged changes"))
+        );
     }
 
     #[test]
@@ -2494,7 +2927,12 @@ mod tests {
         let preview = plan.preview.as_ref().unwrap();
         assert!(!preview.requires_type_to_confirm);
         assert_eq!(preview.headline, "Push to origin/main");
-        assert!(preview.lines.iter().any(|l| l.contains("pushes 1 new commit")));
+        assert!(
+            preview
+                .lines
+                .iter()
+                .any(|l| l.contains("pushes 1 new commit"))
+        );
     }
 
     #[test]
@@ -2573,18 +3011,20 @@ mod tests {
                 amend: false,
                 author: None,
                 co_authors: vec![],
-            }).unwrap()
+            })
+            .unwrap()
             .steps[0]
-            .risk,
+                .risk,
             Risk::Mutating
         );
         assert_eq!(
             repo.plan(&Op::Checkout {
                 target: "x".into(),
                 force: false,
-            }).unwrap()
+            })
+            .unwrap()
             .steps[0]
-            .risk,
+                .risk,
             Risk::Mutating
         );
         assert_eq!(
@@ -2593,9 +3033,10 @@ mod tests {
                 branch: Some("main".into()),
                 force: true,
                 set_upstream: false,
-            }).unwrap()
+            })
+            .unwrap()
             .steps[0]
-            .risk,
+                .risk,
             Risk::Dangerous
         );
 
@@ -2606,18 +3047,20 @@ mod tests {
                 name: "feature".into(),
                 from: head.clone(),
                 checkout: false
-            }).unwrap()
+            })
+            .unwrap()
             .steps[0]
-            .risk,
+                .risk,
             Risk::Mutating
         );
         assert_eq!(
             repo.plan(&Op::Reset {
                 mode: ResetMode::Hard,
                 target: head.clone()
-            }).unwrap()
+            })
+            .unwrap()
             .steps[0]
-            .risk,
+                .risk,
             Risk::Dangerous
         );
         assert_eq!(
@@ -2627,7 +3070,7 @@ mod tests {
             })
             .unwrap()
             .steps[0]
-            .risk,
+                .risk,
             Risk::Mutating
         );
     }
@@ -2701,7 +3144,14 @@ mod tests {
     fn plan_branch_create_rejects_invalid_names() {
         let (fx, repo) = branch_fixture();
         let head = fx.git(&["rev-parse", "HEAD"]);
-        for name in ["", "  ", "-leading-dash", "has space", "up/../down", "weird:colon"] {
+        for name in [
+            "",
+            "  ",
+            "-leading-dash",
+            "has space",
+            "up/../down",
+            "weird:colon",
+        ] {
             let err = repo
                 .plan(&Op::BranchCreate {
                     name: name.into(),
@@ -2867,7 +3317,11 @@ mod tests {
     /// enough to yield **two** hunks.
     fn two_hunk_fixture() -> testutil::Fixture {
         let fx = testutil::Fixture::new("plan-two-hunk");
-        let content = (1..=20).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\n") + "\n";
+        let content = (1..=20)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
         fx.commit_file("f.txt", &content, "c1");
         let mut lines: Vec<&str> = content.lines().collect();
         lines[0] = "l1X";
@@ -2881,20 +3335,25 @@ mod tests {
         let fx = two_hunk_fixture();
         let repo = Repo::open(&fx.path).unwrap();
 
-        let file = repo.plan(&Op::Stage { path: Some("f.txt".into()) }).unwrap();
+        let file = repo
+            .plan(&Op::Stage {
+                path: Some("f.txt".into()),
+            })
+            .unwrap();
         assert_eq!(file.display, "git add -- f.txt");
         assert_eq!(file.steps[0].risk, Risk::Mutating);
         assert!(!file.preview.as_ref().unwrap().requires_type_to_confirm);
 
         let all = repo.plan(&Op::Stage { path: None }).unwrap();
         assert_eq!(all.display, "git add -A");
-        assert!(all
-            .preview
-            .as_ref()
-            .unwrap()
-            .lines
-            .iter()
-            .any(|l| l.contains("1 changed file")));
+        assert!(
+            all.preview
+                .as_ref()
+                .unwrap()
+                .lines
+                .iter()
+                .any(|l| l.contains("1 changed file"))
+        );
     }
 
     #[test]
@@ -2902,7 +3361,11 @@ mod tests {
         let fx = two_hunk_fixture();
         let repo = Repo::open(&fx.path).unwrap();
 
-        let file = repo.plan(&Op::Unstage { path: Some("f.txt".into()) }).unwrap();
+        let file = repo
+            .plan(&Op::Unstage {
+                path: Some("f.txt".into()),
+            })
+            .unwrap();
         assert_eq!(file.display, "git reset -q -- f.txt");
         assert_eq!(file.steps[0].risk, Risk::Mutating);
 
@@ -2915,7 +3378,11 @@ mod tests {
         let fx = two_hunk_fixture();
         let repo = Repo::open(&fx.path).unwrap();
 
-        let plan = repo.plan(&Op::Discard { path: "f.txt".into() }).unwrap();
+        let plan = repo
+            .plan(&Op::Discard {
+                path: "f.txt".into(),
+            })
+            .unwrap();
         assert_eq!(
             plan.steps[0].argv,
             vec![
@@ -2952,7 +3419,10 @@ mod tests {
         let input = plan.steps[0].input.as_deref().expect("patch on stdin");
         assert!(input.contains("-l1\n+l1X"), "hunk 1 selected: {input}");
         assert!(!input.contains("-l15"), "hunk 2 not selected: {input}");
-        assert!(input.contains("--- a/f.txt"), "apply patch needs the file header: {input}");
+        assert!(
+            input.contains("--- a/f.txt"),
+            "apply patch needs the file header: {input}"
+        );
         let preview = plan.preview.as_ref().unwrap();
         assert_eq!(preview.headline, "Stage 1 of 2 hunks");
     }
@@ -3006,7 +3476,13 @@ mod tests {
         // The trailer rides in the message and the identity in `--author`;
         // the displayed command is the exact argv (SPEC §8).
         assert!(plan.display.contains("-m \"fix: the thing"));
-        assert!(plan.display.contains("Co-authored-by: Joe <joe@example.com>"));
-        assert!(plan.display.contains(r#"--author "Jane <jane@example.com>""#));
+        assert!(
+            plan.display
+                .contains("Co-authored-by: Joe <joe@example.com>")
+        );
+        assert!(
+            plan.display
+                .contains(r#"--author "Jane <jane@example.com>""#)
+        );
     }
 }

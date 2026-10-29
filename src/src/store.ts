@@ -7,9 +7,12 @@ import {
   loadDiff,
   loadGraph,
   loadLog,
+  loadBisect,
   loadRebaseCommits,
   loadRemotes,
+  loadStashes,
   loadStatus,
+  loadSubmodules,
   loadTags,
   loadWorktrees,
   openRepo,
@@ -17,6 +20,7 @@ import {
   runOp,
 } from "./api";
 import type {
+  BisectState,
   Branch,
   BuildInfo,
   CommandPlan,
@@ -37,6 +41,8 @@ import type {
   RepoMeta,
   Status,
   StatusChanged,
+  Stash,
+  Submodule,
   Tag,
   Worktree,
 } from "./types";
@@ -161,7 +167,7 @@ function upsertRepo(repos: RepoMeta[], meta: RepoMeta): RepoMeta[] {
 // ── Main content tab (SPEC §7) ──────────────────────────────────────────────
 
 /** The main content tab of the shell. */
-export type MainTab = "graph" | "files" | "branches" | "conflicts" | "worktrees";
+export type MainTab = "graph" | "files" | "branches" | "conflicts" | "worktrees" | "stash" | "bisect";
 
 interface MainTabState {
   tab: MainTab;
@@ -525,6 +531,131 @@ export const useWorktreesStore = create<WorktreesState>((set) => ({
       });
     }
   },
+}));
+
+// ── Stashes (SPEC §10.6) ───────────────────────────────────────────────────
+
+interface StashesState {
+  /** The active repo's stashes, newest first (`[]` when none / outside Tauri). */
+  stashes: Stash[];
+  /** True while the `loadStashes` round-trip is in flight. */
+  loading: boolean;
+  /** Last stash-load failure (the Rust error string). */
+  error: string | null;
+  /** Load the stashes of `repo` (SPEC §10.6). */
+  load: (repo: RepoId) => Promise<void>;
+}
+
+/** Client state for the stash panel (SPEC §10.6). */
+export const useStashesStore = create<StashesState>((set) => ({
+  stashes: [],
+  loading: false,
+  error: null,
+
+  load: async (repo) => {
+    set({ loading: true, error: null });
+    try {
+      const stashes = await loadStashes(repo);
+      set({ stashes: stashes ?? [], loading: false });
+    } catch (e) {
+      set({
+        stashes: [],
+        loading: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+}));
+
+// ── Submodules (SPEC §10.8) ────────────────────────────────────────────────
+
+interface SubmodulesState {
+  /** The active repo's submodules (`[]` when none / outside Tauri). */
+  submodules: Submodule[];
+  /** True while the `loadSubmodules` round-trip is in flight. */
+  loading: boolean;
+  /** Last submodule-load failure (the Rust error string). */
+  error: string | null;
+  /** Load the submodules of `repo` (SPEC §10.8). */
+  load: (repo: RepoId) => Promise<void>;
+}
+
+/** Client state for the Files tab submodule section (SPEC §10.8). */
+export const useSubmodulesStore = create<SubmodulesState>((set) => ({
+  submodules: [],
+  loading: false,
+  error: null,
+
+  load: async (repo) => {
+    set({ loading: true, error: null });
+    try {
+      const submodules = await loadSubmodules(repo);
+      set({ submodules: submodules ?? [], loading: false });
+    } catch (e) {
+      set({
+        submodules: [],
+        loading: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+}));
+
+// ── Bisect (SPEC §10.9) ────────────────────────────────────────────────────
+
+/** The bisect state when no bisect is running (also the outside-Tauri state). */
+const INACTIVE_BISECT: BisectState = {
+  active: false,
+  current: null,
+  good: [],
+  bad: [],
+  remaining: 0,
+  found: null,
+  log: [],
+};
+
+interface BisectStateSlice {
+  /** The active repo's bisect state (inactive when none / outside Tauri). */
+  bisect: BisectState;
+  /** True while a `loadBisect` round-trip is in flight. */
+  loading: boolean;
+  /** Last bisect-load failure (the Rust error string). */
+  error: string | null;
+  /** Load the bisect state of `repo` (SPEC §10.9). */
+  load: (repo: RepoId) => Promise<void>;
+  /** A commit hash picked in the graph's menu to seed the bisect's `bad`. */
+  draftBad: string | null;
+  setDraftBad: (hash: string | null) => void;
+  /** The test command typed in the Bisect panel. */
+  testCommand: string;
+  setTestCommand: (command: string) => void;
+}
+
+/** Client state for the bisect panel + graph overlay (SPEC §10.9). */
+export const useBisectStore = create<BisectStateSlice>((set) => ({
+  bisect: INACTIVE_BISECT,
+  loading: false,
+  error: null,
+  draftBad: null,
+  testCommand: "",
+
+  load: async (repo) => {
+    set({ loading: true, error: null });
+    try {
+      const bisect = await loadBisect(repo);
+      // Outside Tauri: no bisect to show, no error to surface.
+      set({ bisect: bisect ?? INACTIVE_BISECT, loading: false });
+    } catch (e) {
+      set({
+        bisect: INACTIVE_BISECT,
+        loading: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+
+  setDraftBad: (hash) => set({ draftBad: hash }),
+  setTestCommand: (command) => set({ testCommand: command }),
 }));
 
 // ── Interactive rebase: commit list + RebaseDialog (SPEC §10.4) ────────────

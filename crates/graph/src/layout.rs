@@ -106,7 +106,9 @@ impl LaneLayout {
         // are pushed in *reverse* output order: date ascending, ref name
         // descending, hash descending. Tips without refs (synthetic DAGs
         // only) sort first, most recent date last.
-        let mut tips: Vec<u32> = (0..n as u32).filter(|i| child_count[*i as usize] == 0).collect();
+        let mut tips: Vec<u32> = (0..n as u32)
+            .filter(|i| child_count[*i as usize] == 0)
+            .collect();
         tips.sort_by(|a, b| {
             let key = |i: &u32| -> (u64, std::cmp::Reverse<&str>, std::cmp::Reverse<&str>) {
                 let node = &dag.nodes[*i as usize];
@@ -116,7 +118,11 @@ impl LaneLayout {
                     .map(|r| r.name.as_str())
                     .min()
                     .unwrap_or("");
-                (node.sort_date, std::cmp::Reverse(ref_name), std::cmp::Reverse(node.hash.as_str()))
+                (
+                    node.sort_date,
+                    std::cmp::Reverse(ref_name),
+                    std::cmp::Reverse(node.hash.as_str()),
+                )
             };
             key(a).cmp(&key(b))
         });
@@ -156,27 +162,24 @@ impl LaneLayout {
         let mut columns: Vec<(u32, u32)> = Vec::new(); // (frontier node, line id)
         let mut lines: Vec<LineRec> = Vec::new();
         let mut color_counter: u32 = 0;
-        let open_line = |lines: &mut Vec<LineRec>,
-                          color_counter: &mut u32,
-                          opener: u32,
-                          dag: &RawDag|
-         -> u32 {
-            let name = dag.nodes[opener as usize]
-                .refs
-                .iter()
-                .filter(|r| matches!(r.kind, RefKind::Branch | RefKind::Remote))
-                .map(|r| r.name.clone())
-                .min();
-            let id = lines.len() as u32;
-            lines.push(LineRec {
-                color: *color_counter,
-                name,
-                segments: Vec::new(),
-                last_row: u32::MAX,
-            });
-            *color_counter += 1;
-            id
-        };
+        let open_line =
+            |lines: &mut Vec<LineRec>, color_counter: &mut u32, opener: u32, dag: &RawDag| -> u32 {
+                let name = dag.nodes[opener as usize]
+                    .refs
+                    .iter()
+                    .filter(|r| matches!(r.kind, RefKind::Branch | RefKind::Remote))
+                    .map(|r| r.name.clone())
+                    .min();
+                let id = lines.len() as u32;
+                lines.push(LineRec {
+                    color: *color_counter,
+                    name,
+                    segments: Vec::new(),
+                    last_row: u32::MAX,
+                });
+                *color_counter += 1;
+                id
+            };
 
         let mut lane_of = vec![0i32; n];
         let mut line_of = vec![0u32; n];
@@ -287,7 +290,15 @@ impl LaneLayout {
         }
 
         // ── Assemble the output graph. ──────────────────────────────────────
-        let g = assemble(dag, &order, &row_of, &lane_of, &line_of, &node_lines, &mut lines);
+        let g = assemble(
+            dag,
+            &order,
+            &row_of,
+            &lane_of,
+            &line_of,
+            &node_lines,
+            &mut lines,
+        );
         Ok(g)
     }
 }
@@ -403,8 +414,8 @@ fn assemble(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use git_gotten_protocol::{RefKind, RefLabel};
     use crate::RawNode;
+    use git_gotten_protocol::{RefKind, RefLabel};
 
     // ── Test DSL: small DAGs with explicit dates ────────────────────────────
 
@@ -434,9 +445,7 @@ mod tests {
     }
 
     fn dag(ns: &[RawNode]) -> RawDag {
-        RawDag {
-            nodes: ns.to_vec(),
-        }
+        RawDag { nodes: ns.to_vec() }
     }
 
     fn node<'a>(g: &'a Graph, hash: &str) -> &'a Node {
@@ -567,11 +576,7 @@ mod tests {
 
     #[test]
     fn linear_history_is_a_single_lane_in_row_order() {
-        let d = dag(&[
-            n("A", 1, &[]),
-            n("B", 2, &["A"]),
-            n("C", 3, &["B"]),
-        ]);
+        let d = dag(&[n("A", 1, &[]), n("B", 2, &["A"]), n("C", 3, &["B"])]);
         let g = LaneLayout::default().compute(&d).unwrap();
         assert_eq!(row_lane(&g, "C"), (0, 0));
         assert_eq!(row_lane(&g, "B"), (1, 0));
@@ -607,7 +612,10 @@ mod tests {
 
         // Row order (git's date-priority DFS): M, E, D, C, B, A.
         assert_eq!(
-            g.nodes.iter().map(|node| node.hash.as_str()).collect::<Vec<_>>(),
+            g.nodes
+                .iter()
+                .map(|node| node.hash.as_str())
+                .collect::<Vec<_>>(),
             vec!["M", "E", "D", "C", "B", "A"]
         );
         // Lanes: mainline straight on the left, feature in its own lane.
@@ -625,10 +633,7 @@ mod tests {
         // The branch lane (lane 1) dies at the merge: left-packing closes it.
         let feat = line_named(&g, "feature");
         let main = line_named(&g, "main");
-        assert_eq!(
-            g.lines[feat].segments,
-            vec![seg(1, 1, 3), seg(0, 4, 5)]
-        );
+        assert_eq!(g.lines[feat].segments, vec![seg(1, 1, 3), seg(0, 4, 5)]);
         assert_eq!(g.lines[main].segments, vec![seg(0, 0, 3)]);
 
         assert_eq!(g.edges.iter().filter(|e| e.from == "M").count(), 2);
@@ -727,10 +732,7 @@ mod tests {
                 seg(0, 15, 16)
             ]
         );
-        assert_eq!(
-            g.lines[s1].segments,
-            vec![seg(1, 8, 13), seg(0, 14, 14)]
-        );
+        assert_eq!(g.lines[s1].segments, vec![seg(1, 8, 13), seg(0, 14, 14)]);
         assert_eq!(
             g.lines[s2].segments,
             vec![seg(1, 6, 7), seg(2, 8, 12), seg(0, 13, 13)]
@@ -836,9 +838,19 @@ mod tests {
         assert_edges_complete(&g, &d);
         // The tag label is present, colored by its line, and HEAD is the tip.
         let t5 = node(&g, "t5");
-        assert!(t5.refs.iter().any(|r| r.name == "v1.0" && r.kind == RefKind::Tag));
+        assert!(
+            t5.refs
+                .iter()
+                .any(|r| r.name == "v1.0" && r.kind == RefKind::Tag)
+        );
         let head = g.nodes.iter().find(|x| x.is_head).unwrap();
-        assert_eq!(head.refs.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["b3"]);
+        assert_eq!(
+            head.refs
+                .iter()
+                .map(|r| r.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b3"]
+        );
     }
 
     #[test]
@@ -850,9 +862,7 @@ mod tests {
             let mut perm: Vec<u32> = (0..d.nodes.len() as u32).collect();
             let mut state = seed;
             for i in (1..perm.len()).rev() {
-                state = state
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1);
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
                 let j = (state >> 33) % (i as u64 + 1);
                 perm.swap(i, j as usize);
             }

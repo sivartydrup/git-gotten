@@ -84,9 +84,8 @@ impl Fixture {
             "gitgotten-test-{}-{seq}-{label}",
             std::process::id()
         ));
-        std::fs::create_dir_all(&dir).unwrap_or_else(|e| {
-            panic!("failed to create fixture dir {dir:?}: {e}")
-        });
+        std::fs::create_dir_all(&dir)
+            .unwrap_or_else(|e| panic!("failed to create fixture dir {dir:?}: {e}"));
         git(&dir, &["init", "-b", "main"]);
         // Isolate from the host's global config so commits are deterministic.
         git(&dir, &["config", "user.name", "Test User"]);
@@ -98,9 +97,9 @@ impl Fixture {
         git(&dir, &["config", "core.editor", "git --version"]);
         git(&dir, &["config", "core.autocrlf", "false"]);
         Self {
-            path: dir.canonicalize().unwrap_or_else(|e| {
-                panic!("failed to canonicalize fixture dir {dir:?}: {e}")
-            }),
+            path: dir
+                .canonicalize()
+                .unwrap_or_else(|e| panic!("failed to canonicalize fixture dir {dir:?}: {e}")),
             remotes: Vec::new(),
         }
     }
@@ -118,22 +117,15 @@ impl Fixture {
     /// The bare remote stays alive as long as the fixture does.
     pub fn add_origin(&mut self, branch: &str) -> PathBuf {
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "gitgotten-remote-{}-{seq}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("gitgotten-remote-{}-{seq}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (code, _, stderr) = git_run(&dir, &["init", "--bare", "-b", branch]);
         if code != 0 {
             panic!("bare init failed: {stderr}");
         }
         let remote_path = canonical_path(&dir);
-        self.git(&[
-            "remote",
-            "add",
-            "origin",
-            remote_path.to_str().unwrap(),
-        ]);
+        self.git(&["remote", "add", "origin", remote_path.to_str().unwrap()]);
         self.git(&["push", "-u", "origin", branch]);
         self.remotes.push(RemoteFixture {
             path: remote_path.clone(),
@@ -155,11 +147,9 @@ impl Fixture {
     pub fn write_file(&self, rel: &str, content: &str) {
         let full = self.path.join(rel);
         if let Some(parent) = full.parent() {
-            std::fs::create_dir_all(parent)
-                .unwrap_or_else(|e| panic!("mkdir for {rel}: {e}"));
+            std::fs::create_dir_all(parent).unwrap_or_else(|e| panic!("mkdir for {rel}: {e}"));
         }
-        std::fs::write(&full, content)
-            .unwrap_or_else(|e| panic!("write {rel}: {e}"));
+        std::fs::write(&full, content).unwrap_or_else(|e| panic!("write {rel}: {e}"));
     }
 
     /// Write + `git add` + `git commit` a single file in one step.
@@ -171,11 +161,7 @@ impl Fixture {
 
     /// Run `git <args>` inside this fixture with additional environment
     /// variables, allowing non-zero exits.
-    pub fn git_env_run(
-        &self,
-        env: &[(&str, &str)],
-        args: &[&str],
-    ) -> (i32, String, String) {
+    pub fn git_env_run(&self, env: &[(&str, &str)], args: &[&str]) -> (i32, String, String) {
         let out = Command::new("git")
             .envs(env.iter().copied())
             .args(args)
@@ -246,8 +232,10 @@ impl RemoteFixture {
     /// that `target` *is* the clone. Used to make commits on the remote side, e.g. to
     /// produce a behind-N state.
     pub fn clone_into(&self, target: &Path) {
-        let (code, _, stderr) =
-            git_run(target, &["clone", "--quiet", &self.path.to_string_lossy(), "."]);
+        let (code, _, stderr) = git_run(
+            target,
+            &["clone", "--quiet", &self.path.to_string_lossy(), "."],
+        );
         if code != 0 {
             panic!(
                 "clone of {path:?} into {target:?} failed: {stderr}",
@@ -313,7 +301,10 @@ pub fn behind_fixture() -> Fixture {
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&clone).unwrap();
-    RemoteFixture { path: remote_path.clone() }.clone_into(&clone);
+    RemoteFixture {
+        path: remote_path.clone(),
+    }
+    .clone_into(&clone);
     let clone_fx = Fixture {
         path: clone.canonicalize().unwrap(),
         remotes: Vec::new(),
@@ -352,7 +343,10 @@ mod tests {
         fx.commit_file("a.txt", "hello\n", "c1");
         fx.add_origin("main");
         fx.write_file("b.txt", "world\n");
-        assert_eq!(fx.git(&["rev-parse", "HEAD"]), fx.git(&["rev-parse", "main"]));
+        assert_eq!(
+            fx.git(&["rev-parse", "HEAD"]),
+            fx.git(&["rev-parse", "main"])
+        );
         let porcelain = fx.git(&["status", "--porcelain"]);
         assert!(
             porcelain.lines().any(|l| l.trim() == "?? b.txt"),

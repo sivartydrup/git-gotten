@@ -23,6 +23,10 @@ vi.mock("./api", () => ({
   loadGraph: vi.fn().mockResolvedValue(null),
   loadCommit: vi.fn().mockResolvedValue(null),
   loadDiff,
+  loadStashes: async () => [],
+  loadSubmodules: async () => [],
+  loadBisect: async () => ({ active: false, current: null, good: [], bad: [], remaining: 0, found: null, log: [] }),
+  bisectTest: async () => ({ active: false, current: null, good: [], bad: [], remaining: 0, found: null, log: [] }),
 }));
 
 import { useRepoStore, useStagingStore, useActivityStore } from "./store";

@@ -32,6 +32,9 @@ export interface FileChange {
   staged: boolean;
   /** True when the content is binary; the UI shows a "binary" placeholder. */
   binary: boolean;
+  /** True when the path is a submodule gitlink (SPEC §10.8); optional so
+   * pre-Stage-11 fixtures keep compiling. */
+  submodule?: boolean;
 }
 
 /** Live status of an open repository (SPEC §8 read model, computed by `gix`). */
@@ -270,7 +273,18 @@ export type Op =
       path: string;
       new_branch: string | null;
     }
-  | { kind: "worktree_remove"; path: string; force: boolean };
+  | { kind: "worktree_remove"; path: string; force: boolean }
+  | { kind: "stash_push"; include_untracked: boolean }
+  | { kind: "stash_apply"; id: number }
+  | { kind: "stash_pop"; id: number }
+  | { kind: "stash_drop"; id: number }
+  | { kind: "stash_drop_all" }
+  | { kind: "submodule_init"; path: string }
+  | { kind: "submodule_update"; path: string; commit: string | null }
+  | { kind: "bisect_start"; good: string; bad: string; extra: string[] }
+  | { kind: "bisect_verdict"; verdict: BisectVerdict }
+  | { kind: "bisect_test"; command: string }
+  | { kind: "bisect_reset" };
 
 /** The result of running a [`CommandPlan`] (Rust `OpResult`, safe failure, SPEC §8). */
 export interface OpResult {
@@ -481,6 +495,56 @@ export interface CommitDetail {
   is_head: boolean;
   stat: FileStat[];
   diff: FileDiff[];
+}
+
+// ── Stage 11 (Rust git_gotten_protocol, SPEC §10.6/§10.8/§10.9) ────────────
+
+/** One stash entry (Rust `Stash`, SPEC §10.6). */
+export interface Stash {
+  /** List position, 0 = `stash@{0}` (newest). */
+  id: number;
+  /** The stash ref name (`stash@{0}`). */
+  name: string;
+  message: string;
+  /** The branch the stash was taken on; `null` when detached. */
+  branch: string | null;
+  /** Stash creation time, ISO 8601. */
+  date: string;
+  /** Repo-relative paths this stash touches. */
+  files: string[];
+}
+
+/** One submodule of a repository (Rust `Submodule`, SPEC §10.8). */
+export interface Submodule {
+  name: string;
+  /** Repo-relative checkout path. */
+  path: string;
+  url: string;
+  /** The gitlink commit recorded in the superproject index. */
+  recorded: string;
+  /** HEAD inside the submodule; `null` when not initialized. */
+  head: string | null;
+  initialized: boolean;
+  /** `head != recorded`. */
+  differs: boolean;
+}
+
+/** A `git bisect` step verdict (Rust `BisectVerdict`, SPEC §10.9). */
+export type BisectVerdict = "Good" | "Bad";
+
+/** The state of an in-progress bisect (Rust `BisectState`, SPEC §10.9). */
+export interface BisectState {
+  active: boolean;
+  /** The candidate commit checked out to test; `null` when inactive. */
+  current: string | null;
+  good: string[];
+  bad: string[];
+  /** Untested candidates left in the range. */
+  remaining: number;
+  /** The culprit, once converged. */
+  found: string | null;
+  /** Raw `git bisect log` lines. */
+  log: string[];
 }
 
 /**

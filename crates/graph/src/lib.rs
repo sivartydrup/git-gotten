@@ -102,8 +102,10 @@ mod tests {
     #[test]
     fn layout_empty_dag_is_an_error() {
         let result = LaneLayout::default().compute(&RawDag::default());
-        assert_eq!(result.unwrap_err().to_string(),
-            GraphError::Empty.to_string());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            GraphError::Empty.to_string()
+        );
     }
 
     #[test]

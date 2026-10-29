@@ -522,9 +522,9 @@ git push -u origin main
 **Commit & push:** `git add -A && git commit -m "stage-11: stash submodules bisect" && git push origin main`
 
 **Acceptance criteria:**
-- [ ] stash (list/apply/pop/drop/create incl. untracked) works.
-- [ ] submodule init/update/status works and shows in Files.
-- [ ] bisect converges to the culprit with a test command and highlights the range.
+- [x] stash (list/apply/pop/drop/create incl. untracked) works.
+- [x] submodule init/update/status works and shows in Files.
+- [x] bisect converges to the culprit with a test command and highlights the range.
 
 ---
 

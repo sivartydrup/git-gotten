@@ -6,7 +6,7 @@
 //! Requires a `git` binary on `PATH` (the stage's platform gate).
 
 use git_gotten_protocol::{
-    ConflictResolution, ConflictSide, ConflictSegment, HunkChoice, Op, Risk,
+    ConflictResolution, ConflictSegment, ConflictSide, HunkChoice, Op, Risk,
 };
 use git_gotten_testutil as testutil;
 use gitcore::{GitError, GitExecutor, Repo};
@@ -101,9 +101,11 @@ fn conflict_file_reports_a_missing_stage_as_an_empty_side() {
     assert_eq!(cf.base, "one\n"); // the file existed in the base commit
     assert_eq!(cf.ours, "two\n");
     assert_eq!(cf.theirs, ""); // the file was deleted on the theirs side
-    assert!(cf.segments.iter().any(
-        |s| matches!(s, ConflictSegment::Conflict(_))
-    ));
+    assert!(
+        cf.segments
+            .iter()
+            .any(|s| matches!(s, ConflictSegment::Conflict(_)))
+    );
     let _ = fx;
 }
 
@@ -152,7 +154,10 @@ fn resolve_side_plan_is_checkout_then_add() {
         })
         .unwrap();
     assert_eq!(plan.steps.len(), 2);
-    assert_eq!(plan.steps[0].argv, vec!["git", "checkout", "--theirs", "--", "f.txt"]);
+    assert_eq!(
+        plan.steps[0].argv,
+        vec!["git", "checkout", "--theirs", "--", "f.txt"]
+    );
     assert_eq!(plan.steps[1].argv, vec!["git", "add", "--", "f.txt"]);
     assert_eq!(
         plan.display,
@@ -178,10 +183,7 @@ fn resolve_hunks_plan_is_apply_then_add() {
     assert!(plan.steps[0].input.is_some(), "the patch rides on stdin");
     assert!(plan.steps[0].input.as_ref().unwrap().contains("f.txt"));
     assert_eq!(plan.steps[1].argv, vec!["git", "add", "--", "f.txt"]);
-    assert_eq!(
-        plan.display,
-        "git apply && git add -- f.txt"
-    );
+    assert_eq!(plan.display, "git apply && git add -- f.txt");
     let _ = fx;
 }
 
@@ -239,11 +241,17 @@ fn continue_plan_labels_each_in_progress_op() {
 
     let (fx, repo) = rebase_fixture();
     assert_eq!(repo.in_progress_op(), Some(gitcore::InProgressOp::Rebase));
-    assert_eq!(repo.plan(&Op::ContinueOp).unwrap().display, "git rebase --continue");
+    assert_eq!(
+        repo.plan(&Op::ContinueOp).unwrap().display,
+        "git rebase --continue"
+    );
     let _ = fx;
 
     let (fx, repo) = cherry_pick_fixture();
-    assert_eq!(repo.in_progress_op(), Some(gitcore::InProgressOp::CherryPick));
+    assert_eq!(
+        repo.in_progress_op(),
+        Some(gitcore::InProgressOp::CherryPick)
+    );
     assert_eq!(
         repo.plan(&Op::ContinueOp).unwrap().display,
         "git cherry-pick --continue"
@@ -302,9 +310,7 @@ fn open_editor_plan_uses_the_configured_editor() {
 #[test]
 fn open_editor_with_no_paths_errors() {
     let (fx, repo) = clean_fixture();
-    let err = repo
-        .plan(&Op::OpenEditor { paths: vec![] })
-        .unwrap_err();
+    let err = repo.plan(&Op::OpenEditor { paths: vec![] }).unwrap_err();
     assert!(matches!(err, GitError::EmptySelection));
     let _ = fx;
 }
@@ -336,10 +342,7 @@ async fn resolve_take_ours_then_continue_completes_the_merge() {
     let result = run(&repo, &Op::ContinueOp).await;
     assert!(result.ok, "merge --continue: {}", result.stderr);
     assert!(
-        fx.git(&["log", "-1", "--format=%P"])
-            .split(' ')
-            .count()
-            == 2,
+        fx.git(&["log", "-1", "--format=%P"]).split(' ').count() == 2,
         "the merge commit has two parents"
     );
     assert_eq!(repo.in_progress_op(), None, "the merge concluded");
@@ -403,7 +406,13 @@ async fn stale_hunk_choices_are_rejected_at_plan_time() {
         })
         .unwrap_err();
     assert!(
-        matches!(err, GitError::ConflictMismatch { expected: 1, given: 2 }),
+        matches!(
+            err,
+            GitError::ConflictMismatch {
+                expected: 1,
+                given: 2
+            }
+        ),
         "got {err:?}"
     );
     let _ = fx;

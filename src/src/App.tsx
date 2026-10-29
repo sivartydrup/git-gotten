@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useActivityStore, useBuildInfo, useConflictStore, useGraphStore, useMainTab, useRebaseStore, useRefsStore, useRepoStore, useStagingStore, useWorktreesStore } from "./store";
+import { useActivityStore, useBisectStore, useBuildInfo, useConflictStore, useGraphStore, useMainTab, useRebaseStore, useRefsStore, useRepoStore, useStashesStore, useStagingStore, useSubmodulesStore, useWorktreesStore } from "./store";
 import { onOpFinished, onOpStarted, onStatusChanged } from "./api";
 import { TopBar } from "./components/TopBar";
 import { RepoNav } from "./components/RepoNav";
@@ -15,6 +15,8 @@ import { RefsPanel, type RefsTab } from "./components/RefsPanel";
 import { ConflictView } from "./components/ConflictView";
 import { ConflictBanner } from "./components/ConflictBanner";
 import { WorktreesPanel } from "./components/WorktreesPanel";
+import { StashPanel } from "./components/StashPanel";
+import { BisectPanel } from "./components/BisectPanel";
 
 
 /**
@@ -94,6 +96,12 @@ export default function App() {
         void useRefsStore.getState().load(activeId);
         // Worktree add/remove rewrites the checkout registry.
         void useWorktreesStore.getState().load(activeId);
+        // Stash push/apply/pop/drop rewrites the stash list.
+        void useStashesStore.getState().load(activeId);
+        // Submodule init/update moves the gitlinks.
+        void useSubmodulesStore.getState().load(activeId);
+        // Start/verdict/test/reset all move the bisect state.
+        void useBisectStore.getState().load(activeId);
       }
     }).then((u) => {
       unlistenFinished = u;
@@ -112,6 +120,9 @@ export default function App() {
       void useGraphStore.getState().load(activeId);
       void useRefsStore.getState().load(activeId);
       void useWorktreesStore.getState().load(activeId);
+      void useStashesStore.getState().load(activeId);
+      void useSubmodulesStore.getState().load(activeId);
+      void useBisectStore.getState().load(activeId);
     } else {
       useGraphStore.getState().closeDetail();
     }
@@ -189,6 +200,24 @@ export default function App() {
             >
               Worktrees
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "stash"}
+              className={`tab ${tab === "stash" ? "active" : ""}`}
+              onClick={() => setTab("stash")}
+            >
+              Stash
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "bisect"}
+              className={`tab ${tab === "bisect" ? "active" : ""}`}
+              onClick={() => setTab("bisect")}
+            >
+              Bisect
+            </button>
           </div>
           <div className="main-content">
             {tab === "graph" && <GraphCanvas />}
@@ -214,6 +243,8 @@ export default function App() {
               </div>
             )}
             {tab === "worktrees" && <WorktreesPanel />}
+            {tab === "stash" && <StashPanel />}
+            {tab === "bisect" && <BisectPanel />}
           </div>
           <CommitPanel />
         </div>

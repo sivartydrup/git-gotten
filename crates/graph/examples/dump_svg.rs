@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use graph::{build_dag, to_svg, LaneLayout};
+use graph::{LaneLayout, build_dag, to_svg};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -12,14 +12,12 @@ fn main() {
         eprintln!("usage: dump_svg <repo-path> <out.svg>");
         std::process::exit(2);
     };
-    let repo = gix::open(Path::new(&path))
-        .unwrap_or_else(|e| panic!("failed to open {path}: {e}"));
+    let repo = gix::open(Path::new(&path)).unwrap_or_else(|e| panic!("failed to open {path}: {e}"));
     let dag = build_dag(&repo).unwrap_or_else(|e| panic!("failed to build DAG: {e}"));
     let graph = LaneLayout::default()
         .compute(&dag)
         .unwrap_or_else(|e| panic!("failed to lay out graph: {e}"));
-    std::fs::write(&out, to_svg(&graph))
-        .unwrap_or_else(|e| panic!("failed to write {out}: {e}"));
+    std::fs::write(&out, to_svg(&graph)).unwrap_or_else(|e| panic!("failed to write {out}: {e}"));
     println!(
         "{path}: {} commits, {} edges, {} lines -> {out}",
         graph.nodes.len(),

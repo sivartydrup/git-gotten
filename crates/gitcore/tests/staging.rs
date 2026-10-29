@@ -17,7 +17,11 @@ use gitcore::{GitExecutor, Repo};
 /// (with 3 lines of context) to yield **two** hunks.
 fn two_hunk_fixture(label: &str) -> testutil::Fixture {
     let fx = testutil::Fixture::new(label);
-    let content = (1..=20).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\n") + "\n";
+    let content = (1..=20)
+        .map(|i| format!("l{i}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
     fx.commit_file("f.txt", &content, "c1");
     let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
     lines[0] = "l1X".to_string();
@@ -29,7 +33,9 @@ fn two_hunk_fixture(label: &str) -> testutil::Fixture {
 /// Plan an op, run it through the executor, and expect success.
 async fn run(repo: &Repo, fx: &testutil::Fixture, op: Op) -> gitcore::OpResult {
     let plan = repo.plan(&op).expect("plan must compile");
-    let result = GitExecutor::new().run_plan(&repo.id, &repo.path, &plan).await;
+    let result = GitExecutor::new()
+        .run_plan(&repo.id, &repo.path, &plan)
+        .await;
     assert!(result.ok, "op must succeed, stderr: {}", result.stderr);
     let _ = fx; // fixtures are the assertion vehicle; kept for call-site symmetry
     result
@@ -45,7 +51,12 @@ fn diff_file_reports_both_hunks_as_unstaged() {
     let diff = repo.diff_file("f.txt").unwrap();
     assert_eq!(diff.path, "f.txt");
     assert!(!diff.binary);
-    assert_eq!(diff.hunks.len(), 2, "expected two hunks, patch:\n{}", diff.patch);
+    assert_eq!(
+        diff.hunks.len(),
+        2,
+        "expected two hunks, patch:\n{}",
+        diff.patch
+    );
     assert!(diff.hunks.iter().all(|h| !h.staged));
     // `patch` is the side the user acts on: the unstaged diff.
     assert!(diff.patch.contains("+l1X"));
@@ -62,14 +73,22 @@ fn diff_file_of_an_untracked_file_is_all_added() {
     let diff = repo.diff_file("u.txt").unwrap();
     assert_eq!(diff.hunks.len(), 1);
     assert!(diff.hunks.iter().all(|h| !h.staged));
-    assert!(diff.hunks.iter().all(|h| h.lines.iter().all(|l| l.starts_with('+'))));
+    assert!(
+        diff.hunks
+            .iter()
+            .all(|h| h.lines.iter().all(|l| l.starts_with('+')))
+    );
 }
 
 #[tokio::test]
 async fn diff_file_flags_staged_and_unstaged_hunks_separately() {
     // 36-line file, changes at lines 1 / 15 / 30 (three isolated hunks).
     let fx = testutil::Fixture::new("diff-mixed");
-    let content = (1..=36).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\n") + "\n";
+    let content = (1..=36)
+        .map(|i| format!("l{i}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
     fx.commit_file("f.txt", &content, "c1");
     let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
     lines[0] = "l1A".to_string();
@@ -77,7 +96,15 @@ async fn diff_file_flags_staged_and_unstaged_hunks_separately() {
     fx.write_file("f.txt", &(lines.join("\n") + "\n"));
     // Stage only the first hunk.
     let repo = Repo::open(&fx.path).unwrap();
-    let _ = run(&repo, &fx, Op::StageHunks { path: "f.txt".into(), selected: vec![0] }).await;
+    let _ = run(
+        &repo,
+        &fx,
+        Op::StageHunks {
+            path: "f.txt".into(),
+            selected: vec![0],
+        },
+    )
+    .await;
     // Now modify a third region in the worktree.
     let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
     lines[0] = "l1A".to_string();
@@ -100,16 +127,33 @@ async fn stage_hunks_stages_exactly_the_selected_hunks() {
     let repo = Repo::open(&fx.path).unwrap();
 
     // Select only hunk 1 (the line-1 change).
-    run(&repo, &fx, Op::StageHunks { path: "f.txt".into(), selected: vec![0] }).await;
+    run(
+        &repo,
+        &fx,
+        Op::StageHunks {
+            path: "f.txt".into(),
+            selected: vec![0],
+        },
+    )
+    .await;
 
     // The index gained exactly hunk 1: `git diff --cached` shows it and only it.
     let staged = fx.git(&["diff", "--cached", "--", "f.txt"]);
     assert!(staged.contains("+l1X"), "hunk 1 must be staged:\n{staged}");
-    assert!(!staged.contains("l15X"), "hunk 2 must NOT be staged:\n{staged}");
+    assert!(
+        !staged.contains("l15X"),
+        "hunk 2 must NOT be staged:\n{staged}"
+    );
     // The worktree is untouched: `git diff` now shows only hunk 2.
     let unstaged = fx.git(&["diff", "--", "f.txt"]);
-    assert!(unstaged.contains("+l15X"), "hunk 2 stays in the worktree:\n{unstaged}");
-    assert!(!unstaged.contains("l1X"), "hunk 1 no longer differs from the index:\n{unstaged}");
+    assert!(
+        unstaged.contains("+l15X"),
+        "hunk 2 stays in the worktree:\n{unstaged}"
+    );
+    assert!(
+        !unstaged.contains("l1X"),
+        "hunk 1 no longer differs from the index:\n{unstaged}"
+    );
 }
 
 #[tokio::test]
@@ -117,17 +161,36 @@ async fn commit_after_partial_staging_contains_only_the_staged_hunk() {
     let fx = two_hunk_fixture("commit-partial");
     let repo = Repo::open(&fx.path).unwrap();
 
-    run(&repo, &fx, Op::StageHunks { path: "f.txt".into(), selected: vec![0] }).await;
-    run(&repo, &fx, Op::Commit {
-        message: "partial".into(),
-        amend: false,
-        author: None,
-        co_authors: vec![],
-    }).await;
+    run(
+        &repo,
+        &fx,
+        Op::StageHunks {
+            path: "f.txt".into(),
+            selected: vec![0],
+        },
+    )
+    .await;
+    run(
+        &repo,
+        &fx,
+        Op::Commit {
+            message: "partial".into(),
+            amend: false,
+            author: None,
+            co_authors: vec![],
+        },
+    )
+    .await;
 
     let committed = fx.git(&["show", "HEAD:f.txt"]);
-    assert!(committed.contains("l1X"), "the commit contains hunk 1:\n{committed}");
-    assert!(!committed.contains("l15X"), "the commit excludes hunk 2:\n{committed}");
+    assert!(
+        committed.contains("l1X"),
+        "the commit contains hunk 1:\n{committed}"
+    );
+    assert!(
+        !committed.contains("l15X"),
+        "the commit excludes hunk 2:\n{committed}"
+    );
     // The worktree still carries hunk 2 as an unstaged change.
     let status = Repo::open(&fx.path).unwrap().status().unwrap();
     let f = status.changes.iter().find(|c| c.path == "f.txt").unwrap();
@@ -143,28 +206,48 @@ async fn amend_rewrites_head_in_place() {
 
     // Commit both hunks, then change one line again and amend.
     run(&repo, &fx, Op::Stage { path: None }).await;
-    run(&repo, &fx, Op::Commit {
-        message: "both".into(),
-        amend: false,
-        author: None,
-        co_authors: vec![],
-    }).await;
+    run(
+        &repo,
+        &fx,
+        Op::Commit {
+            message: "both".into(),
+            amend: false,
+            author: None,
+            co_authors: vec![],
+        },
+    )
+    .await;
     assert_eq!(fx.git(&["rev-list", "--count", "HEAD"]).trim(), "2");
 
     let mut lines: Vec<String> = (1..=20).map(|i| format!("l{i}")).collect();
     lines[0] = "l1Y".to_string();
     fx.write_file("f.txt", &(lines.join("\n") + "\n"));
-    run(&repo, &fx, Op::Stage { path: Some("f.txt".into()) }).await;
-    run(&repo, &fx, Op::Commit {
-        message: "both, amended".into(),
-        amend: true,
-        author: None,
-        co_authors: vec![],
-    }).await;
+    run(
+        &repo,
+        &fx,
+        Op::Stage {
+            path: Some("f.txt".into()),
+        },
+    )
+    .await;
+    run(
+        &repo,
+        &fx,
+        Op::Commit {
+            message: "both, amended".into(),
+            amend: true,
+            author: None,
+            co_authors: vec![],
+        },
+    )
+    .await;
 
     // Amended in place: still two commits, HEAD carries the new content.
     assert_eq!(fx.git(&["rev-list", "--count", "HEAD"]).trim(), "2");
-    assert_eq!(fx.git(&["log", "-1", "--format=%s"]).trim(), "both, amended");
+    assert_eq!(
+        fx.git(&["log", "-1", "--format=%s"]).trim(),
+        "both, amended"
+    );
     let committed = fx.git(&["show", "HEAD:f.txt"]);
     assert!(committed.contains("l1Y"));
     assert!(!committed.contains("l1X"));
@@ -190,11 +273,21 @@ async fn commit_with_author_override_sets_the_author() {
         },
     )
     .await;
-    assert!(result.plan.display.contains("--author"), "{}", result.plan.display);
+    assert!(
+        result.plan.display.contains("--author"),
+        "{}",
+        result.plan.display
+    );
 
-    assert_eq!(fx.git(&["log", "-1", "--format=%an <%ae>"]).trim(), "Jane Doe <jane@example.com>");
+    assert_eq!(
+        fx.git(&["log", "-1", "--format=%an <%ae>"]).trim(),
+        "Jane Doe <jane@example.com>"
+    );
     // The trailer landed in the message; the committer stays the fixture identity.
-    assert!(fx.git(&["log", "-1", "--format=%B"]).contains("Co-authored-by: Joe <joe@example.com>"));
+    assert!(
+        fx.git(&["log", "-1", "--format=%B"])
+            .contains("Co-authored-by: Joe <joe@example.com>")
+    );
     assert_ne!(fx.git(&["log", "-1", "--format=%cn"]).trim(), "Jane Doe");
 }
 
@@ -205,16 +298,33 @@ async fn stage_then_unstage_round_trips_the_index() {
     let fx = two_hunk_fixture("stage-unstage");
     let repo = Repo::open(&fx.path).unwrap();
 
-    run(&repo, &fx, Op::Stage { path: Some("f.txt".into()) }).await;
+    run(
+        &repo,
+        &fx,
+        Op::Stage {
+            path: Some("f.txt".into()),
+        },
+    )
+    .await;
     let staged = fx.git(&["diff", "--cached", "--", "f.txt"]);
     assert!(staged.contains("+l1X"), "staged: {staged}");
 
-    run(&repo, &fx, Op::Unstage { path: Some("f.txt".into()) }).await;
+    run(
+        &repo,
+        &fx,
+        Op::Unstage {
+            path: Some("f.txt".into()),
+        },
+    )
+    .await;
     // The index is back at HEAD; the content stays in the worktree.
     assert!(fx.git(&["diff", "--cached", "--", "f.txt"]).is_empty());
     assert!(fx.git(&["diff", "--", "f.txt"]).contains("+l1X"));
     let on_disk = std::fs::read_to_string(fx.path.join("f.txt")).unwrap();
-    assert!(on_disk.contains("l1X") && on_disk.contains("l15X"), "worktree must be untouched");
+    assert!(
+        on_disk.contains("l1X") && on_disk.contains("l15X"),
+        "worktree must be untouched"
+    );
 }
 
 #[tokio::test]
@@ -229,17 +339,27 @@ async fn stage_all_and_unstage_all_cover_everything_including_deletions() {
 
     run(&repo, &fx, Op::Stage { path: None }).await;
     let staged = fx.git(&["diff", "--cached"]);
-    assert!(staged.contains("one-modified"), "modified staged:\n{staged}");
+    assert!(
+        staged.contains("one-modified"),
+        "modified staged:\n{staged}"
+    );
     assert!(staged.contains("b.txt"), "deletion staged:\n{staged}");
     assert!(staged.contains("u.txt"), "untracked added:\n{staged}");
 
     run(&repo, &fx, Op::Unstage { path: None }).await;
-    assert!(fx.git(&["diff", "--cached"]).is_empty(), "index back at HEAD");
+    assert!(
+        fx.git(&["diff", "--cached"]).is_empty(),
+        "index back at HEAD"
+    );
     // Unstaging the added file returns it to untracked, content preserved.
     let status = Repo::open(&fx.path).unwrap().status().unwrap();
     let u = status.changes.iter().find(|c| c.path == "u.txt").unwrap();
     assert!(!u.staged && u.kind == gitcore::ChangeKind::Untracked);
-    assert!(std::fs::read_to_string(fx.path.join("u.txt")).unwrap().contains("new"));
+    assert!(
+        std::fs::read_to_string(fx.path.join("u.txt"))
+            .unwrap()
+            .contains("new")
+    );
 }
 
 // ── discard ─────────────────────────────────────────────────────────────────
@@ -250,15 +370,36 @@ async fn discard_restores_a_modified_file_from_head() {
     let repo = Repo::open(&fx.path).unwrap();
 
     // Stage one hunk first, so the discard must undo *both* sides.
-    run(&repo, &fx, Op::StageHunks { path: "f.txt".into(), selected: vec![0] }).await;
-    let result = run(&repo, &fx, Op::Discard { path: "f.txt".into() }).await;
+    run(
+        &repo,
+        &fx,
+        Op::StageHunks {
+            path: "f.txt".into(),
+            selected: vec![0],
+        },
+    )
+    .await;
+    let result = run(
+        &repo,
+        &fx,
+        Op::Discard {
+            path: "f.txt".into(),
+        },
+    )
+    .await;
     assert_eq!(result.plan.steps[0].risk, Risk::Dangerous);
 
     // The file is back at its committed content; the tree is clean.
     let on_disk = std::fs::read_to_string(fx.path.join("f.txt")).unwrap();
-    assert!(!on_disk.contains("l1X") && !on_disk.contains("l15X"), "{on_disk}");
+    assert!(
+        !on_disk.contains("l1X") && !on_disk.contains("l15X"),
+        "{on_disk}"
+    );
     let status = Repo::open(&fx.path).unwrap().status().unwrap();
-    assert!(status.changes.is_empty(), "tree must be clean after discard: {status:?}");
+    assert!(
+        status.changes.is_empty(),
+        "tree must be clean after discard: {status:?}"
+    );
 }
 
 #[tokio::test]
@@ -268,9 +409,19 @@ async fn discard_deletes_an_untracked_file() {
     fx.write_file("u.txt", "gone\n");
     let repo = Repo::open(&fx.path).unwrap();
 
-    let result = run(&repo, &fx, Op::Discard { path: "u.txt".into() }).await;
+    let result = run(
+        &repo,
+        &fx,
+        Op::Discard {
+            path: "u.txt".into(),
+        },
+    )
+    .await;
     assert_eq!(result.plan.steps[0].risk, Risk::Dangerous);
-    assert!(!Path::new(&fx.path).join("u.txt").exists(), "the file must be deleted");
+    assert!(
+        !Path::new(&fx.path).join("u.txt").exists(),
+        "the file must be deleted"
+    );
     let status = Repo::open(&fx.path).unwrap().status().unwrap();
     assert!(status.changes.is_empty());
 }

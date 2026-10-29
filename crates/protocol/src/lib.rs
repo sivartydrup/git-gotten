@@ -42,6 +42,14 @@
 //! Stage 10 adds the worktree shapes (SPEC §10.7): [`Worktree`], the IPC
 //! `load_worktrees` read, and the ops [`Op::WorktreeAdd`] and
 //! [`Op::WorktreeRemove`] (force-removing a dirty worktree is `Dangerous`).
+//! Stage 11 adds the stash / submodule / bisect shapes (SPEC §10.6, §10.8, §10.9):
+//! [`Stash`], [`Submodule`], [`BisectState`], [`BisectVerdict`], the
+//! `FileChange::submodule` badge flag, the IPC `load_stashes` / `load_submodules` /
+//! `load_bisect` reads plus the `bisect_test` command, and the ops [`Op::StashPush`],
+//! [`Op::StashApply`], [`Op::StashPop`], [`Op::StashDrop`], [`Op::StashDropAll`]
+//! (dropping is `Dangerous`), [`Op::SubmoduleInit`], [`Op::SubmoduleUpdate`],
+//! [`Op::BisectStart`], [`Op::BisectVerdict`], [`Op::BisectTest`],
+//! [`Op::BisectReset`].
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -92,6 +100,11 @@ pub struct FileChange {
     /// True when the content is binary (NUL bytes in the first 8 KiB); the UI shows a
     /// "binary file" placeholder instead of a text diff.
     pub binary: bool,
+    /// True when this path is a submodule checkout whose recorded gitlink differs
+    /// from the submodule's checked-out commit (SPEC §10.8). It stages and
+    /// commits like a normal change; the Files panel badges it.
+    #[serde(default)]
+    pub submodule: bool,
 }
 
 /// Live status of an open repository (SPEC §8 read model, computed by `gix`).
@@ -214,6 +227,80 @@ pub struct Worktree {
     pub locked: bool,
     /// git considers it prunable (its working tree is gone).
     pub prunable: bool,
+}
+
+// ── Stashes (SPEC §10.6) ───────────────────────────────────────────────────
+
+/// One saved snapshot of uncommitted changes (the `id`-th entry of `git stash list`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Stash {
+    /// Position in the stash list: `0` is `stash@{0}` (the newest).
+    pub id: u32,
+    /// git's ref name for it (`stash@{0}`), as listed by `git stash list`.
+    pub name: String,
+    /// The stash subject: git's `WIP on <branch>: …` form, or the custom
+    /// message given with `git stash push -m`.
+    pub message: String,
+    /// The branch the stash was created on; `None` when the message names none.
+    pub branch: Option<String>,
+    /// Creation time, ISO 8601 (git `%cI`).
+    pub date: String,
+    /// Files the snapshot carries: tracked changes plus stashed untracked files.
+    pub files: Vec<String>,
+}
+
+// ── Submodules (SPEC §10.8) ────────────────────────────────────────────────
+
+/// One registered submodule and the state of its checkout (SPEC §10.8).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Submodule {
+    /// The configured name (`submodule.<name>.*` in `.gitmodules`).
+    pub name: String,
+    /// Repo-relative checkout path.
+    pub path: String,
+    /// The URL recorded in `.gitmodules`.
+    pub url: String,
+    /// The gitlink commit recorded in the superproject index.
+    pub recorded: String,
+    /// HEAD inside the submodule checkout; `None` when not initialized.
+    pub head: Option<String>,
+    /// `true` once the submodule is initialized (its checkout exists).
+    pub initialized: bool,
+    /// `true` when the checked-out commit differs from the recorded gitlink
+    /// (git's `+` status marker) — the Files panel shows this as a change.
+    pub differs: bool,
+}
+
+// ── Bisect (SPEC §10.9) ────────────────────────────────────────────────────
+
+/// The verdict on the commit currently under test (`git bisect good|bad`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub enum BisectVerdict {
+    /// The commit is clean — the bug appeared later.
+    Good,
+    /// The commit has the bug — the culprit is at or before it.
+    Bad,
+}
+
+/// The live state of a bisect session, parsed from `git bisect log` and the
+/// checked-out candidate (SPEC §10.9).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct BisectState {
+    /// `true` while a bisect session is in progress (`BISECT_LOG` present).
+    pub active: bool,
+    /// The commit currently checked out to test; `None` outside a session.
+    pub current: Option<Hash>,
+    /// Every commit marked good, oldest verdict first.
+    pub good: Vec<Hash>,
+    /// Every commit marked bad, oldest verdict first.
+    pub bad: Vec<Hash>,
+    /// Candidates still untested in the shrinking `good..bad` range
+    /// (`git rev-list` count); `0` once the culprit is found.
+    pub remaining: u64,
+    /// The culprit once bisect converges (git's `first bad commit`); `None` before.
+    pub found: Option<Hash>,
+    /// Raw `git bisect log` lines — kept for replay (SPEC §10.9).
+    pub log: Vec<String>,
 }
 
 /// Risk classification of a git step or operation (SPEC §8).
@@ -586,6 +673,78 @@ pub enum Op {
         /// Remove despite uncommitted changes (`--force`).
         force: bool,
     },
+    /// Save the uncommitted changes as a new stash (`git stash push [-u]`,
+    /// SPEC §10.6). `Mutating`: the working tree becomes clean, but the
+    /// snapshot is recoverable through the stash list.
+    StashPush {
+        /// Also stash untracked files (`-u`).
+        include_untracked: bool,
+    },
+    /// Re-apply stash `id` and keep it in the list (`git stash apply stash@{id}`).
+    /// A conflicting apply fails as a normal failed [`OpResult`].
+    StashApply {
+        /// Zero-based stash index.
+        id: u32,
+    },
+    /// Apply stash `id` and drop it (`git stash pop stash@{id}`).
+    StashPop {
+        /// Zero-based stash index.
+        id: u32,
+    },
+    /// Delete stash `id` without applying it (`git stash drop stash@{id}`).
+    /// `Dangerous` (type-to-confirm): the snapshot's work is gone.
+    StashDrop {
+        /// Zero-based stash index.
+        id: u32,
+    },
+    /// Delete every stash (`git stash clear`, the SPEC §10.6 drop-all action).
+    /// `Dangerous` (type-to-confirm): all snapshots' work is gone; an empty
+    /// stash list is refused at plan time.
+    StashDropAll,
+    /// Initialize an uninitialized submodule (`git submodule update --init <path>`,
+    /// SPEC §10.8). `Mutating`: creates the submodule checkout.
+    SubmoduleInit {
+        /// The submodule's repo-relative path.
+        path: String,
+    },
+    /// Update a submodule checkout (`git submodule update <path>`; when
+    /// `commit` is `Some`, followed by `git -C <path> checkout <commit>`).
+    /// `Mutating`: local changes inside the submodule can be overwritten.
+    SubmoduleUpdate {
+        /// The submodule's repo-relative path.
+        path: String,
+        /// `None` = check out the recorded gitlink; `Some` = also check out
+        /// this specific commit inside the submodule.
+        commit: Option<Hash>,
+    },
+    /// Start a bisect session (`git bisect start <bad> <good> [extra…]`,
+    /// SPEC §10.9). `Mutating`: HEAD detaches and each step checks out the
+    /// candidate commit. `extra` adds more known-good/-bad refs to narrow the range.
+    BisectStart {
+        /// A commit known to be clean.
+        good: Hash,
+        /// A commit known to have the bug (usually HEAD).
+        bad: Hash,
+        /// Additional range refs to include in the start.
+        extra: Vec<Hash>,
+    },
+    /// Mark the commit currently under test (`git bisect good|bad`,
+    /// SPEC §10.9). `Mutating`: advances the session to the next candidate.
+    BisectVerdict {
+        /// The verdict for the current candidate.
+        verdict: BisectVerdict,
+    },
+    /// Run the bisect test command against the current candidate (SPEC §10.9).
+    /// The command string is split on whitespace into argv and spawned directly —
+    /// no shell. `Mutating`: it runs an external program; exit 0 means Good
+    /// (git's `bisect run` convention).
+    BisectTest {
+        /// The test command, e.g. `sh test.sh` or `cargo test bug`.
+        command: String,
+    },
+    /// End the bisect session and return to the original checkout
+    /// (`git bisect reset`, SPEC §10.9). `Mutating`.
+    BisectReset,
 }
 
 /// The result of running a [`CommandPlan`] (safe failure, SPEC §8): the command and
@@ -996,18 +1155,21 @@ mod tests {
                     kind: ChangeKind::Modified,
                     staged: true,
                     binary: false,
+                    submodule: false,
                 },
                 FileChange {
                     path: "dirty.md".into(),
                     kind: ChangeKind::Modified,
                     staged: false,
                     binary: false,
+                    submodule: false,
                 },
                 FileChange {
                     path: "new.txt".into(),
                     kind: ChangeKind::Untracked,
                     staged: false,
                     binary: false,
+                    submodule: false,
                 },
             ],
             in_merge: false,
@@ -1054,6 +1216,78 @@ mod tests {
     }
 
     #[test]
+    fn stage11_types_are_ts_types() {
+        _assert_ts::<Stash>();
+        _assert_ts::<Submodule>();
+        _assert_ts::<BisectState>();
+        _assert_ts::<BisectVerdict>();
+    }
+
+    #[test]
+    fn stage11_types_round_trip_through_serde() {
+        let stash = Stash {
+            id: 1,
+            name: "stash@{1}".into(),
+            message: "custom wip".into(),
+            branch: Some("main".into()),
+            date: "2026-10-29T10:00:00+01:00".into(),
+            files: vec!["src/a.rs".into(), "notes.md".into()],
+        };
+        let json = serde_json::to_string(&stash).unwrap();
+        let back: Stash = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, stash);
+
+        let sub = Submodule {
+            name: "dep".into(),
+            path: "vendor/dep".into(),
+            url: "/tmp/dep.git".into(),
+            recorded: "b".repeat(40),
+            head: None,
+            initialized: false,
+            differs: false,
+        };
+        let json = serde_json::to_string(&sub).unwrap();
+        assert!(json.contains("\"vendor/dep\""));
+        let back: Submodule = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, sub);
+
+        let op = Op::BisectStart {
+            good: "a".repeat(40),
+            bad: "b".repeat(40),
+            extra: vec!["c".repeat(40)],
+        };
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains("\"bisect_start\""));
+        let back: Op = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, op);
+    }
+
+    #[test]
+    fn stage11_ops_deserialize_from_the_web_wire_json() {
+        // The exact JSON the web sends (contract mirrors `Op`'s
+        // `#[serde(tag = "kind", rename_all = "snake_case")]`).
+        let back: Op = serde_json::from_str(r#"{"kind":"stash_drop_all"}"#).unwrap();
+        assert_eq!(back, Op::StashDropAll);
+        let back: Op =
+            serde_json::from_str(r#"{"kind":"submodule_update","path":"extras/dep","commit":null}"#)
+                .unwrap();
+        assert_eq!(
+            back,
+            Op::SubmoduleUpdate {
+                path: "extras/dep".into(),
+                commit: None
+            }
+        );
+        let back: Op = serde_json::from_str(r#"{"kind":"bisect_verdict","verdict":"Bad"}"#).unwrap();
+        assert_eq!(
+            back,
+            Op::BisectVerdict {
+                verdict: BisectVerdict::Bad
+            }
+        );
+    }
+
+    #[test]
     fn status_changed_round_trips_through_serde() {
         let s = StatusChanged {
             repo: "/tmp/repo".into(),
@@ -1077,12 +1311,15 @@ mod tests {
                 risk: Risk::Dangerous,
                 effect: Some("force-push `main` — remote loses 1 commit".into()),
                 input: None,
-            program: None,
+                program: None,
             }],
             display: "git push --force origin main".into(),
             preview: Some(Preview {
                 headline: "Push to origin/main".into(),
-                lines: vec!["pushes 1 local commit".into(), "remote will lose 1 commit".into()],
+                lines: vec![
+                    "pushes 1 local commit".into(),
+                    "remote will lose 1 commit".into(),
+                ],
                 requires_type_to_confirm: true,
             }),
         }
@@ -1090,9 +1327,18 @@ mod tests {
 
     #[test]
     fn risk_serializes_as_plain_words_and_is_ordered() {
-        assert_eq!(serde_json::to_string(&Risk::ReadOnly).unwrap(), r#""ReadOnly""#);
-        assert_eq!(serde_json::to_string(&Risk::Mutating).unwrap(), r#""Mutating""#);
-        assert_eq!(serde_json::to_string(&Risk::Dangerous).unwrap(), r#""Dangerous""#);
+        assert_eq!(
+            serde_json::to_string(&Risk::ReadOnly).unwrap(),
+            r#""ReadOnly""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Risk::Mutating).unwrap(),
+            r#""Mutating""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Risk::Dangerous).unwrap(),
+            r#""Dangerous""#
+        );
         // The ordering drives the UI's confirmation tier (SPEC §9).
         assert!(Risk::ReadOnly < Risk::Mutating);
         assert!(Risk::Mutating < Risk::Dangerous);
@@ -1121,14 +1367,16 @@ mod tests {
     fn op_push_round_trips_with_a_null_branch() {
         // `set_upstream` is `#[serde(default)]`: the old web payloads (without
         // the field) still deserialize, but serialization always carries it.
-        let json = r#"{"kind":"push","remote":"origin","branch":null,"force":true,"set_upstream":false}"#;
+        let json =
+            r#"{"kind":"push","remote":"origin","branch":null,"force":true,"set_upstream":false}"#;
         let op: Op = serde_json::from_str(json).unwrap();
         assert!(matches!(op, Op::Push { force: true, .. }));
         assert_eq!(serde_json::to_string(&op).unwrap(), json);
         // A payload from an older web build (no `set_upstream`) still decodes.
-        let old: Op =
-            serde_json::from_str(r#"{"kind":"push","remote":"origin","branch":null,"force":false}"#)
-                .unwrap();
+        let old: Op = serde_json::from_str(
+            r#"{"kind":"push","remote":"origin","branch":null,"force":false}"#,
+        )
+        .unwrap();
         let Op::Push { set_upstream, .. } = &old else {
             panic!("wrong variant");
         };
@@ -1195,8 +1443,7 @@ mod tests {
     #[test]
     fn op_cherry_pick_target_is_optional_on_the_wire() {
         // An older payload (no `target`) still decodes.
-        let op: Op =
-            serde_json::from_str(r#"{"kind":"cherry_pick","hashes":["aa"]}"#).unwrap();
+        let op: Op = serde_json::from_str(r#"{"kind":"cherry_pick","hashes":["aa"]}"#).unwrap();
         let Op::CherryPick { target, .. } = &op else {
             panic!("wrong variant");
         };
@@ -1231,11 +1478,8 @@ mod tests {
         let back: OpResult = serde_json::from_str(&json).unwrap();
         assert_eq!(back, result);
         // A payload from an older build (no `conflicts` field) still decodes.
-        let old: OpResult = serde_json::from_str(&json.replace(
-            r#","conflicts":["f.txt"]"#,
-            "",
-        ))
-        .unwrap();
+        let old: OpResult =
+            serde_json::from_str(&json.replace(r#","conflicts":["f.txt"]"#, "")).unwrap();
         assert!(old.conflicts.is_empty());
     }
 
@@ -1333,13 +1577,21 @@ mod tests {
                     id: 0,
                     color: 0,
                     name: Some("main".into()),
-                    segments: vec![LineSegment { lane: 0, from_row: 0, to_row: 5 }],
+                    segments: vec![LineSegment {
+                        lane: 0,
+                        from_row: 0,
+                        to_row: 5,
+                    }],
                 },
                 Line {
                     id: 1,
                     color: 1,
                     name: Some("feature".into()),
-                    segments: vec![LineSegment { lane: 1, from_row: 1, to_row: 4 }],
+                    segments: vec![LineSegment {
+                        lane: 1,
+                        from_row: 1,
+                        to_row: 4,
+                    }],
                 },
             ],
         }
@@ -1377,9 +1629,18 @@ mod tests {
 
     #[test]
     fn reset_mode_serializes_as_plain_words() {
-        assert_eq!(serde_json::to_string(&ResetMode::Soft).unwrap(), r#""soft""#);
-        assert_eq!(serde_json::to_string(&ResetMode::Mixed).unwrap(), r#""mixed""#);
-        assert_eq!(serde_json::to_string(&ResetMode::Hard).unwrap(), r#""hard""#);
+        assert_eq!(
+            serde_json::to_string(&ResetMode::Soft).unwrap(),
+            r#""soft""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ResetMode::Mixed).unwrap(),
+            r#""mixed""#
+        );
+        assert_eq!(
+            serde_json::to_string(&ResetMode::Hard).unwrap(),
+            r#""hard""#
+        );
         let back: ResetMode = serde_json::from_str(r#""hard""#).unwrap();
         assert_eq!(back, ResetMode::Hard);
     }
@@ -1398,7 +1659,13 @@ mod tests {
         }
         let reset: Op =
             serde_json::from_str(r#"{"kind":"reset","mode":"hard","target":"def"}"#).unwrap();
-        assert!(matches!(reset, Op::Reset { mode: ResetMode::Hard, .. }));
+        assert!(matches!(
+            reset,
+            Op::Reset {
+                mode: ResetMode::Hard,
+                ..
+            }
+        ));
         let pick: Op =
             serde_json::from_str(r#"{"kind":"cherry_pick","hashes":["aa","bb"]}"#).unwrap();
         let Op::CherryPick { hashes, .. } = &pick else {
@@ -1499,7 +1766,11 @@ mod tests {
             r#"{"kind":"worktree_remove","path":"/tmp/wt","force":true}"#,
         ] {
             let op: Op = serde_json::from_str(json).unwrap();
-            assert_eq!(serde_json::to_string(&op).unwrap(), json, "round-trip: {json}");
+            assert_eq!(
+                serde_json::to_string(&op).unwrap(),
+                json,
+                "round-trip: {json}"
+            );
         }
     }
 

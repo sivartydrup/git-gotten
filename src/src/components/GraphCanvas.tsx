@@ -8,8 +8,14 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { useActivityStore, useGraphStore, useRepoStore } from "../store";
-import { paletteColor, type Graph, type Node, type Op } from "../types";
+import { useActivityStore, useBisectStore, useGraphStore, useMainTab, useRepoStore } from "../store";
+import {
+  paletteColor,
+  type BisectState,
+  type Graph,
+  type Node,
+  type Op,
+} from "../types";
 
 // ── Geometry (world units = CSS px at zoom 1) ────────────────────────────────
 
@@ -148,6 +154,8 @@ export interface RenderState {
   selected: string | null;
   hovered: string | null;
   query: string;
+  /** Optional live bisect overlay (SPEC §10.9); absent draws no overlay. */
+  bisect?: BisectState | null;
 }
 
 /**
@@ -190,6 +198,8 @@ export function renderGraph(
     hashToNode[n.hash] = n;
   }
 
+  const worldW = width / viewport.scale;
+
   ctx.setTransform(
     dpr * viewport.scale,
     0,
@@ -199,7 +209,55 @@ export function renderGraph(
     dpr * viewport.oy,
   );
 
-  const worldW = width / viewport.scale;
+  // Bisect overlay (SPEC §10.9): the suspect span between the newest `bad`
+  // row and the oldest `good` row.
+  const bisect = state.bisect;
+  const bisectMark = (hash: string): "good" | "bad" | "current" | "found" | null => {
+    if (!bisect) {
+      return null;
+    }
+    if (bisect.found === hash) {
+      return "found";
+    }
+    if (bisect.current === hash) {
+      return "current";
+    }
+    if (bisect.good.includes(hash)) {
+      return "good";
+    }
+    if (bisect.bad.includes(hash)) {
+      return "bad";
+    }
+    return null;
+  };
+  if (bisect?.active) {
+    let badTop = -1;
+    let goodBottom = -1;
+    for (const h of bisect.bad) {
+      const r = hashToNode[h]?.row ?? -1;
+      if (r > badTop) {
+        badTop = r;
+      }
+    }
+    for (const h of bisect.good) {
+      const r = hashToNode[h]?.row ?? -1;
+      if (r > goodBottom) {
+        goodBottom = r;
+      }
+    }
+    if (badTop >= 0 && goodBottom >= badTop) {
+      ctx.fillStyle = "#e05252";
+      ctx.globalAlpha = 0.1;
+      ctx.fillRect(
+        MIN_X,
+        rowY(badTop) - ROW_H / 2,
+        worldW - MIN_X * 2,
+        rowY(goodBottom) - rowY(badTop) + ROW_H,
+      );
+      ctx.globalAlpha = 1;
+    }
+  }
+
   // Truncation budget for the per-row text (approximate char width).
   const maxChars = Math.max(8, Math.floor((worldW - tx - 8) / 6.2));
 
@@ -327,6 +385,30 @@ export function renderGraph(
       ctx.fillText("HEAD", Math.max(MIN_X, x - DOT_R - 30), y - 10);
     }
 
+    // Bisect markers: an outer ring in the verdict color (the HEAD ring's
+    // geometry; hex fallbacks because a canvas cannot resolve var()).
+    const mark = bisectMark(node.hash);
+    if (mark) {
+      const color =
+        mark === "good" || mark === "found"
+          ? "#58b368"
+          : mark === "bad"
+            ? "#e05252"
+            : "#4c8bf5";
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, DOT_R + 3, 0, Math.PI * 2);
+      ctx.stroke();
+      if (mark === "found") {
+        // The culprit reads as a filled dot, not just a ring.
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(x, y, DOT_R, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
     // Hover ring.
     if (state.hovered === node.hash) {
       ctx.strokeStyle = "var(--fg, #333)";
@@ -392,6 +474,7 @@ export function GraphCanvas() {
     select,
     hover,
   } = useGraphStore();
+  const bisect = useBisectStore((s) => s.bisect);
   const { requestPreview, running } = useActivityStore();
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -415,13 +498,13 @@ export function GraphCanvas() {
   const hasCanvas = !error && !loading && !!graph && graph.nodes.length > 0;
 
   // Keep the latest render inputs in a ref for the rAF loop.
-  const stateRef = useRef({ graph, selected, hovered, query, lanes });
-  stateRef.current = { graph, selected, hovered, query, lanes };
+  const stateRef = useRef({ graph, selected, hovered, query, lanes, bisect });
+  stateRef.current = { graph, selected, hovered, query, lanes, bisect };
 
   // Redraw when anything renderable changes.
   useEffect(() => {
     dirtyRef.current = true;
-  }, [graph, selected, hovered, query, nodesCount, menu]);
+  }, [graph, selected, hovered, query, bisect, nodesCount, menu]);
 
   // Size tracking (device pixels) via ResizeObserver.
   useEffect(() => {
@@ -755,6 +838,15 @@ export function GraphCanvas() {
             label="Reset branch to here (hard) — discards changes"
             disabled={running}
             onClick={() => runMenuOp({ kind: "reset", mode: "hard", target: menuNode.hash })}
+          />
+          <div className="graph-context-sep" />
+          <MenuButton
+            label="bisect from here"
+            onClick={() => {
+              useBisectStore.getState().setDraftBad(menuNode.hash);
+              useMainTab.getState().setTab("bisect");
+              setMenu(null);
+            }}
           />
           <div className="graph-context-sep" />
           <MenuButton

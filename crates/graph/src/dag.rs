@@ -7,8 +7,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use gix::hash::ObjectId;
 use git_gotten_protocol::{RefKind, RefLabel};
+use gix::hash::ObjectId;
 
 use crate::{GraphError, RawDag, RawNode};
 
@@ -120,11 +120,7 @@ pub fn build(repo: &gix::Repository) -> Result<RawDag, GraphError> {
         let info = info.map_err(map_err)?;
         let commit = info.object().map_err(map_err)?;
 
-        let subject = commit
-            .message()
-            .map_err(map_err)?
-            .summary()
-            .to_string();
+        let subject = commit.message().map_err(map_err)?.summary().to_string();
         let author = commit.author().map_err(map_err)?.name.to_string();
         let date = u64::try_from(
             commit

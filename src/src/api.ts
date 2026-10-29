@@ -19,8 +19,11 @@ import type {
   RepoMeta,
   Status,
   StatusChanged,
+  Submodule,
   Tag,
   Worktree,
+  Stash,
+  BisectState,
 } from "./types";
 
 /**
@@ -172,6 +175,59 @@ export async function loadRebaseCommits(
     return null;
   }
   return await invoke<RebaseCommit[]>("load_rebase_commits", { repo, target });
+}
+
+/**
+ * Load the stash list of an open repository, newest first (Rust
+ * `load_stashes` command, the Stash panel, SPEC §10.6). Returns the list, or
+ * `null` outside Tauri.
+ */
+export async function loadStashes(repo: RepoId): Promise<Stash[] | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<Stash[]>("load_stashes", { repo });
+}
+
+/**
+ * Load the submodules of an open repository (Rust `load_submodules` command,
+ * the Files tab submodule section, SPEC §10.8). Returns the list, or `null`
+ * outside Tauri.
+ */
+export async function loadSubmodules(repo: RepoId): Promise<Submodule[] | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<Submodule[]>("load_submodules", { repo });
+}
+
+/**
+ * Load the bisect state of an open repository (Rust `load_bisect` command,
+ * the Bisect panel, SPEC §10.9). Returns the state, or `null` outside Tauri
+ * (the store treats `null` as the inactive state).
+ */
+export async function loadBisect(repo: RepoId): Promise<BisectState | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<BisectState>("load_bisect", { repo });
+}
+
+/**
+ * Run a bisect test command and let the core post the matching
+ * `git bisect good`/`bad` for its exit code (Rust `bisect_test` command,
+ * SPEC §10.9). This is the one Stage 11 flow that does not go through
+ * plan_op/run_op: it runs the test and the verdict in one round-trip and
+ * returns the resulting [`BisectState`], or `null` outside Tauri.
+ */
+export async function bisectTest(
+  repo: RepoId,
+  command: string,
+): Promise<BisectState | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<BisectState>("bisect_test", { repo, command });
 }
 
 /**

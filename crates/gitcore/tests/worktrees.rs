@@ -19,10 +19,7 @@ use gitcore::{GitExecutor, Repo};
 fn wt_dir(label: &str) -> PathBuf {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "gitgotten-wt-{}-{seq}-{label}",
-        std::process::id()
-    ))
+    std::env::temp_dir().join(format!("gitgotten-wt-{}-{seq}-{label}", std::process::id()))
 }
 
 /// The canonical form the read model reports for a worktree path.
@@ -50,7 +47,10 @@ fn worktrees_lists_main_and_linked_with_branch_and_head() {
     let worktrees = repo.worktrees().unwrap();
     assert_eq!(worktrees.len(), 2, "main + linked: {worktrees:?}");
 
-    let main = worktrees.iter().find(|w| w.is_main).expect("a main worktree");
+    let main = worktrees
+        .iter()
+        .find(|w| w.is_main)
+        .expect("a main worktree");
     assert_eq!(Path::new(&main.path), fx.path.as_path());
     assert_eq!(main.branch.as_deref(), Some("main"));
     assert_eq!(main.head, fx.git(&["rev-parse", "main"]));
@@ -68,13 +68,7 @@ fn worktrees_lists_main_and_linked_with_branch_and_head() {
 fn worktrees_reports_a_detached_checkout_without_a_branch() {
     let (fx, repo) = worktree_fixture("detached");
     let wt = wt_dir("detached");
-    fx.git(&[
-        "worktree",
-        "add",
-        "--detach",
-        wt.to_str().unwrap(),
-        "HEAD",
-    ]);
+    fx.git(&["worktree", "add", "--detach", wt.to_str().unwrap(), "HEAD"]);
 
     let linked = repo
         .worktrees()
@@ -136,7 +130,10 @@ async fn add_worktree_with_new_branch_creates_it_from_the_committish() {
         })
         .unwrap();
     let argv = &plan.steps[0].argv;
-    let dash_b = argv.iter().position(|a| a == "-b").expect("-b for new branch");
+    let dash_b = argv
+        .iter()
+        .position(|a| a == "-b")
+        .expect("-b for new branch");
     assert_eq!(argv[dash_b + 1], "feature");
 
     let result = GitExecutor::new()
@@ -167,7 +164,9 @@ async fn adding_a_branch_checked_out_in_two_worktrees_is_a_clean_git_error() {
         path: second.to_str().unwrap().into(),
         new_branch: None,
     };
-    let plan = repo.plan(&op).expect("the plan compiles; git enforces the rule");
+    let plan = repo
+        .plan(&op)
+        .expect("the plan compiles; git enforces the rule");
     let result = GitExecutor::new()
         .run_plan(&repo.id, &repo.path, &plan)
         .await;
@@ -177,7 +176,10 @@ async fn adding_a_branch_checked_out_in_two_worktrees_is_a_clean_git_error() {
         "the refusal must name the checkout conflict: {}",
         result.stderr
     );
-    assert!(!canonical(&second).is_dir(), "no second worktree was created");
+    assert!(
+        !canonical(&second).is_dir(),
+        "no second worktree was created"
+    );
 
     fx.git(&["worktree", "remove", first.to_str().unwrap()]);
 }
@@ -323,30 +325,29 @@ fn graph_pins_each_worktrees_checkout_with_a_worktree_label() {
 
     let graph = repo.graph().unwrap();
     let marked = |hash: String| {
-        graph
-            .nodes
-            .iter()
-            .find(|n| n.hash == hash)
-            .and_then(|n| {
-                n.refs
-                    .iter()
-                    .find(|r| r.kind == RefKind::Worktree)
-                    .map(|r| (n, r))
-            })
+        graph.nodes.iter().find(|n| n.hash == hash).and_then(|n| {
+            n.refs
+                .iter()
+                .find(|r| r.kind == RefKind::Worktree)
+                .map(|r| (n, r))
+        })
     };
 
     let main_head = fx.git(&["rev-parse", "main"]);
     let side_head = fx.git(&["rev-parse", "side"]);
 
     let (side_node, wt_label) = marked(side_head.clone()).expect("side's checkout is marked");
-    assert_eq!(wt_label.name, "side", "the label names the checked-out branch");
+    assert_eq!(
+        wt_label.name, "side",
+        "the label names the checked-out branch"
+    );
     let line_color = graph
         .lines
         .iter()
         .find(|l| {
-            l.segments
-                .iter()
-                .any(|s| s.lane == side_node.lane && s.from_row <= side_node.row && side_node.row <= s.to_row)
+            l.segments.iter().any(|s| {
+                s.lane == side_node.lane && s.from_row <= side_node.row && side_node.row <= s.to_row
+            })
         })
         .expect("the node's line")
         .color;
@@ -364,10 +365,10 @@ fn graph_pins_each_worktrees_checkout_with_a_worktree_label() {
     fx.git(&["worktree", "remove", wt.to_str().unwrap()]);
     let plain = repo.graph().unwrap();
     assert!(
-        plain.nodes.iter().all(|n| n
-            .refs
+        plain
+            .nodes
             .iter()
-            .all(|r| r.kind != RefKind::Worktree)),
+            .all(|n| n.refs.iter().all(|r| r.kind != RefKind::Worktree)),
         "a repository with only the main worktree adds no markers"
     );
 }

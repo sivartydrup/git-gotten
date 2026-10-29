@@ -22,25 +22,32 @@
 //! Stage 10 adds the worktree read ([`Repo::worktrees`]) and the per-worktree
 //! checkout markers it pins onto [`Repo::graph`] (SPEC §10.7); the add/remove
 //! planners live in [`plan`].
+//! Stage 11 adds the stash / submodule / bisect reads ([`Repo::stashes`],
+//! [`Repo::submodules`], [`Repo::bisect_state`]), the submodule badge on
+//! [`FileChange`], and the planners in [`plan`] (SPEC §10.6, §10.8, §10.9).
 //!
 //! Stage 2 implements the command layer: [`Repo::plan`] (compile an [`Op`] into a
 //! visible [`CommandPlan`]) and the executor ([`GitExecutor`] runs plans through the
 //! real git binary, serialized per repo by [`OpQueue`]).
 
+mod bisect;
 mod conflict;
 mod diff;
 mod exec;
 mod plan;
 mod show;
+mod stash;
+mod submodule;
 
-/// Shared read-model types, re-exported so `gitcore::Status` etc. read naturally.
-pub use git_gotten_protocol::{
-    Author, Branch, ChangeKind, CommandPlan, CommitDetail, ConflictFile, FileChange, FileDiff,
-    FileStat, GitStep, Graph, Hunk, Op, OpResult, Preview, RebaseCommit, RefLabel, Remote,
-    RepoMeta, RepoId, Risk, Status, Tag, Worktree,
-};
 pub use conflict::InProgressOp;
 pub use exec::{GitExecutor, OpQueue};
+/// Shared read-model types, re-exported so `gitcore::Status` etc. read naturally.
+pub use git_gotten_protocol::{
+    Author, BisectState, BisectVerdict, Branch, ChangeKind, CommandPlan, CommitDetail,
+    ConflictFile, FileChange, FileDiff, FileStat, GitStep, Graph, Hunk, Op, OpResult, Preview,
+    RebaseCommit, RefLabel, Remote, RepoId, RepoMeta, Risk, Stash, Status, Submodule, Tag,
+    Worktree,
+};
 pub use show::{numstat, patch};
 
 use std::collections::HashSet;
@@ -157,9 +164,27 @@ pub enum GitError {
     #[error("worktree '{path}' has uncommitted changes (remove with force)")]
     WorktreeDirty { path: String },
 
+    /// A stash op was requested for a list position that does not exist.
+    #[error("no such stash: stash@{{{id}}}")]
+    StashNotFound { id: u32 },
+
+    /// `git stash clear` was requested but the stash list is empty.
+    #[error("there are no stashes to drop")]
+    NoStashes,
+
+    /// No submodule is registered at the requested path.
+    #[error("no such submodule: {path}")]
+    SubmoduleNotFound { path: String },
+
+    /// A bisect verdict/test/reset was requested while no bisect is running.
+    #[error("no bisect in progress")]
+    NoBisectInProgress,
+
     /// The interactive-rebase edits do not cover exactly the commits being
     /// rebased (the todo must name every commit in `target..HEAD` once).
-    #[error("the rebase todo does not match the commits being rebased ({given} given, {expected} in range)")]
+    #[error(
+        "the rebase todo does not match the commits being rebased ({given} given, {expected} in range)"
+    )]
     RebaseTodoMismatch { expected: usize, given: usize },
 
     /// A squash/fixup was requested for the oldest rebased commit: there is no
@@ -217,9 +242,8 @@ impl Repo {
         let path = path.canonicalize().map_err(|_| GitError::NotARepository {
             path: path.to_path_buf(),
         })?;
-        let inner = gix::open(&path).map_err(|_| GitError::NotARepository {
-            path: path.clone(),
-        })?;
+        let inner =
+            gix::open(&path).map_err(|_| GitError::NotARepository { path: path.clone() })?;
         if inner.is_bare() {
             return Err(GitError::BareRepository { path: path.clone() });
         }
@@ -227,9 +251,11 @@ impl Repo {
         let workdir = inner
             .workdir()
             .ok_or_else(|| GitError::BareRepository { path: path.clone() })?;
-        let path = workdir.canonicalize().map_err(|_| GitError::NotARepository {
-            path: workdir.to_path_buf(),
-        })?;
+        let path = workdir
+            .canonicalize()
+            .map_err(|_| GitError::NotARepository {
+                path: workdir.to_path_buf(),
+            })?;
         Ok(Repo {
             id: path.to_string_lossy().into_owned(),
             path,
@@ -302,7 +328,9 @@ impl Repo {
             .changes
             .iter()
             .find(|c| c.path == path && c.kind == ChangeKind::Conflicted)
-            .ok_or_else(|| GitError::NoConflict { path: path.to_string() })?;
+            .ok_or_else(|| GitError::NoConflict {
+                path: path.to_string(),
+            })?;
         conflict::conflict_file(&self.path, path, change.binary)
     }
 
@@ -413,9 +441,11 @@ impl Repo {
                 let Some(node) = out.nodes.iter_mut().find(|n| n.hash == w.head) else {
                     continue; // stale/prunable head: not in the graph
                 };
-                if node.refs.iter().any(|r| {
-                    r.kind == git_gotten_protocol::RefKind::Worktree && r.name == name
-                }) {
+                if node
+                    .refs
+                    .iter()
+                    .any(|r| r.kind == git_gotten_protocol::RefKind::Worktree && r.name == name)
+                {
                     continue; // another worktree already marks this commit
                 }
                 let color = out
@@ -423,9 +453,7 @@ impl Repo {
                     .iter()
                     .find(|l| {
                         l.segments.iter().any(|s| {
-                            s.lane == node.lane
-                                && s.from_row <= node.row
-                                && node.row <= s.to_row
+                            s.lane == node.lane && s.from_row <= node.row && node.row <= s.to_row
                         })
                     })
                     .map(|l| l.color)
@@ -451,7 +479,9 @@ impl Repo {
         let oid = commit.id().detach();
 
         let message = String::from_utf8_lossy(
-            commit.message_raw().map_err(|e| GitError::Object(e.to_string()))?,
+            commit
+                .message_raw()
+                .map_err(|e| GitError::Object(e.to_string()))?,
         )
         .trim_end()
         .to_string();
@@ -543,7 +573,11 @@ impl Repo {
             for reference in iter {
                 let reference = reference.map_err(GitError::Gix)?;
                 let full = String::from_utf8_lossy(reference.name().as_bstr()).into_owned();
-                let prefix = if is_remote { "refs/remotes/" } else { "refs/heads/" };
+                let prefix = if is_remote {
+                    "refs/remotes/"
+                } else {
+                    "refs/heads/"
+                };
                 let Some(name) = full.strip_prefix(prefix) else {
                     continue; // not a branch under the expected namespace
                 };
@@ -551,7 +585,9 @@ impl Repo {
                     continue; // symbolic (origin/HEAD): no object, not a branch
                 };
                 let is_current = !is_remote && current.as_deref() == Some(name);
-                let upstream = (!is_remote).then(|| upstream_of(&self.inner, name)).flatten();
+                let upstream = (!is_remote)
+                    .then(|| upstream_of(&self.inner, name))
+                    .flatten();
                 let (ahead, behind) = match (&upstream, is_current) {
                     (Some(up), _) if up.oid != oid => ahead_behind(&self.inner, oid, up.oid)?,
                     _ => (0, 0),
@@ -568,7 +604,11 @@ impl Repo {
             }
         }
         // The checked-out branch first, then by display name.
-        out.sort_by(|a, b| b.is_current.cmp(&a.is_current).then_with(|| a.name.cmp(&b.name)));
+        out.sort_by(|a, b| {
+            b.is_current
+                .cmp(&a.is_current)
+                .then_with(|| a.name.cmp(&b.name))
+        });
         Ok(out)
     }
 
@@ -586,7 +626,12 @@ impl Repo {
                 .try_value::<String>(&format!("remote.{name}.pushurl"))
                 .map_err(|e| GitError::Object(e.to_string()))?;
             let url = fetch.clone().or(push.clone()).unwrap_or_default();
-            out.push(Remote { name, url, fetch, push });
+            out.push(Remote {
+                name,
+                url,
+                fetch,
+                push,
+            });
         }
         Ok(out)
     }
@@ -693,6 +738,25 @@ impl Repo {
         Ok(worktrees)
     }
 
+    /// Saved snapshots of uncommitted changes, newest first (IPC `load_stashes`,
+    /// SPEC §10.6): the list position is the stash's `id`.
+    pub fn stashes(&self) -> Result<Vec<Stash>, GitError> {
+        stash::list(&self.path)
+    }
+
+    /// Registered submodules and their checkout state — recorded gitlink vs
+    /// checked-out HEAD, initialized/differs (IPC `load_submodules`, SPEC §10.8).
+    pub fn submodules(&self) -> Result<Vec<Submodule>, GitError> {
+        submodule::list(&self.path)
+    }
+
+    /// The live bisect session (IPC `load_bisect`, SPEC §10.9): candidate under
+    /// test, known good/bad ends, untested candidate count, the culprit once
+    /// converged, and the raw replayable log. `active: false` outside a session.
+    pub fn bisect_state(&self) -> Result<BisectState, GitError> {
+        bisect::state(&self.path)
+    }
+
     /// Find a commit by its (short or full) hex object id.
     ///
     /// Any failure to read the object (missing, not a commit, corrupt) is
@@ -700,11 +764,12 @@ impl Repo {
     /// read the same.
     fn commit_at(&self, hash: &str) -> Result<gix::Commit<'_>, GitError> {
         let hash = hash.trim();
-        let oid: ObjectId =
-            hash.parse().map_err(|_| GitError::NoCommit { hash: hash.to_string() })?;
-        self.inner
-            .find_commit(oid)
-            .map_err(|_| GitError::NoCommit { hash: hash.to_string() })
+        let oid: ObjectId = hash.parse().map_err(|_| GitError::NoCommit {
+            hash: hash.to_string(),
+        })?;
+        self.inner.find_commit(oid).map_err(|_| GitError::NoCommit {
+            hash: hash.to_string(),
+        })
     }
 
     /// Every ref pointing at `oid` (branches, remote-tracking, tags — annotated
@@ -751,7 +816,10 @@ pub(crate) fn upstream_of(repo: &gix::Repository, branch: &str) -> Option<Upstre
         .try_value::<String>(&format!("branch.{branch}.merge"))
         .ok()
         .flatten()?;
-    let merge = merge.strip_prefix("refs/heads/").map(String::from).unwrap_or(merge);
+    let merge = merge
+        .strip_prefix("refs/heads/")
+        .map(String::from)
+        .unwrap_or(merge);
     let name = format!("{remote}/{merge}");
     let refname = format!("refs/remotes/{name}");
     let oid = match repo.find_reference(&refname).ok()?.target() {
@@ -811,18 +879,21 @@ fn sniff_binary(
 ) -> bool {
     const LIMIT: usize = 8 * 1024;
 
-    if let Some(path) = worktree_file && path.is_file()
-        && let Ok(file) = std::fs::File::open(path) {
-            let mut buf = Vec::with_capacity(LIMIT + 1);
-            let _ = file.take(LIMIT as u64).read_to_end(&mut buf);
-            return buf.contains(&0);
-        }
+    if let Some(path) = worktree_file
+        && path.is_file()
+        && let Ok(file) = std::fs::File::open(path)
+    {
+        let mut buf = Vec::with_capacity(LIMIT + 1);
+        let _ = file.take(LIMIT as u64).read_to_end(&mut buf);
+        return buf.contains(&0);
+    }
 
     if let Some(oid) = blob
         && let Ok(object) = repo.find_object(oid)
-            && object.kind == gix::objs::Kind::Blob {
-                return object.data.iter().take(LIMIT).any(|b| *b == 0);
-            }
+        && object.kind == gix::objs::Kind::Blob
+    {
+        return object.data.iter().take(LIMIT).any(|b| *b == 0);
+    }
 
     false
 }
@@ -839,7 +910,13 @@ fn push_change(
 ) {
     let worktree_file = workdir.map(|wd| wd.join(&path));
     let binary = sniff_binary(repo, worktree_file.as_deref(), blob);
-    changes.push(FileChange { path, kind, staged, binary });
+    changes.push(FileChange {
+        path,
+        kind,
+        staged,
+        binary,
+        submodule: false,
+    });
 }
 
 /// Map the `gix` repository state to the shared [`Status`] model.
@@ -874,8 +951,7 @@ fn compute_status(repo: &gix::Repository) -> Result<Status, GitError> {
         .tree_index_track_renames(gix::status::tree_index::TrackRenames::AsConfigured);
     if head_id.is_none() {
         // Unborn HEAD (fresh `git init`): diff the index against the empty tree.
-        platform =
-            platform.head_tree(ObjectId::empty_tree(repo.object_hash()));
+        platform = platform.head_tree(ObjectId::empty_tree(repo.object_hash()));
     }
 
     let workdir = repo.workdir();
@@ -901,7 +977,9 @@ fn compute_status(repo: &gix::Repository) -> Result<Status, GitError> {
                         path_string(location),
                         Some(ObjectId::from(&**id)),
                     ),
-                    gix::diff::index::Change::Rewrite { location, id, copy, .. } => (
+                    gix::diff::index::Change::Rewrite {
+                        location, id, copy, ..
+                    } => (
                         if *copy {
                             ChangeKind::Modified
                         } else {
@@ -946,6 +1024,13 @@ fn compute_status(repo: &gix::Repository) -> Result<Status, GitError> {
         }
     }
 
+    // Submodule pointer drift is a change like any other, badged for the Files
+    // panel (SPEC §10.8); the gix status may skip gitlink entries, so the
+    // submodule read is the authority for both the flag and the drift entry.
+    if let Some(workdir) = repo.workdir() {
+        submodule::tag_changes(workdir, &mut changes)?;
+    }
+
     // Deterministic order: by path, staged before unstaged within a path.
     changes.sort_by(|a, b| a.path.cmp(&b.path).then(b.staged.cmp(&a.staged)));
 
@@ -972,20 +1057,24 @@ fn compute_status(repo: &gix::Repository) -> Result<Status, GitError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use git_gotten_testutil as testutil;
     use git_gotten_protocol::ResetMode;
+    use git_gotten_testutil as testutil;
 
     // ── Error rendering ──────────────────────────────────────────────────────
 
     #[test]
     fn not_a_repository_renders_the_path() {
-        let e = GitError::NotARepository { path: "/nope".into() };
+        let e = GitError::NotARepository {
+            path: "/nope".into(),
+        };
         assert_eq!(e.to_string(), "not a git repository: /nope");
     }
 
     #[test]
     fn bare_repository_renders_the_path() {
-        let e = GitError::BareRepository { path: "/nope".into() };
+        let e = GitError::BareRepository {
+            path: "/nope".into(),
+        };
         assert_eq!(e.to_string(), "not a working-tree repository: /nope");
     }
 
@@ -995,7 +1084,10 @@ mod tests {
             exit: 1,
             detail: "nothing to commit".into(),
         };
-        assert_eq!(e.to_string(), "git command failed (exit 1): nothing to commit");
+        assert_eq!(
+            e.to_string(),
+            "git command failed (exit 1): nothing to commit"
+        );
     }
 
     #[test]
@@ -1007,9 +1099,23 @@ mod tests {
 
     #[test]
     fn error_serializes_as_its_display_string() {
-        let e = GitError::NotARepository { path: "/nope".into() };
+        let e = GitError::NotARepository {
+            path: "/nope".into(),
+        };
         let json = serde_json::to_string(&e).unwrap();
         assert_eq!(json, "\"not a git repository: /nope\"");
+    }
+
+    #[test]
+    fn stage11_errors_render_the_missing_work() {
+        let e = GitError::StashNotFound { id: 3 };
+        assert_eq!(e.to_string(), "no such stash: stash@{3}");
+        let e = GitError::SubmoduleNotFound {
+            path: "nope".into(),
+        };
+        assert_eq!(e.to_string(), "no such submodule: nope");
+        let e = GitError::NoBisectInProgress;
+        assert_eq!(e.to_string(), "no bisect in progress");
     }
 
     // ── open ─────────────────────────────────────────────────────────────────
@@ -1044,7 +1150,10 @@ mod tests {
         fx.commit_file("a.txt", "x\n", "c1");
         let remote = fx.add_origin("main");
         let err = Repo::open(&remote).unwrap_err();
-        assert!(matches!(err, GitError::BareRepository { .. }), "got {err:?}");
+        assert!(
+            matches!(err, GitError::BareRepository { .. }),
+            "got {err:?}"
+        );
     }
 
     // ── status ───────────────────────────────────────────────────────────────
@@ -1204,8 +1313,7 @@ mod tests {
         fx.git(&["checkout", "main"]);
         fx.commit_file_at("d.txt", "d\n", "c4", 1_300);
         fx.add_origin("main"); // origin/main = c4
-        let (code, _o, err) =
-            fx.git_run(&["merge", "--no-ff", "feature", "-m", "merge feature"]);
+        let (code, _o, err) = fx.git_run(&["merge", "--no-ff", "feature", "-m", "merge feature"]);
         assert_eq!(code, 0, "merge should be clean: {err}");
         fx.git(&["tag", "v1", &fx.git(&["rev-parse", "main~2"])]);
         let repo = Repo::open(&fx.path).unwrap();
@@ -1222,18 +1330,25 @@ mod tests {
         assert_eq!(g.nodes[0].hash, c5, "the merge is the newest row");
         assert!(g.nodes[0].is_head);
         assert!(
-            g.nodes[0].refs.iter().any(|r| {
-                r.name == "main" && r.kind == git_gotten_protocol::RefKind::Branch
-            }),
+            g.nodes[0]
+                .refs
+                .iter()
+                .any(|r| { r.name == "main" && r.kind == git_gotten_protocol::RefKind::Branch }),
             "the merge carries main: {:?}",
             g.nodes[0].refs
         );
-        assert_eq!(g.edges.len(), 5, "5 commits, 4 links + the merge's 2nd parent");
+        assert_eq!(
+            g.edges.len(),
+            5,
+            "5 commits, 4 links + the merge's 2nd parent"
+        );
 
         let c1 = fx.git(&["rev-parse", "main~2"]);
         let n1 = g.nodes.iter().find(|n| n.hash == c1).unwrap();
         assert!(
-            n1.refs.iter().any(|r| r.name == "v1" && r.kind == git_gotten_protocol::RefKind::Tag),
+            n1.refs
+                .iter()
+                .any(|r| r.name == "v1" && r.kind == git_gotten_protocol::RefKind::Tag),
             "c1 carries tag v1: {:?}",
             n1.refs
         );
@@ -1306,7 +1421,9 @@ mod tests {
 
         assert!(d.parents.is_empty());
         assert!(
-            d.refs.iter().any(|r| r.name == "v1" && r.kind == git_gotten_protocol::RefKind::Tag),
+            d.refs
+                .iter()
+                .any(|r| r.name == "v1" && r.kind == git_gotten_protocol::RefKind::Tag),
             "root carries v1: {:?}",
             d.refs
         );
@@ -1346,7 +1463,10 @@ mod tests {
 
         let d = repo.commit_detail(&c2).unwrap();
         let stat_paths: Vec<&str> = d.stat.iter().map(|s| s.path.as_str()).collect();
-        assert!(stat_paths.contains(&"new.txt"), "rename resolves to the new name: {stat_paths:?}");
+        assert!(
+            stat_paths.contains(&"new.txt"),
+            "rename resolves to the new name: {stat_paths:?}"
+        );
         assert!(stat_paths.contains(&"img.bin"), "{stat_paths:?}");
         let img = d.stat.iter().find(|s| s.path == "img.bin").unwrap();
         assert!(img.binary);
@@ -1358,7 +1478,11 @@ mod tests {
         assert!(img.binary);
         let renamed = d.diff.iter().find(|f| f.path == "new.txt").unwrap();
         assert!(!renamed.binary);
-        assert!(renamed.patch.contains("rename from old.txt"), "got {:?}", renamed.patch);
+        assert!(
+            renamed.patch.contains("rename from old.txt"),
+            "got {:?}",
+            renamed.patch
+        );
     }
 
     #[test]
@@ -1366,12 +1490,18 @@ mod tests {
         let (_fx, repo) = graph_fixture();
         let missing = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
         assert!(
-            matches!(repo.commit_detail(missing).unwrap_err(), GitError::NoCommit { .. }),
+            matches!(
+                repo.commit_detail(missing).unwrap_err(),
+                GitError::NoCommit { .. }
+            ),
             "got {:?}",
             repo.commit_detail(missing).unwrap_err()
         );
         assert!(
-            matches!(repo.commit_detail("not-a-hash").unwrap_err(), GitError::NoCommit { .. }),
+            matches!(
+                repo.commit_detail("not-a-hash").unwrap_err(),
+                GitError::NoCommit { .. }
+            ),
             "got {:?}",
             repo.commit_detail("not-a-hash").unwrap_err()
         );
@@ -1474,7 +1604,10 @@ mod tests {
         let executor = GitExecutor::new();
         let result = executor.run_plan(&repo.id, &repo.path, &plan).await;
         assert!(result.ok, "stderr: {}", result.stderr);
-        assert_ne!(fx.git(&["rev-parse", "HEAD"]), fx.git(&["rev-parse", "main~1"]));
+        assert_ne!(
+            fx.git(&["rev-parse", "HEAD"]),
+            fx.git(&["rev-parse", "main~1"])
+        );
         assert_eq!(
             std::fs::read_to_string(fx.path.join("b.txt")).unwrap(),
             "two\n"

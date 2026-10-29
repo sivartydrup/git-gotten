@@ -31,7 +31,9 @@ fn refs_fixture() -> (testutil::Fixture, Repo) {
 /// Plan an op, run it through the executor, and expect success.
 async fn run(repo: &Repo, fx: &testutil::Fixture, op: Op) -> gitcore::OpResult {
     let plan = repo.plan(&op).expect("plan must compile");
-    let result = GitExecutor::new().run_plan(&repo.id, &repo.path, &plan).await;
+    let result = GitExecutor::new()
+        .run_plan(&repo.id, &repo.path, &plan)
+        .await;
     assert!(result.ok, "op must succeed, stderr: {}", result.stderr);
     let _ = fx; // fixtures are the assertion vehicle; kept for call-site symmetry
     result
@@ -90,10 +92,7 @@ fn assert_remote_lacks_ref(dir: &str, refname: &str) {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.is_empty(),
-        "{dir} must lack {refname}: {stdout}"
-    );
+    assert!(stdout.is_empty(), "{dir} must lack {refname}: {stdout}");
 }
 
 /// Assert a ref no longer resolves in the fixture. Newer gits exit 128 ("fatal:
@@ -106,7 +105,10 @@ fn assert_ref_gone(fx: &testutil::Fixture, refname: &str) {
 /// Assert a remote is gone (any non-zero: `git remote get-url` fatals on a missing remote).
 fn assert_remote_gone(fx: &testutil::Fixture, name: &str) {
     let (code, _, stderr) = fx.git_run(&["remote", "get-url", name]);
-    assert!(code != 0, "remote {name} must be gone (exit {code}): {stderr}");
+    assert!(
+        code != 0,
+        "remote {name} must be gone (exit {code}): {stderr}"
+    );
 }
 
 // ── read model: branches ────────────────────────────────────────────────────
@@ -148,10 +150,7 @@ fn branches_lists_local_and_remote_with_tracking_state() {
 fn branches_are_sorted_current_first_then_alphabetical() {
     let (_fx, repo) = refs_fixture();
     let branches = repo.branches().unwrap();
-    let names: Vec<&str> = branches
-        .iter()
-        .map(|b| b.name.as_str())
-        .collect();
+    let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
     assert_eq!(names, vec!["main", "origin/main", "side"]);
 }
 
@@ -303,7 +302,10 @@ fn plan_branch_delete_rejects_an_unknown_branch() {
             force: false,
         })
         .unwrap_err();
-    assert!(matches!(err, gitcore::GitError::UnknownBranch { .. }), "got {err:?}");
+    assert!(
+        matches!(err, gitcore::GitError::UnknownBranch { .. }),
+        "got {err:?}"
+    );
 }
 
 #[test]
@@ -330,7 +332,10 @@ fn plan_branch_rename_rejects_invalid_or_taken_names() {
             new_name: "a/../b".into(),
         })
         .unwrap_err();
-    assert!(matches!(err, gitcore::GitError::BadRefName { .. }), "got {err:?}");
+    assert!(
+        matches!(err, gitcore::GitError::BadRefName { .. }),
+        "got {err:?}"
+    );
     // Taken: `main` already exists.
     let err = repo
         .plan(&Op::BranchRename {
@@ -349,7 +354,10 @@ fn plan_branch_rename_rejects_invalid_or_taken_names() {
             new_name: "x".into(),
         })
         .unwrap_err();
-    assert!(matches!(err, gitcore::GitError::UnknownBranch { .. }), "got {err:?}");
+    assert!(
+        matches!(err, gitcore::GitError::UnknownBranch { .. }),
+        "got {err:?}"
+    );
 }
 
 #[test]
@@ -362,7 +370,10 @@ fn plan_branch_set_upstream() {
             name: "main".into(),
         })
         .unwrap();
-    assert_eq!(plan.display, "git branch side --set-upstream-to=origin/main");
+    assert_eq!(
+        plan.display,
+        "git branch side --set-upstream-to=origin/main"
+    );
     assert_eq!(plan.steps[0].risk, Risk::Mutating);
     let _ = fx;
 }
@@ -408,7 +419,10 @@ fn plan_remote_add() {
             url: "git@host:org/repo.git".into(),
         })
         .unwrap();
-    assert_eq!(plan.display, "git remote add upstream git@host:org/repo.git");
+    assert_eq!(
+        plan.display,
+        "git remote add upstream git@host:org/repo.git"
+    );
     assert_eq!(plan.steps[0].risk, Risk::Mutating);
     let _ = fx;
 }
@@ -432,7 +446,10 @@ fn plan_remote_add_rejects_duplicates_and_bad_names() {
             url: "x".into(),
         })
         .unwrap_err();
-    assert!(matches!(err, gitcore::GitError::BadRefName { .. }), "got {err:?}");
+    assert!(
+        matches!(err, gitcore::GitError::BadRefName { .. }),
+        "got {err:?}"
+    );
 }
 
 #[test]
@@ -461,7 +478,10 @@ fn plan_remote_remove_rejects_an_unknown_remote() {
             name: "nope".into(),
         })
         .unwrap_err();
-    assert!(matches!(err, gitcore::GitError::UnknownRemote { .. }), "got {err:?}");
+    assert!(
+        matches!(err, gitcore::GitError::UnknownRemote { .. }),
+        "got {err:?}"
+    );
 }
 
 #[test]
@@ -555,7 +575,10 @@ fn plan_tag_create_rejects_bad_names_and_unknown_targets() {
             message: None,
         })
         .unwrap_err();
-    assert!(matches!(err, gitcore::GitError::BadRefName { .. }), "got {err:?}");
+    assert!(
+        matches!(err, gitcore::GitError::BadRefName { .. }),
+        "got {err:?}"
+    );
     let err = repo
         .plan(&Op::TagCreate {
             name: "v9".into(),
@@ -564,7 +587,10 @@ fn plan_tag_create_rejects_bad_names_and_unknown_targets() {
             message: None,
         })
         .unwrap_err();
-    assert!(matches!(err, gitcore::GitError::NoCommit { .. }), "got {err:?}");
+    assert!(
+        matches!(err, gitcore::GitError::NoCommit { .. }),
+        "got {err:?}"
+    );
 }
 
 #[test]
@@ -590,7 +616,10 @@ fn plan_tag_checkout_rejects_an_unknown_tag() {
             force: false,
         })
         .unwrap_err();
-    assert!(matches!(err, gitcore::GitError::UnknownTag { .. }), "got {err:?}");
+    assert!(
+        matches!(err, gitcore::GitError::UnknownTag { .. }),
+        "got {err:?}"
+    );
 }
 
 #[test]
@@ -643,11 +672,7 @@ fn plan_tag_push_force_is_dangerous() {
         })
         .unwrap();
     assert_eq!(plan.steps[0].risk, Risk::Dangerous);
-    assert!(plan
-        .preview
-        .as_ref()
-        .unwrap()
-        .requires_type_to_confirm);
+    assert!(plan.preview.as_ref().unwrap().requires_type_to_confirm);
     let _ = fx;
 }
 
@@ -706,10 +731,11 @@ async fn branch_delete_remote_removes_the_remote_branch() {
     )
     .await;
     assert_remote_has_ref(&remote_dir, "refs/heads/side");
-    assert!(fx
-        .git_run(&["rev-parse", "--verify", "refs/remotes/origin/side"])
-        .0
-        == 0);
+    assert!(
+        fx.git_run(&["rev-parse", "--verify", "refs/remotes/origin/side"])
+            .0
+            == 0
+    );
 
     run(
         &repo,
@@ -761,10 +787,7 @@ async fn branch_rename_of_the_checked_out_branch_keeps_head() {
         },
     )
     .await;
-    assert_eq!(
-        fx.git(&["rev-parse", "--abbrev-ref", "HEAD"]),
-        "primary"
-    );
+    assert_eq!(fx.git(&["rev-parse", "--abbrev-ref", "HEAD"]), "primary");
 }
 
 #[tokio::test]
@@ -782,10 +805,7 @@ async fn branch_push_creates_the_remote_branch_and_upstream() {
     )
     .await;
     // The remote gained the branch.
-    let remote_dir = fx
-        .git(&["remote", "get-url", "origin"])
-        .trim()
-        .to_string();
+    let remote_dir = fx.git(&["remote", "get-url", "origin"]).trim().to_string();
     assert_remote_has_ref(&remote_dir, "refs/heads/side");
     // The local branch now tracks it.
     assert_eq!(fx.git(&["config", "branch.side.remote"]), "origin");
@@ -810,10 +830,7 @@ async fn branch_set_upstream_writes_the_config() {
     )
     .await;
     assert_eq!(fx.git(&["config", "branch.side.remote"]), "origin");
-    assert_eq!(
-        fx.git(&["config", "branch.side.merge"]),
-        "refs/heads/main"
-    );
+    assert_eq!(fx.git(&["config", "branch.side.merge"]), "refs/heads/main");
 
     // And unsetting removes it.
     run(
@@ -835,10 +852,7 @@ async fn branch_set_upstream_writes_the_config() {
 #[tokio::test]
 async fn remote_add_then_remove_round_trips() {
     let (fx, repo) = refs_fixture();
-    let remote_dir = fx
-        .git(&["remote", "get-url", "origin"])
-        .trim()
-        .to_string();
+    let remote_dir = fx.git(&["remote", "get-url", "origin"]).trim().to_string();
     run(
         &repo,
         &fx,
@@ -885,10 +899,7 @@ async fn remote_remove_deletes_the_tracking_refs() {
 #[tokio::test]
 async fn remote_fetch_updates_the_tracking_branch() {
     let (fx, repo) = refs_fixture();
-    let remote_dir = fx
-        .git(&["remote", "get-url", "origin"])
-        .trim()
-        .to_string();
+    let remote_dir = fx.git(&["remote", "get-url", "origin"]).trim().to_string();
     // A commit lands on the remote side: local is behind 1.
     remote_side_commit(&fx, std::path::Path::new(&remote_dir));
 
@@ -941,9 +952,7 @@ async fn tag_create_annotated_makes_a_tag_object() {
     );
 
     let tags = repo.tags().unwrap();
-    assert!(tags
-        .iter()
-        .any(|t| t.name == "v3" && t.annotated));
+    assert!(tags.iter().any(|t| t.name == "v3" && t.annotated));
 }
 
 #[tokio::test]
@@ -993,10 +1002,7 @@ async fn tag_checkout_detaches_head() {
 #[tokio::test]
 async fn tag_delete_local_and_remote() {
     let (fx, repo) = refs_fixture();
-    let remote_dir = fx
-        .git(&["remote", "get-url", "origin"])
-        .trim()
-        .to_string();
+    let remote_dir = fx.git(&["remote", "get-url", "origin"]).trim().to_string();
     // Push v1 to the remote so the remote delete has something to remove.
     run(
         &repo,
@@ -1019,10 +1025,7 @@ async fn tag_delete_local_and_remote() {
         },
     )
     .await;
-    assert!(fx
-        .git(&["tag", "-l"])
-        .split('\n')
-        .all(|l| l.trim() != "v1"));
+    assert!(fx.git(&["tag", "-l"]).split('\n').all(|l| l.trim() != "v1"));
     // The remote copy survives the local delete.
     assert_remote_has_ref(&remote_dir, "refs/tags/v1");
 
@@ -1041,10 +1044,7 @@ async fn tag_delete_local_and_remote() {
 #[tokio::test]
 async fn tag_push_reaches_the_remote() {
     let (fx, repo) = refs_fixture();
-    let remote_dir = fx
-        .git(&["remote", "get-url", "origin"])
-        .trim()
-        .to_string();
+    let remote_dir = fx.git(&["remote", "get-url", "origin"]).trim().to_string();
     run(
         &repo,
         &fx,
@@ -1068,8 +1068,5 @@ fn status_carries_the_head_oid() {
         st.head.as_deref(),
         Some(fx.git(&["rev-parse", "HEAD"]).trim())
     );
-    assert!(
-        st.detached_head.is_none(),
-        "a branch is checked out"
-    );
+    assert!(st.detached_head.is_none(), "a branch is checked out");
 }

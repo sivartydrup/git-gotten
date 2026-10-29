@@ -1,5 +1,13 @@
-import { useConflictStore, useMainTab, useRepoStore, useStagingStore } from "../store";
-import type { ChangeKind, FileChange } from "../types";
+import { useState } from "react";
+import {
+  useActivityStore,
+  useConflictStore,
+  useMainTab,
+  useRepoStore,
+  useStagingStore,
+  useSubmodulesStore,
+} from "../store";
+import type { ChangeKind, FileChange, Op } from "../types";
 
 /** Git-status-style short labels for each change kind. */
 const KIND_LABEL: Record<ChangeKind, string> = {
@@ -30,6 +38,7 @@ function FileRow({
       </span>
       <span className="change-path">{change.path}</span>
       {change.binary && <span className="badge binary">binary</span>}
+      {change.submodule && <span className="badge submodule">submodule</span>}
     </li>
   );
 }
@@ -49,6 +58,84 @@ function Group({
         {title} <span className="count">({count})</span>
       </h3>
       <ul className="changes">{children}</ul>
+    </div>
+  );
+}
+
+/**
+ * The submodule section of the Files panel (SPEC §10.8): name, checkout path,
+ * url, `not initialized` / `pointer moved` badges, plus init and update (an
+ * optional pinned commit straight from the section's input). Renders nothing
+ * when the repo has no submodules.
+ */
+function SubmodulesSection() {
+  const { submodules, loading, error } = useSubmodulesStore();
+  const activeId = useRepoStore((s) => s.activeId);
+  const { requestPreview, running } = useActivityStore();
+  const [commit, setCommit] = useState("");
+
+  if (submodules.length === 0 && !loading && !error) {
+    return null;
+  }
+
+  const act = (op: Op) => {
+    if (activeId) {
+      void requestPreview(activeId, op);
+    }
+  };
+
+  return (
+    <div className="files-group submodules">
+      <div className="refs-head">
+        <h3>
+          Submodules <span className="count">({submodules.length})</span>
+        </h3>
+        <input
+          className="dialog-input submodule-commit"
+          placeholder="check out a specific commit (optional)"
+          value={commit}
+          onChange={(e) => setCommit(e.target.value)}
+        />
+      </div>
+      {error && <p className="muted">Failed to load submodules: {error}</p>}
+      <ul className="refs-list">
+        {submodules.map((m) => (
+          <li key={m.path} className="refs-row">
+            <span className="refs-name">{m.name}</span>
+            <code className="refs-path" title={m.url}>
+              {m.path}
+            </code>
+            {!m.initialized && <span className="badge">not initialized</span>}
+            {m.differs && <span className="badge">pointer moved</span>}
+            <span className="row-actions">
+              {!m.initialized && (
+                <button
+                  type="button"
+                  className="btn row-btn"
+                  disabled={running}
+                  onClick={() => act({ kind: "submodule_init", path: m.path })}
+                >
+                  Init
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn row-btn"
+                disabled={running}
+                onClick={() =>
+                  act({
+                    kind: "submodule_update",
+                    path: m.path,
+                    commit: commit.trim() || null,
+                  })
+                }
+              >
+                Update
+              </button>
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -134,6 +221,7 @@ export function FilesPanel() {
       {renderGroup("Staged", staged)}
       {renderGroup("Changes", modified)}
       {renderGroup("Untracked", untracked)}
+      <SubmodulesSection />
     </aside>
   );
 }

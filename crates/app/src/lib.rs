@@ -15,6 +15,11 @@
 //! `run_op` (merge/rebase/cherry-pick) carries the unmerged file list in the
 //! [`OpResult`] and the activity-log entry, so the web can route to the
 //! conflict view.
+//!
+//! Stage 11 adds the stash / submodule / bisect commands (SPEC §10.6, §10.8,
+//! §10.9): the `load_stashes` / `load_submodules` / `load_bisect` reads, and
+//! `bisect_test`, which runs the test command and the resulting
+//! `git bisect good|bad` verdict as two fully planned, logged steps.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
@@ -23,8 +28,9 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use git_gotten_protocol::{
-    Branch, CommandPlan, CommitDetail, ConflictFile, FileDiff, Graph, LogEntry, Op, OpResult,
-    OpStarted, RebaseCommit, Remote, RepoId, RepoMeta, Risk, Status, StatusChanged, Tag, Worktree,
+    BisectState, BisectVerdict, Branch, CommandPlan, CommitDetail, ConflictFile, FileDiff, Graph,
+    LogEntry, Op, OpResult, OpStarted, RebaseCommit, Remote, RepoId, RepoMeta, Risk, Stash, Status,
+    StatusChanged, Submodule, Tag, Worktree,
 };
 use gitcore::{GitError, GitExecutor};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
@@ -65,9 +71,7 @@ impl RepoRegistry {
 
     /// Insert (or replace) a repository in the registry.
     pub fn insert(&self, repo: gitcore::Repo) {
-        self.repos
-            .lock()
-            .insert(repo.id.clone(), repo);
+        self.repos.lock().insert(repo.id.clone(), repo);
     }
 
     /// Re-derive a repository's live status, or `None` if it is not open.
@@ -143,11 +147,10 @@ impl Backend {
     /// just without live updates.
     pub fn new() -> (Self, mpsc::Receiver<notify::Result<Event>>) {
         let (event_tx, event_rx) = mpsc::channel();
-        let watcher =
-            notify::recommended_watcher(move |res| {
-                let _ = event_tx.send(res);
-            })
-            .ok();
+        let watcher = notify::recommended_watcher(move |res| {
+            let _ = event_tx.send(res);
+        })
+        .ok();
         (
             Self {
                 registry: RepoRegistry::new(),
@@ -257,6 +260,33 @@ impl Backend {
         Ok(repo.worktrees()?)
     }
 
+    /// The stashes of an open repository (IPC `load_stashes`, SPEC §10.6).
+    pub fn load_stashes(&self, id: &str) -> Result<Vec<Stash>, AppError> {
+        let repos = self.registry.lock_repos();
+        let repo = repos
+            .get(id)
+            .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
+        Ok(repo.stashes()?)
+    }
+
+    /// The submodules of an open repository (IPC `load_submodules`, SPEC §10.8).
+    pub fn load_submodules(&self, id: &str) -> Result<Vec<Submodule>, AppError> {
+        let repos = self.registry.lock_repos();
+        let repo = repos
+            .get(id)
+            .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
+        Ok(repo.submodules()?)
+    }
+
+    /// The live bisect session of an open repository (IPC `load_bisect`, SPEC §10.9).
+    pub fn load_bisect(&self, id: &str) -> Result<BisectState, AppError> {
+        let repos = self.registry.lock_repos();
+        let repo = repos
+            .get(id)
+            .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
+        Ok(repo.bisect_state()?)
+    }
+
     /// Commits an interactive rebase onto `target` would rewrite (IPC
     /// `load_rebase_commits`, the RebaseDialog list, SPEC §10.4).
     pub fn rebase_commits(&self, id: &str, target: &str) -> Result<Vec<RebaseCommit>, AppError> {
@@ -302,10 +332,7 @@ impl Backend {
         // If the op stopped on a conflict (a merge/rebase/cherry-pick), carry
         // the unmerged file list in the result — the web routes it to the
         // conflict view (SPEC §10.5). A clean op yields an empty list.
-        result.conflicts = self
-            .registry
-            .unmerged_files(&repo_id)
-            .unwrap_or_default();
+        result.conflicts = self.registry.unmerged_files(&repo_id).unwrap_or_default();
         self.log.record(id, &result);
         Ok(result)
     }
@@ -451,11 +478,7 @@ fn load_commit(
 
 /// The working-tree diff of one file (IPC `load_diff`, the staging UI, SPEC §10.2).
 #[tauri::command]
-fn load_diff(
-    repo: RepoId,
-    path: String,
-    state: State<'_, Backend>,
-) -> Result<FileDiff, AppError> {
+fn load_diff(repo: RepoId, path: String, state: State<'_, Backend>) -> Result<FileDiff, AppError> {
     state.load_diff(&repo, &path)
 }
 /// The 3-way view of one unmerged file (IPC `load_conflict`, SPEC §10.5).
@@ -502,6 +525,48 @@ fn load_rebase_commits(
     state.rebase_commits(&repo, &target)
 }
 
+/// The stashes of an open repository (IPC `load_stashes`, SPEC §10.6).
+#[tauri::command]
+fn load_stashes(repo: RepoId, state: State<'_, Backend>) -> Result<Vec<Stash>, AppError> {
+    state.load_stashes(&repo)
+}
+
+/// The submodules of an open repository (IPC `load_submodules`, SPEC §10.8).
+#[tauri::command]
+fn load_submodules(repo: RepoId, state: State<'_, Backend>) -> Result<Vec<Submodule>, AppError> {
+    state.load_submodules(&repo)
+}
+
+/// The live bisect session of an open repository (IPC `load_bisect`, SPEC §10.9).
+#[tauri::command]
+fn load_bisect(repo: RepoId, state: State<'_, Backend>) -> Result<BisectState, AppError> {
+    state.load_bisect(&repo)
+}
+
+/// Run the bisect test command against the checked-out candidate and apply
+/// the resulting verdict (IPC `bisect_test`, SPEC §10.9). Both steps run as
+/// fully planned, evented, activity-logged ops — the transparency contract
+/// holds for each: first the literal test argv (`GitStep::program`, no
+/// shell), then `git bisect good|bad` decided by the test's exit code
+/// (exit 0 → Good, git's `bisect run` convention). Returns the session state
+/// after the verdict.
+#[tauri::command]
+async fn bisect_test(
+    repo: RepoId,
+    command: String,
+    app: AppHandle,
+    state: State<'_, Backend>,
+) -> Result<BisectState, AppError> {
+    let test = run_planned(&repo, &Op::BisectTest { command }, &app, &state).await?;
+    let verdict = if test.ok {
+        BisectVerdict::Good
+    } else {
+        BisectVerdict::Bad
+    };
+    run_planned(&repo, &Op::BisectVerdict { verdict }, &app, &state).await?;
+    state.load_bisect(&repo)
+}
+
 /// Compile an operation into its visible `CommandPlan` without running it (IPC
 /// `plan_op`): drives the inline command hints and the preview dialog, so the
 /// displayed command is always the Rust-side source of truth (SPEC §8).
@@ -510,17 +575,17 @@ fn plan_op(repo: RepoId, op: Op, state: State<'_, Backend>) -> Result<CommandPla
     state.plan(&repo, &op)
 }
 
-/// Run an operation (IPC `run_op`): plan → `op_started` → execute (serialized
-/// per repo) → record in the activity log → `op_finished`. The result always
-/// carries the exact command and its output, success or failure (SPEC §8/§18).
-#[tauri::command]
-async fn run_op(
-    repo: RepoId,
-    op: Op,
-    app: AppHandle,
-    state: State<'_, Backend>,
+/// plan → `op_started` → execute (serialized per repo) → record in the activity
+/// log → `op_finished`. Every step of every mutating op runs through here, so
+/// the UI always sees the exact command that ran (SPEC §8/§18). Shared by the
+/// `run_op` and `bisect_test` commands.
+async fn run_planned(
+    repo: &RepoId,
+    op: &Op,
+    app: &AppHandle,
+    state: &Backend,
 ) -> Result<OpResult, AppError> {
-    let plan = state.plan(&repo, &op)?;
+    let plan = state.plan(repo, op)?;
     let risk = plan
         .steps
         .iter()
@@ -535,11 +600,24 @@ async fn run_op(
             risk,
         },
     );
-    let result = state.run_op(&repo, &plan).await?;
-    if let Some(entry) = state.last_entry(&repo) {
+    let result = state.run_op(repo, &plan).await?;
+    if let Some(entry) = state.last_entry(repo) {
         let _ = app.emit(OP_FINISHED, entry);
     }
     Ok(result)
+}
+
+/// Run an operation (IPC `run_op`): compiles `op` and runs it through
+/// [`run_planned`]. The result always carries the exact command and its
+/// output, success or failure (SPEC §8/§18).
+#[tauri::command]
+async fn run_op(
+    repo: RepoId,
+    op: Op,
+    app: AppHandle,
+    state: State<'_, Backend>,
+) -> Result<OpResult, AppError> {
+    run_planned(&repo, &op, &app, &state).await
 }
 
 /// The session's activity log (oldest first) — backfills the web's log panel.
@@ -591,13 +669,7 @@ fn watcher_loop(app: AppHandle, rx: mpsc::Receiver<notify::Result<Event>>) {
                 }
                 for id in due {
                     if let Some(status) = backend.refresh_status(&id) {
-                        let _ = app.emit(
-                            STATUS_CHANGED,
-                            StatusChanged {
-                                repo: id,
-                                status,
-                            },
-                        );
+                        let _ = app.emit(STATUS_CHANGED, StatusChanged { repo: id, status });
                     }
                 }
             }
@@ -625,6 +697,10 @@ pub fn run() {
             load_tags,
             load_worktrees,
             load_rebase_commits,
+            load_stashes,
+            load_submodules,
+            load_bisect,
+            bisect_test,
             plan_op,
             run_op,
             load_log
@@ -677,7 +753,10 @@ mod tests {
 
         let nested = fx.path.join("src").join("deep.rs");
         assert_eq!(registry.repo_for_path(&nested).as_deref(), Some(fx.id()));
-        assert_eq!(registry.repo_for_path(Path::new("/definitely/not/a/repo")), None);
+        assert_eq!(
+            registry.repo_for_path(Path::new("/definitely/not/a/repo")),
+            None
+        );
     }
 
     #[test]
@@ -728,11 +807,13 @@ mod tests {
             .unwrap();
         let result = backend.run_op(fx.id(), &plan).await.unwrap();
         assert!(result.ok, "stderr: {}", result.stderr);
-        assert!(backend
-            .load_worktrees(fx.id())
-            .unwrap()
-            .iter()
-            .any(|w| w.branch.as_deref() == Some("side")));
+        assert!(
+            backend
+                .load_worktrees(fx.id())
+                .unwrap()
+                .iter()
+                .any(|w| w.branch.as_deref() == Some("side"))
+        );
 
         // The switcher retargets by opening the worktree root as the active
         // repository: its status is the worktree's checkout (SPEC §10.7).
@@ -755,6 +836,138 @@ mod tests {
         let result = backend.run_op(fx.id(), &plan).await.unwrap();
         assert!(result.ok, "stderr: {}", result.stderr);
         assert_eq!(backend.load_worktrees(fx.id()).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stash_push_apply_pop_drop_flow_through_the_backend() {
+        let (backend, _rx) = Backend::new();
+        let fx = testutil::Fixture::new("app-stash");
+        fx.commit_file("a.txt", "x\n", "c1");
+        backend.open(fx.id()).unwrap();
+
+        async fn run(backend: &Backend, fx: &testutil::Fixture, op: Op) -> OpResult {
+            let plan = backend.plan(fx.id(), &op).unwrap();
+            backend.run_op(fx.id(), &plan).await.unwrap()
+        }
+
+        fx.write_file("a.txt", "x\nedited\n");
+        run(
+            &backend,
+            &fx,
+            Op::StashPush {
+                include_untracked: true,
+            },
+        )
+        .await;
+        assert!(
+            backend.load_status(fx.id()).unwrap().changes.is_empty(),
+            "tree cleaned"
+        );
+        assert_eq!(backend.load_stashes(fx.id()).unwrap().len(), 1);
+
+        // apply keeps the entry, pop consumes it.
+        run(&backend, &fx, Op::StashApply { id: 0 }).await;
+        assert_eq!(backend.load_stashes(fx.id()).unwrap().len(), 1);
+        fx.write_file("a.txt", "x\n");
+        run(&backend, &fx, Op::StashPop { id: 0 }).await;
+        assert!(backend.load_stashes(fx.id()).unwrap().is_empty());
+        assert!(
+            backend
+                .load_status(fx.id())
+                .unwrap()
+                .changes
+                .iter()
+                .any(|c| c.path == "a.txt")
+        );
+    }
+
+    #[tokio::test]
+    async fn bisect_test_steps_are_planned_logged_and_converge() {
+        let (backend, _rx) = Backend::new();
+        let fx = testutil::Fixture::new("app-bisect");
+        fx.write_file("check.sh", "#!/bin/sh\ntest ! -f bug.txt\n");
+        fx.git(&["add", "-A"]);
+        fx.git(&["commit", "-qm", "c1"]);
+        let good = testutil::git(&fx.path, &["rev-parse", "HEAD"]);
+        fx.commit_file("bug.txt", "bug\n", "c2 introduce bug");
+        let culprit = testutil::git(&fx.path, &["rev-parse", "HEAD"]);
+        backend.open(fx.id()).unwrap();
+
+        async fn run(backend: &Backend, fx: &testutil::Fixture, op: Op) -> OpResult {
+            let plan = backend.plan(fx.id(), &op).unwrap();
+            backend.run_op(fx.id(), &plan).await.unwrap()
+        }
+
+        run(
+            &backend,
+            &fx,
+            Op::BisectStart {
+                good: good.clone(),
+                bad: culprit.clone(),
+                extra: Vec::new(),
+            },
+        )
+        .await;
+        assert!(backend.load_bisect(fx.id()).unwrap().active);
+
+        // The `bisect_test` command's body: test plan → exit-code verdict →
+        // verdict plan. With only one candidate (c2), one round must converge.
+        let test_plan = backend
+            .plan(
+                fx.id(),
+                &Op::BisectTest {
+                    command: "sh check.sh".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            test_plan.display, "sh check.sh",
+            "the literal test argv is what runs"
+        );
+        let test = backend.run_op(fx.id(), &test_plan).await.unwrap();
+        assert!(!test.ok, "the bug commit must fail the test");
+        let verdict = if test.ok {
+            BisectVerdict::Good
+        } else {
+            BisectVerdict::Bad
+        };
+        run(&backend, &fx, Op::BisectVerdict { verdict }).await;
+
+        let state = backend.load_bisect(fx.id()).unwrap();
+        assert_eq!(
+            state.found.as_deref(),
+            Some(culprit.as_str()),
+            "converged on the culprit"
+        );
+        assert_eq!(state.remaining, 0);
+
+        // Transparency: both steps are in the activity log with their exact commands.
+        let log = backend.log().snapshot(Some(fx.id()));
+        assert!(
+            log.iter().any(|e| e.display == "sh check.sh"),
+            "test step logged: {log:?}"
+        );
+        assert!(
+            log.iter().any(|e| e.display == "git bisect bad"),
+            "verdict step logged: {log:?}"
+        );
+    }
+
+    #[test]
+    fn bisect_steps_without_a_session_plan_as_clean_errors() {
+        let (backend, _rx) = Backend::new();
+        let fx = testutil::Fixture::new("app-no-bisect");
+        fx.commit_file("a.txt", "x\n", "c1");
+        backend.open(fx.id()).unwrap();
+        let err = backend
+            .plan(
+                fx.id(),
+                &Op::BisectTest {
+                    command: "sh check.sh".into(),
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("no bisect"), "got {err}");
     }
 
     #[test]
@@ -798,9 +1011,7 @@ mod tests {
         assert_eq!(d.stat.len(), 1);
         assert_eq!(d.stat[0].path, "a.txt");
 
-        let err = backend
-            .load_commit(fx.id(), "zzz")
-            .unwrap_err();
+        let err = backend.load_commit(fx.id(), "zzz").unwrap_err();
         assert!(
             matches!(err, AppError::Git(GitError::NoCommit { .. })),
             "got {err}"
@@ -810,13 +1021,13 @@ mod tests {
     #[test]
     fn open_non_repository_surfaces_git_error() {
         let (backend, _rx) = Backend::new();
-        let dir = std::env::temp_dir().join(format!(
-            "gitgotten-app-norepo-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("gitgotten-app-norepo-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let err = backend.open(dir.to_str().unwrap()).unwrap_err();
-        assert!(matches!(err, AppError::Git(GitError::NotARepository { .. })), "got {err}");
+        assert!(
+            matches!(err, AppError::Git(GitError::NotARepository { .. })),
+            "got {err}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -847,11 +1058,10 @@ mod tests {
         let fx = testutil::Fixture::new("watch");
         fx.commit_file("a.txt", "v1\n", "c1");
         let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
-        let mut watcher =
-            notify::recommended_watcher(move |res| {
-                let _ = tx.send(res);
-            })
-            .expect("recommended watcher should work on this platform");
+        let mut watcher = notify::recommended_watcher(move |res| {
+            let _ = tx.send(res);
+        })
+        .expect("recommended watcher should work on this platform");
         watcher
             .watch(&fx.path, RecursiveMode::Recursive)
             .expect("watching the fixture root should work");
@@ -923,7 +1133,10 @@ mod tests {
         let a = log.snapshot(Some("repo-a"));
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].display, "git commit -m \"a\"");
-        assert_eq!(log.snapshot(Some("repo-b"))[0].display, "git commit -m \"b\"");
+        assert_eq!(
+            log.snapshot(Some("repo-b"))[0].display,
+            "git commit -m \"b\""
+        );
         assert_eq!(log.snapshot(None).len(), 2);
     }
 
@@ -1028,10 +1241,7 @@ mod tests {
 
         // The unset must be visible: without the post-op refresh the stale
         // handle would still report the pre-op upstream.
-        assert_eq!(
-            backend.refresh_status(fx.id()).unwrap().upstream,
-            None
-        );
+        assert_eq!(backend.refresh_status(fx.id()).unwrap().upstream, None);
     }
     /// The ref loaders see the fixture's branches, remote, and tags.
     #[test]
@@ -1047,18 +1257,26 @@ mod tests {
 
         let branches = backend.load_branches(fx.id()).unwrap();
         let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
-        assert!(names.contains(&"main") && names.contains(&"side"), "got {names:?}");
+        assert!(
+            names.contains(&"main") && names.contains(&"side"),
+            "got {names:?}"
+        );
 
         let remotes = backend.load_remotes(fx.id()).unwrap();
-        assert_eq!(remotes.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["origin"]);
+        assert_eq!(
+            remotes.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            vec!["origin"]
+        );
 
         let tags = backend.load_tags(fx.id()).unwrap();
-        assert_eq!(tags.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), vec!["v1"]);
+        assert_eq!(
+            tags.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            vec!["v1"]
+        );
 
         let err = backend.load_branches("/nope").unwrap_err();
         assert!(matches!(err, AppError::RepoNotOpen(_)), "got {err}");
     }
-
 
     // ── Stage 7: sync + merge ─────────────────────────────────────────────
 
@@ -1130,7 +1348,12 @@ mod tests {
         backend.open(fx.id()).unwrap();
 
         let merge = backend
-            .plan(fx.id(), &Op::Merge { source: "side".into() })
+            .plan(
+                fx.id(),
+                &Op::Merge {
+                    source: "side".into(),
+                },
+            )
             .unwrap();
         let result = backend.run_op(fx.id(), &merge).await.unwrap();
         assert!(!result.ok, "the merge stops on the conflict");
@@ -1180,7 +1403,12 @@ mod tests {
         backend.open(fx.id()).unwrap();
 
         let merge = backend
-            .plan(fx.id(), &Op::Merge { source: "side".into() })
+            .plan(
+                fx.id(),
+                &Op::Merge {
+                    source: "side".into(),
+                },
+            )
             .unwrap();
         let result = backend.run_op(fx.id(), &merge).await.unwrap();
         assert!(!result.ok, "the merge stops on the conflict");
