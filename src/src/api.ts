@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  BisectState,
   Branch,
   BuildInfo,
   CommandPlan,
@@ -19,11 +20,12 @@ import type {
   RepoMeta,
   Status,
   StatusChanged,
+  Stash,
   Submodule,
   Tag,
   Worktree,
-  Stash,
-  BisectState,
+  Workspace,
+  WorkspaceRepo,
 } from "./types";
 
 /**
@@ -322,4 +324,95 @@ export async function onOpFinished(
   return () => {
     unlisten();
   };
+}
+
+// ── Stage 12: workspace commands (SPEC §7, §13) ────────────────────────────
+
+/**
+ * The persisted workspace tree (Rust `workspace_get`). Returns `null` outside Tauri.
+ */
+export async function workspaceGet(): Promise<Workspace | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<Workspace>("workspace_get");
+}
+
+/**
+ * Every open repo in the tree as (meta, live status) (Rust `workspace_repos`) —
+ * the startup hydration for nav + dashboard. Returns `null` outside Tauri.
+ */
+export async function workspaceRepos(): Promise<WorkspaceRepo[] | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<WorkspaceRepo[]>("workspace_repos");
+}
+
+/**
+ * Replace the workspace tree (Rust `workspace_set`): the web commits every
+ * drag-and-drop reorder/move through here. Returns `null` outside Tauri.
+ */
+export async function workspaceSet(workspace: Workspace): Promise<Workspace | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<Workspace>("workspace_set", { workspace });
+}
+
+/** Add a group under `parent` (root when null) (Rust `group_add`). */
+export async function groupAdd(
+  name: string,
+  parent: string | null,
+): Promise<Workspace | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<Workspace>("group_add", { name, parent });
+}
+
+/** Rename a group (Rust `group_rename`). */
+export async function groupRename(
+  id: string,
+  name: string,
+): Promise<Workspace | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<Workspace>("group_rename", { id, name });
+}
+
+/** Delete a group; its repos hoist to the root (Rust `group_delete`). */
+export async function groupDelete(id: string): Promise<Workspace | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<Workspace>("group_delete", { id });
+}
+
+/** Pin or unpin a repo (Rust `repo_pin`). */
+export async function repoPin(
+  id: string,
+  pinned: boolean,
+): Promise<Workspace | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<Workspace>("repo_pin", { id, pinned });
+}
+
+/** Record repo activity for the recents ordering (Rust `repo_touch`). */
+export async function repoTouch(id: string): Promise<Workspace | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<Workspace>("repo_touch", { id });
+}
+
+/** Unlink a repo from the workspace; the on-disk repo is never touched (Rust `remove_repo_from_workspace`). */
+export async function removeRepoFromWorkspace(id: string): Promise<Workspace | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<Workspace>("remove_repo_from_workspace", { id });
 }

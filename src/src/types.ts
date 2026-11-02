@@ -59,6 +59,8 @@ export interface Status {
   in_rebase: boolean;
   /** True while a cherry-pick is in progress (`.git/CHERRY_PICK_HEAD` present). */
   in_cherry_pick: boolean;
+  /** The HEAD commit (`null` on an unborn branch) — the dashboard's last commit. */
+  last_commit?: LastCommit | null;
 }
 
 /** Quick summary of an open repo, for the workspace nav (SPEC §7). */
@@ -75,6 +77,58 @@ export interface RepoMeta {
   behind: number;
   /** Number of changed files (staged + unstaged + untracked). */
   dirty_count: number;
+}
+
+/** The commit HEAD points at (Rust `LastCommit`, the dashboard's "last commit"). */
+export interface LastCommit {
+  hash: string;
+  subject: string;
+  /** Author timestamp (Unix seconds). */
+  author_time: number;
+}
+
+// ── Workspace: groups, pins, recents (SPEC §7, persisted to app.json, §11) ──
+
+/** A group's identity inside the workspace tree. Groups are tree nodes, not repos. */
+export type GroupId = string;
+
+/** The always-present top-level group: repos without a named group live here. */
+export const ROOT_GROUP_ID = "root";
+
+/** One node of the workspace tree: a repo or a (nestable) group. */
+export type ChildNode =
+  | { kind: "repo"; id: RepoId }
+  | { kind: "group"; id: GroupId };
+
+/** A named folder in the workspace tree (SPEC §7). */
+export interface Group {
+  id: GroupId;
+  name: string;
+  children: ChildNode[];
+}
+
+/** The whole multi-repo workspace (SPEC §7): group tree + ordering metadata. */
+export interface Workspace {
+  groups: Group[];
+  /** Repos pinned to the top of their group, in pin order. */
+  pinned: RepoId[];
+  /** Unpinned repos ordered by last activity, newest first. */
+  recents: RepoId[];
+}
+
+/** One workspace repo as reported at startup: stored summary + live status. */
+export interface WorkspaceRepo {
+  meta: RepoMeta;
+  status: Status;
+}
+
+/** The default workspace: root group only (mirrors Rust `Workspace::new`). */
+export function emptyWorkspace(): Workspace {
+  return {
+    groups: [{ id: ROOT_GROUP_ID, name: "Workspace", children: [] }],
+    pinned: [],
+    recents: [],
+  };
 }
 
 /** Payload of the `status_changed` event (Rust → web, SPEC §13). */
@@ -548,9 +602,10 @@ export interface BisectState {
 }
 
 /**
- * The default branch-lane palette (Rust `BRANCH_PALETTE`): a line's `color`
- * field is an index into this array, and the web maps indices to theme
- * tokens in light/dark (SPEC §12).
+ * The branch-lane palettes (Rust `BRANCH_PALETTE`): a line's `color` field is
+ * an index into these arrays, and the web picks the theme's variant when it
+ * paints (SPEC §12). Light values are the same hues, darkened for a white
+ * ground; the pair sets are pairwise distinguishable within each theme.
  */
 export const BRANCH_PALETTE: readonly string[] = [
   "#4c8bf5", // 0  blue (mainline first)
@@ -575,7 +630,76 @@ export const BRANCH_PALETTE: readonly string[] = [
   "#4a9e8c", // 19 sea green
 ];
 
+export const BRANCH_PALETTE_LIGHT: readonly string[] = [
+  "#2f6fd0", // 0  blue
+  "#b03a3a", // 1  red
+  "#2e7d4f", // 2  green
+  "#b06d14", // 3  orange
+  "#7040ab", // 4  purple
+  "#1f8f86", // 5  teal
+  "#b03a77", // 6  pink
+  "#6c7720", // 7  olive
+  "#3746c9", // 8  indigo
+  "#9e4419", // 9  vermillion
+  "#12784a", // 10 emerald
+  "#5a3b9c", // 11 violet
+  "#82621f", // 12 gold
+  "#1e7f9b", // 13 cyan
+  "#8c3276", // 14 fuchsia
+  "#4d731f", // 15 lime
+  "#7c3232", // 16 brick
+  "#3148ab", // 17 royal blue
+  "#65467f", // 18 mauve
+  "#2d7060", // 19 sea green
+];
+
+/** Everything `renderGraph` paints with, resolved for the active theme. */
+export interface GraphColors {
+  fg: string;
+  muted: string;
+  accent: string;
+  error: string;
+  /** The lane palette for the active theme (`color` indices wrap over it). */
+  palette: readonly string[];
+}
+
+/** The dark default — also the fallback for canvas tests that pass no theme. */
+export const DARK_GRAPH_COLORS: GraphColors = {
+  fg: "#e6e8ee",
+  muted: "#8b90a0",
+  accent: "#6ea8fe",
+  error: "#e05252",
+  palette: BRANCH_PALETTE,
+};
+
+/** Resolve the graph's colors from the live theme tokens (`data-theme`). */
+export function resolveGraphColors(): GraphColors {
+  const light =
+    typeof document !== "undefined" &&
+    document.documentElement.dataset.theme === "light";
+  if (!light) return DARK_GRAPH_COLORS;
+  const cs = getComputedStyle(document.documentElement);
+  const token = (name: string, fallback: string) =>
+    cs.getPropertyValue(name).trim() || fallback;
+  return {
+    fg: token("--fg", "#1c2027"),
+    muted: token("--muted", "#6b7280"),
+    accent: token("--accent", "#2f6fd0"),
+    error: token("--error", "#c0392b"),
+    palette: BRANCH_PALETTE_LIGHT,
+  };
+}
+
 /** Map a palette index to a hex color (wraps past the palette's end). */
-export function paletteColor(index: number): string {
-  return BRANCH_PALETTE[index % BRANCH_PALETTE.length];
+export function paletteColor(index: number, palette: readonly string[] = BRANCH_PALETTE): string {
+  return palette[index % palette.length];
+}
+
+/** Unix seconds → a short local timestamp (`Aug 12 14:03`). */
+export function formatDate(unixSeconds: number): string {
+  const d = new Date(unixSeconds * 1000);
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${months[d.getMonth()]} ${d.getDate()} ${hh}:${mm}`;
 }

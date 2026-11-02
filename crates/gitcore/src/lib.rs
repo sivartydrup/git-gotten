@@ -44,9 +44,9 @@ pub use exec::{GitExecutor, OpQueue};
 /// Shared read-model types, re-exported so `gitcore::Status` etc. read naturally.
 pub use git_gotten_protocol::{
     Author, BisectState, BisectVerdict, Branch, ChangeKind, CommandPlan, CommitDetail,
-    ConflictFile, FileChange, FileDiff, FileStat, GitStep, Graph, Hunk, Op, OpResult, Preview,
-    RebaseCommit, RefLabel, Remote, RepoId, RepoMeta, Risk, Stash, Status, Submodule, Tag,
-    Worktree,
+    ConflictFile, FileChange, FileDiff, FileStat, GitStep, Graph, Hunk, LastCommit, Op,
+    OpResult, Preview, RebaseCommit, RefLabel, Remote, RepoId, RepoMeta, Risk, Stash, Status,
+    Submodule, Tag, Worktree,
 };
 pub use show::{numstat, patch};
 
@@ -280,20 +280,29 @@ impl Repo {
 
     /// The workspace-nav summary for this repository (folds [`Self::status`]).
     pub fn meta(&self) -> Result<RepoMeta, GitError> {
+        Ok(self.meta_and_status()?.0)
+    }
+
+    /// The nav summary and the live status in one status pass (the startup
+    /// `workspace_repos` payload, SPEC §7).
+    pub fn meta_and_status(&self) -> Result<(RepoMeta, Status), GitError> {
         let status = self.status()?;
-        Ok(RepoMeta {
-            id: self.id.clone(),
-            name: self
-                .path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| self.id.clone()),
-            path: self.path.to_string_lossy().into_owned(),
-            branch: status.branch,
-            ahead: status.ahead,
-            behind: status.behind,
-            dirty_count: status.changes.len() as u32,
-        })
+        Ok((
+            RepoMeta {
+                id: self.id.clone(),
+                name: self
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| self.id.clone()),
+                path: self.path.to_string_lossy().into_owned(),
+                branch: status.branch.clone(),
+                ahead: status.ahead,
+                behind: status.behind,
+                dirty_count: status.changes.len() as u32,
+            },
+            status,
+        ))
     }
 
     /// Compute the live status of this repository.
@@ -1033,12 +1042,27 @@ fn compute_status(repo: &gix::Repository) -> Result<Status, GitError> {
 
     // Deterministic order: by path, staged before unstaged within a path.
     changes.sort_by(|a, b| a.path.cmp(&b.path).then(b.staged.cmp(&a.staged)));
-
     // In-progress operation state lives in the git directory (per worktree).
     let git_dir = repo.path();
     let in_merge = git_dir.join("MERGE_HEAD").exists();
     let in_rebase = git_dir.join("rebase-merge").is_dir() || git_dir.join("rebase-apply").is_dir();
     let in_cherry_pick = git_dir.join("CHERRY_PICK_HEAD").exists();
+
+    // The dashboard's "last commit" (SPEC §7): the HEAD commit's subject and date.
+    let last_commit = head_id.and_then(|oid| {
+        let commit = repo.find_commit(oid).ok()?;
+        let message = commit.message().ok()?;
+        Some(LastCommit {
+            hash: oid.to_string(),
+            subject: String::from_utf8_lossy(&message.summary()).into_owned(),
+            author_time: commit
+                .author()
+                .ok()
+                .and_then(|a| a.time().ok())
+                .map(|t| i64::try_from(t.seconds).unwrap_or(0))
+                .unwrap_or(0),
+        })
+    });
 
     Ok(Status {
         branch,
@@ -1051,6 +1075,7 @@ fn compute_status(repo: &gix::Repository) -> Result<Status, GitError> {
         in_merge,
         in_rebase,
         in_cherry_pick,
+        last_commit,
     })
 }
 
@@ -1613,5 +1638,24 @@ mod tests {
             "two\n"
         );
         assert_eq!(fx.git(&["log", "-1", "--format=%s"]), "c2");
+    }
+
+    #[test]
+    fn status_carries_the_last_commit() {
+        let fx = testutil::Fixture::new("lastcommit");
+        fx.commit_file_at("a.txt", "x\n", "the subject", 1_730_000_000);
+        let repo = Repo::open(&fx.path).unwrap();
+        let status = repo.status().unwrap();
+        let last = status.last_commit.expect("HEAD commit");
+        assert_eq!(last.hash, status.head.clone().unwrap());
+        assert_eq!(last.subject, "the subject");
+        assert_eq!(last.author_time, 1_730_000_000);
+    }
+
+    #[test]
+    fn status_last_commit_is_none_on_unborn_head() {
+        let fx = testutil::Fixture::new("unborn");
+        let repo = Repo::open(&fx.path).unwrap();
+        assert_eq!(repo.status().unwrap().last_commit, None);
     }
 }

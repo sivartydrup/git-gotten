@@ -6,9 +6,11 @@ import {
   useRebaseStore,
   useRefsStore,
   useRepoStore,
+  useThemeStore,
   useWorktreesStore,
 } from "../store";
 import type { Op } from "../types";
+import { type ThemeMode } from "../store";
 
 /**
  * Top bar (SPEC §7): product brand + build identity, and — when a repository
@@ -29,8 +31,9 @@ export function TopBar() {
   const { busy, running } = useActivityStore();
   const [mergeOpen, setMergeOpen] = useState(false);
   const { show: showRebase } = useRebaseStore();
-  const { worktrees } = useWorktreesStore();
   const [wtOpen, setWtOpen] = useState(false);
+  const { mode: themeMode, setMode: setThemeMode } = useThemeStore();
+  const { worktrees } = useWorktreesStore();
 
   const meta = repos.find((r) => r.id === activeId) ?? null;
   const activeStatus = activeId ? status[activeId] ?? null : null;
@@ -222,6 +225,21 @@ export function TopBar() {
           </>
         )}
       </div>
-    </header>
+      <label className="theme-control">
+        Theme
+        <select
+          value={themeMode}
+          onChange={(e) => {
+            const next: ThemeMode =
+              e.target.value === "light" || e.target.value === "dark" ? e.target.value : "system";
+            setThemeMode(next);
+          }}
+        >
+          <option value="system">System</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </label>
+      </header>
   );
 }

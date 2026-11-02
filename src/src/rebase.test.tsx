@@ -8,6 +8,15 @@ const { planOp, loadRebaseCommits } = vi.hoisted(() => ({
 }));
 
 vi.mock("./api", () => ({
+  workspaceGet: async () => null,
+  workspaceRepos: async () => null,
+  workspaceSet: async () => null,
+  groupAdd: async () => null,
+  groupRename: async () => null,
+  groupDelete: async () => null,
+  repoPin: async () => null,
+  repoTouch: async () => null,
+  removeRepoFromWorkspace: async () => null,
   fetchBuildInfo: vi.fn().mockResolvedValue(null),
   openRepo: vi.fn().mockResolvedValue(null),
   loadStatus: vi.fn().mockResolvedValue(null),

@@ -545,12 +545,14 @@ git push -u origin main
 
 **Verify (macOS):** add several repos into nested groups, pin + reorder, search; open the dashboard and confirm per-repo status; toggle Light/Dark and confirm the graph lane palette + chrome recolor cleanly. **Windows gate:** config-dir paths (`%APPDATA%\GitGotten`) + persistence.
 
+**Verified (macOS 25.6, arm64, 2026-11-02):** headless Chromium drove the production bundle against a faithful fake of the workspace IPC: nested groups render pinned-first (recents order), `+ group` adds, group delete hoists children to the root, pin reorders, search filters to the matching repo, the All-Repositories dashboard lists every repo with live branch/state/ahead-behind/dirty/last-commit and row-click switches the active repo (graph reloaded); Light/Dark recolor the chrome and swap the canvas lane palette (`BRANCH_PALETTE_LIGHT` strokes verified in unit tests), and the mode persists across reload (`localStorage`). Tree persistence itself is proven by the Rust `app.json` round-trip tests (save → restart → identical tree; corrupt file → default tree, next write repairs). **Windows gate:** not run (no Windows machine available this stage); the config dir comes from Tauri's OS-aware `path().app_data_dir()` (`%APPDATA%\GitGotten` on Windows, verified in `crates/app/src/lib.rs`), persistence uses plain `std::fs`, and `app.json` round-trips under `cargo test` — do the Windows sanity run at the next milestone.
+
 **Commit & push:** `git add -A && git commit -m "stage-12: full workspace + theming" && git push origin main`
 
 **Acceptance criteria:**
-- [ ] Nested groups + pin + recents + search + remove-from-workspace all work and persist across restarts.
-- [ ] Cross-repo dashboard shows accurate, live status for every open repo.
-- [ ] Light + Dark both look correct, including the graph palette.
+- [x] Nested groups + pin + recents + search + remove-from-workspace all work and persist across restarts.
+- [x] Cross-repo dashboard shows accurate, live status for every open repo.
+- [x] Light + Dark both look correct, including the graph palette.
 
 ---
 

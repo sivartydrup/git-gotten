@@ -9,6 +9,15 @@ const { openRepo, loadStatus, loadGraph, loadCommit } = vi.hoisted(() => ({
 
 // Mock the IPC layer; per-test behavior is configured on the hoisted mocks.
 vi.mock("./api", () => ({
+  workspaceGet: async () => null,
+  workspaceRepos: async () => null,
+  workspaceSet: async () => null,
+  groupAdd: async () => null,
+  groupRename: async () => null,
+  groupDelete: async () => null,
+  repoPin: async () => null,
+  repoTouch: async () => null,
+  removeRepoFromWorkspace: async () => null,
   loadRebaseCommits: vi.fn().mockResolvedValue(null),
   fetchBuildInfo: vi.fn().mockResolvedValue(null),
   openRepo,

@@ -11,6 +11,7 @@ import {
 import { InspectDrawer } from "./InspectDrawer";
 import { useBisectStore, useGraphStore, useMainTab, useRepoStore } from "../store";
 import type { BisectState, CommitDetail, Graph, Node } from "../types";
+import { BRANCH_PALETTE_LIGHT, DARK_GRAPH_COLORS, paletteColor } from "../types";
 
 // `loadCommit` is hoisted so interaction tests can drive its result.
 const { loadCommit, planOp } = vi.hoisted(() => ({
@@ -184,9 +185,11 @@ function recorder() {
     band: [] as { w: number; h: number; alpha: number }[],
     strokes: 0,
     fills: 0,
+    fillStyles: [] as string[],
+    strokeStyles: [] as string[],
     rects: [] as { x: number; y: number; w: number; h: number }[],
     strokeRects: [] as { x: number; y: number; w: number; h: number }[],
-    texts: [] as { text: string; x: number; y: number; alpha: number }[],
+    texts: [] as { text: string; x: number; y: number; alpha: number; style: string }[],
     globalAlpha: 1,
     font: "",
     fillStyle: "",
@@ -213,12 +216,14 @@ function recorder() {
     },
     fill() {
       rec.fills += 1;
+      rec.fillStyles.push(rec.fillStyle);
     },
     stroke() {
       rec.strokes += 1;
+      rec.strokeStyles.push(rec.strokeStyle);
     },
     fillText(text: string, x: number, y: number) {
-      rec.texts.push({ text, x, y, alpha: rec.globalAlpha });
+      rec.texts.push({ text, x, y, alpha: rec.globalAlpha, style: rec.fillStyle });
     },
   };
   return rec as CanvasCtx & typeof rec;
@@ -629,4 +634,27 @@ test("hovering a commit shows the tooltip and hover state", () => {
   });
   expect(useGraphStore.getState().hovered).toBe("d4e5f6");
   expect(document.querySelector(".graph-tooltip")).toBeTruthy();
+});
+
+test("renderGraph: theme colors drive lanes, dots, and text", () => {
+  const g = threeNodeGraph();
+  const light = { ...DARK_GRAPH_COLORS, fg: "#101418", palette: BRANCH_PALETTE_LIGHT };
+  const rec = recorder();
+  renderGraph(
+    rec,
+    800,
+    300,
+    identity,
+    { graph: g, selected: null, hovered: null, query: "" },
+    1,
+    light,
+  );
+  expect(rec.texts.find((t) => t.text === "tip")!.style).toBe("#101418");
+  expect(rec.strokeStyles).toContain(paletteColor(g.lines[0].color, BRANCH_PALETTE_LIGHT));
+  expect(rec.fillStyles).toContain(paletteColor(g.lines[0].color, BRANCH_PALETTE_LIGHT));
+  // Without explicit colors, the dark palette stays the default (canvas tests).
+  const dark = recorder();
+  renderGraph(dark, 800, 300, identity, { graph: g, selected: null, hovered: null, query: "" }, 1);
+  expect(dark.texts.find((t) => t.text === "tip")!.style).toBe(DARK_GRAPH_COLORS.fg);
+  expect(dark.fillStyles).toContain(paletteColor(g.lines[0].color));
 });

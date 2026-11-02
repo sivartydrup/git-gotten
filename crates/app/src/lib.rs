@@ -22,15 +22,15 @@
 //! `git bisect good|bad` verdict as two fully planned, logged steps.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use git_gotten_protocol::{
     BisectState, BisectVerdict, Branch, CommandPlan, CommitDetail, ConflictFile, FileDiff, Graph,
-    LogEntry, Op, OpResult, OpStarted, RebaseCommit, Remote, RepoId, RepoMeta, Risk, Stash, Status,
-    StatusChanged, Submodule, Tag, Worktree,
+    GroupId, LogEntry, Op, OpResult, OpStarted, RebaseCommit, Remote, RepoId, RepoMeta, Risk,
+    Stash, Status, StatusChanged, Submodule, Tag, Worktree, Workspace, WorkspaceRepo,
 };
 use gitcore::{GitError, GitExecutor};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
@@ -50,6 +50,10 @@ pub enum AppError {
     /// The repository id is not in the open set (e.g. it was never opened).
     #[error("repository is not open: {0}")]
     RepoNotOpen(RepoId),
+    /// A malformed workspace tree, rejected before it can be persisted.
+    #[error("invalid workspace: {0}")]
+    Workspace(String),
+
 }
 
 impl serde::Serialize for AppError {
@@ -137,6 +141,11 @@ pub struct Backend {
     executor: GitExecutor,
     /// The activity log (bounded ring, SPEC §11).
     log: LogBuffer,
+    /// The live workspace tree (SPEC §7), mirrored in memory and persisted to `app.json`.
+    workspace: Mutex<Workspace>,
+    /// Where the tree is persisted (`app_data_dir()/app.json`, None until the store is set).
+    store_path: Mutex<Option<PathBuf>>,
+
 }
 
 impl Backend {
@@ -157,14 +166,29 @@ impl Backend {
                 watcher: Mutex::new(watcher),
                 executor: GitExecutor::new(),
                 log: LogBuffer::new(),
+                workspace: Mutex::new(Workspace::new()),
+                store_path: Mutex::new(None),
             },
             event_rx,
         )
     }
 
-    /// Open a repository (validating + canonicalizing it) and register it for
-    /// watching. Returns its nav summary.
+    /// Open a repository (validating + canonicalizing it), register it for
+    /// watching, and add it to the workspace tree + recents (SPEC §7).
     pub fn open(&self, path: &str) -> Result<RepoMeta, AppError> {
+        let meta = self.register(path)?;
+        {
+            let mut ws = self.workspace.lock();
+            ws.ensure_repo(&meta.id);
+            ws.touch(&meta.id);
+        }
+        self.persist();
+        Ok(meta)
+    }
+
+    /// Open + watch + register a repository, without workspace bookkeeping
+    /// (startup re-opens keep the persisted tree ordering).
+    fn register(&self, path: &str) -> Result<RepoMeta, AppError> {
         let repo = gitcore::Repo::open(Path::new(path))?;
         if let Some(watcher) = self.watcher.lock().as_mut() {
             let _ = watcher.watch(&repo.path, RecursiveMode::Recursive);
@@ -172,6 +196,115 @@ impl Backend {
         let meta = repo.meta()?;
         self.registry.insert(repo);
         Ok(meta)
+    }
+
+    /// Re-open every repo in the persisted tree (startup). Paths that vanished
+    /// stay in the tree; re-opening is best-effort, never fatal (SPEC §11).
+    pub fn reopen_workspace_repos(&self) {
+        for id in self.workspace().repo_ids() {
+            let _ = self.register(&id);
+        }
+    }
+
+    /// Point the workspace at its `app.json` and load the persisted tree.
+    /// A corrupt or missing file yields the default tree (SPEC §11).
+    pub fn set_store(&self, path: PathBuf) {
+        *self.workspace.lock() = load_workspace(&path);
+        *self.store_path.lock() = Some(path);
+    }
+
+    pub fn workspace(&self) -> Workspace {
+        self.workspace.lock().clone()
+    }
+
+    fn persist(&self) {
+        let path = self.store_path.lock().clone();
+        if let Some(path) = path {
+            save_workspace(&path, &self.workspace.lock());
+        }
+    }
+
+    /// Apply `f` to the tree, validate it, persist, and hand back the new tree.
+    fn mutate(
+        &self,
+        f: impl FnOnce(&mut Workspace) -> Result<(), String>,
+    ) -> Result<Workspace, AppError> {
+        let mut candidate = self.workspace.lock().clone();
+        f(&mut candidate).map_err(AppError::Workspace)?;
+        candidate.validate().map_err(AppError::Workspace)?;
+        *self.workspace.lock() = candidate;
+        self.persist();
+        Ok(self.workspace())
+    }
+
+    /// Replace the whole tree (the web commits DnD reorder/move through here).
+    pub fn set_workspace(&self, workspace: Workspace) -> Result<Workspace, AppError> {
+        self.mutate(|ws| {
+            *ws = workspace;
+            Ok(())
+        })
+    }
+
+    pub fn group_add(&self, name: &str, parent: Option<&str>) -> Result<Workspace, AppError> {
+        let name = name.to_string();
+        let parent = parent.map(str::to_string);
+        self.mutate(|ws| ws.add_group(&name, parent.as_deref()).map(|_| ()))
+    }
+
+    pub fn group_rename(&self, id: &str, name: &str) -> Result<Workspace, AppError> {
+        let id = id.to_string();
+        let name = name.to_string();
+        self.mutate(|ws| ws.rename_group(&id, &name))
+    }
+
+    pub fn group_delete(&self, id: &str) -> Result<Workspace, AppError> {
+        let id = id.to_string();
+        self.mutate(|ws| ws.delete_group(&id))
+    }
+
+    pub fn repo_pin(&self, id: &str, pinned: bool) -> Result<Workspace, AppError> {
+        let id = id.to_string();
+        self.mutate(|ws| {
+            if pinned {
+                ws.pin(&id);
+            } else {
+                ws.unpin(&id);
+            }
+            Ok(())
+        })
+    }
+
+    /// Record activity for the recents ordering (SPEC §7).
+    pub fn repo_touch(&self, id: &str) -> Workspace {
+        self.workspace.lock().touch(id);
+        self.persist();
+        self.workspace()
+    }
+
+    /// Unlink a repo from the workspace: tree + registry + watcher. The on-disk
+    /// repository is never touched (SPEC §7).
+    pub fn remove_repo_from_workspace(&self, id: &str) -> Result<Workspace, AppError> {
+        let ws = self.mutate(|ws| {
+            ws.remove_repo(id);
+            Ok(())
+        })?;
+        if let Some(repo) = self.registry.remove(id) {
+            if let Some(watcher) = self.watcher.lock().as_mut() {
+                let _ = watcher.unwatch(&repo.path);
+            }
+        }
+        Ok(ws)
+    }
+
+    /// Every open repo in the tree as (meta, live status) — the startup
+    /// hydration for nav + dashboard (SPEC §7).
+    pub fn workspace_repos(&self) -> Vec<WorkspaceRepo> {
+        self.workspace()
+            .repo_ids()
+            .iter()
+            .filter_map(|id| self.registry.repo_pair(id))
+            .map(|(meta, status)| WorkspaceRepo { meta, status })
+            .collect()
     }
 
     /// Compute the live status of an open repository.
@@ -368,11 +501,22 @@ impl RepoRegistry {
     fn lock_repos(&self) -> MutexGuard<'_, HashMap<RepoId, gitcore::Repo>> {
         self.repos.lock()
     }
+
+    /// Unregister a repository (`remove_repo_from_workspace`).
+    pub fn remove(&self, id: &str) -> Option<gitcore::Repo> {
+        self.lock_repos().remove(id)
+    }
+
+    /// (meta, live status) for an open repo (`workspace_repos`).
+    pub fn repo_pair(&self, id: &str) -> Option<(RepoMeta, Status)> {
+        let repos = self.lock_repos();
+        let repo = repos.get(id)?;
+        repo.meta_and_status().ok()
+    }
 }
 
 /// In-memory activity log: a bounded ring of the most recent [`LogEntry`]s
-/// (SPEC §11 — the command stream; JSON file persistence lands with the
-/// workspace persistence in Stage 12).
+/// (SPEC §11 — the command stream, kept in memory for the session).
 #[derive(Default)]
 pub struct LogBuffer {
     next_id: AtomicU64,
@@ -626,6 +770,96 @@ fn load_log(state: State<'_, Backend>) -> Vec<LogEntry> {
     state.log().snapshot(None)
 }
 
+// ── Stage 12: workspace commands (SPEC §7, §13) ────────────────────────────
+
+/// The persisted workspace tree (groups, pinned, recents).
+#[tauri::command]
+fn workspace_get(state: State<'_, Backend>) -> Workspace {
+    state.workspace()
+}
+
+/// Replace the workspace tree (the web commits DnD reorder/move through here).
+#[tauri::command]
+fn workspace_set(
+    workspace: Workspace,
+    state: State<'_, Backend>,
+) -> Result<Workspace, AppError> {
+    state.set_workspace(workspace)
+}
+
+/// Add a group (under `parent`, or the root when null).
+#[tauri::command]
+fn group_add(
+    name: String,
+    parent: Option<GroupId>,
+    state: State<'_, Backend>,
+) -> Result<Workspace, AppError> {
+    state.group_add(&name, parent.as_deref())
+}
+
+#[tauri::command]
+fn group_rename(
+    id: GroupId,
+    name: String,
+    state: State<'_, Backend>,
+) -> Result<Workspace, AppError> {
+    state.group_rename(&id, &name)
+}
+
+/// Delete a group; its repos hoist to the root, they are never unlinked.
+#[tauri::command]
+fn group_delete(id: GroupId, state: State<'_, Backend>) -> Result<Workspace, AppError> {
+    state.group_delete(&id)
+}
+
+#[tauri::command]
+fn repo_pin(
+    id: RepoId,
+    pinned: bool,
+    state: State<'_, Backend>,
+) -> Result<Workspace, AppError> {
+    state.repo_pin(&id, pinned)
+}
+
+/// Record repo activity for the recents ordering.
+#[tauri::command]
+fn repo_touch(id: RepoId, state: State<'_, Backend>) -> Workspace {
+    state.repo_touch(&id)
+}
+
+/// Unlink a repo from the workspace (the on-disk repo is never touched).
+#[tauri::command]
+fn remove_repo_from_workspace(
+    id: RepoId,
+    state: State<'_, Backend>,
+) -> Result<Workspace, AppError> {
+    state.remove_repo_from_workspace(&id)
+}
+
+/// Startup hydration: every open repo in the tree as (meta, live status).
+#[tauri::command]
+fn workspace_repos(state: State<'_, Backend>) -> Vec<WorkspaceRepo> {
+    state.workspace_repos()
+}
+
+/// Load `app.json`, best-effort: corrupt or missing → default tree (SPEC §11).
+fn load_workspace(path: &Path) -> Workspace {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Workspace>(&text).ok())
+        .filter(|ws| ws.validate().is_ok())
+        .unwrap_or_default()
+}
+
+fn save_workspace(path: &Path, ws: &Workspace) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(text) = serde_json::to_string_pretty(ws) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
 /// The `status_changed` event name (Rust → web, SPEC §13).
 pub const STATUS_CHANGED: &str = "status_changed";
 
@@ -703,10 +937,25 @@ pub fn run() {
             bisect_test,
             plan_op,
             run_op,
-            load_log
+            load_log,
+            workspace_get,
+            workspace_set,
+            group_add,
+            group_rename,
+            group_delete,
+            repo_pin,
+            repo_touch,
+            remove_repo_from_workspace,
+            workspace_repos,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
+            // Config dir: macOS `~/Library/Application Support/GitGotten`,
+            // Windows `%APPDATA%\GitGotten` (SPEC §11; the resolver is OS-aware).
+            if let Ok(dir) = handle.path().app_data_dir() {
+                handle.state::<Backend>().set_store(dir.join("app.json"));
+                handle.state::<Backend>().reopen_workspace_repos();
+            }
             std::thread::spawn(move || watcher_loop(handle, events));
             Ok(())
         })
@@ -717,7 +966,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use git_gotten_protocol::{ConflictResolution, ConflictSide};
+    use git_gotten_protocol::{ChildNode, ConflictResolution, ConflictSide, Group, Workspace};
     use git_gotten_testutil as testutil;
 
     #[test]
@@ -1474,5 +1723,221 @@ mod tests {
             .rebase_commits("/does/not/exist", "main")
             .unwrap_err();
         assert!(matches!(err, AppError::RepoNotOpen(_)), "got {err}");
+    }
+
+    // ── Stage 12: workspace persistence ───────────────────────────────────
+
+    fn store_dir(label: &str) -> std::path::PathBuf {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "gitgotten-ws-{}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed),
+            label
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn open_adds_the_repo_to_the_tree_and_recents() {
+        let fx = testutil::Fixture::new("ws-open");
+        fx.commit_file("a.txt", "x\n", "c1");
+        let (backend, _rx) = Backend::new();
+        let meta = backend.open(fx.id()).unwrap();
+        let ws = backend.workspace();
+        assert!(ws.has_repo(&meta.id));
+        assert_eq!(ws.recents, vec![fx.id().to_string()]);
+        assert_eq!(ws.repo_ids(), vec![fx.id().to_string()]);
+    }
+
+    #[test]
+    fn group_ops_nest_rename_and_delete_hoists_repos() {
+        let fx = testutil::Fixture::new("ws-group");
+        fx.commit_file("a.txt", "x\n", "c1");
+        let (backend, _rx) = Backend::new();
+        let id = backend.open(fx.id()).unwrap().id;
+
+        let ws = backend.group_add("Work", None).unwrap();
+        let gid = ws.groups.iter().find(|g| g.name == "Work").unwrap().id.clone();
+        assert_eq!(backend.workspace().parent_of(&gid).as_deref(), Some("root"));
+
+        let mut moved = ws;
+        moved
+            .groups
+            .iter_mut()
+            .find(|g| g.id == "root")
+            .unwrap()
+            .children
+            .retain(|c| matches!(c, ChildNode::Group { .. }));
+        moved
+            .groups
+            .iter_mut()
+            .find(|g| g.id == gid)
+            .unwrap()
+            .children
+            .push(ChildNode::Repo { id: id.clone() });
+        backend.set_workspace(moved).unwrap();
+        assert_eq!(backend.workspace().parent_of(&id).as_deref(), Some(gid.as_str()));
+
+        let ws = backend.group_add("Side", Some(&gid)).unwrap();
+        let sid = ws.groups.iter().find(|g| g.name == "Side").unwrap().id.clone();
+        backend.group_rename(&sid, "Side Projects").unwrap();
+        assert_eq!(backend.workspace().group(&sid).unwrap().name, "Side Projects");
+
+        backend.group_delete(&gid).unwrap();
+        let ws = backend.workspace();
+        assert!(ws.group(&gid).is_none());
+        assert!(ws.group(&sid).is_none());
+        assert!(ws.has_repo(&id)); // hoisted to root, not unlinked
+        assert_eq!(ws.parent_of(&id).as_deref(), Some("root"));
+        assert!(backend.group_add("X", Some("g404")).is_err());
+        assert!(backend.group_rename("root", "nope").is_err());
+    }
+
+    #[test]
+    fn workspace_round_trips_through_app_json() {
+        let dir = store_dir("roundtrip");
+        let fx1 = testutil::Fixture::new("ws-r1");
+        fx1.commit_file("a.txt", "x\n", "c1");
+        let fx2 = testutil::Fixture::new("ws-r2");
+        fx2.commit_file("b.txt", "y\n", "c2");
+
+        let (backend, _rx) = Backend::new();
+        backend.set_store(dir.join("app.json"));
+        let m1 = backend.open(fx1.id()).unwrap();
+        let m2 = backend.open(fx2.id()).unwrap();
+        let ws = backend.group_add("Work", None).unwrap();
+        let gid = ws.groups.iter().find(|g| g.name == "Work").unwrap().id.clone();
+        let mut moved = ws;
+        moved
+            .groups
+            .iter_mut()
+            .find(|g| g.id == "root")
+            .unwrap()
+            .children
+            .retain(|c| !matches!(c, ChildNode::Repo { id } if id == &m1.id));
+        moved
+            .groups
+            .iter_mut()
+            .find(|g| g.id == gid)
+            .unwrap()
+            .children
+            .push(ChildNode::Repo { id: m1.id.clone() });
+        backend.set_workspace(moved).unwrap();
+        backend.repo_pin(&m2.id, true).unwrap();
+        backend.repo_touch(&m1.id);
+        let saved = backend.workspace();
+
+        let text = std::fs::read_to_string(dir.join("app.json")).unwrap();
+        assert!(text.contains("\"kind\": \"group\"")); // the tree really hit disk
+
+        let (restarted, _rx2) = Backend::new();
+        restarted.set_store(dir.join("app.json"));
+        assert_eq!(restarted.workspace(), saved);
+        assert_eq!(restarted.workspace().pinned, vec![m2.id.clone()]);
+        assert_eq!(
+            restarted.workspace().recents.first().map(String::as_str),
+            Some(m1.id.as_str())
+        );
+
+        restarted.reopen_workspace_repos();
+        let pairs = restarted.workspace_repos();
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.iter().all(|p| p.status.branch.as_deref() == Some("main")));
+    }
+
+    #[test]
+    fn corrupt_app_json_rebuilds_the_default_tree() {
+        let dir = store_dir("corrupt");
+        std::fs::write(dir.join("app.json"), "{ not json").unwrap();
+        let (backend, _rx) = Backend::new();
+        backend.set_store(dir.join("app.json"));
+        assert_eq!(backend.workspace(), Workspace::new());
+        backend.group_add("Fixed", None).unwrap(); // the next persist repairs the file
+        let (restarted, _rx2) = Backend::new();
+        restarted.set_store(dir.join("app.json"));
+        assert!(restarted.workspace().group("g1").is_some());
+    }
+
+    #[test]
+    fn workspace_set_rejects_invalid_trees_before_persisting() {
+        let dir = store_dir("cycle");
+        let (backend, _rx) = Backend::new();
+        backend.set_store(dir.join("app.json"));
+        let ws = backend.group_add("Loop", None).unwrap();
+        let gid = ws.groups.iter().find(|g| g.name == "Loop").unwrap().id.clone();
+        let before = backend.workspace();
+        let mut bad = before.clone();
+        bad.groups
+            .iter_mut()
+            .find(|g| g.id == gid)
+            .unwrap()
+            .children
+            .push(ChildNode::Group { id: "root".into() });
+        assert!(backend.set_workspace(bad).is_err());
+        assert_eq!(backend.workspace(), before);
+        let persisted: Workspace =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("app.json")).unwrap()).unwrap();
+        assert_eq!(persisted, before); // only valid trees ever reach the file
+    }
+
+    #[test]
+    fn reopen_reopens_tree_repos_and_tolerates_vanished_paths() {
+        let dir = store_dir("reopen");
+        let fx = testutil::Fixture::new("ws-reopen");
+        fx.commit_file("a.txt", "x\n", "c1");
+        let ws = Workspace {
+            groups: vec![Group {
+                id: "root".into(),
+                name: "Workspace".into(),
+                children: vec![
+                    ChildNode::Repo { id: fx.id().into() },
+                    ChildNode::Repo { id: "/gitgotten/nope".into() },
+                ],
+            }],
+            pinned: Vec::new(),
+            recents: Vec::new(),
+        };
+        std::fs::write(dir.join("app.json"), serde_json::to_string(&ws).unwrap()).unwrap();
+        let (backend, _rx) = Backend::new();
+        backend.set_store(dir.join("app.json"));
+        backend.reopen_workspace_repos();
+        assert_eq!(backend.load_status(fx.id()).unwrap().branch.as_deref(), Some("main"));
+        assert!(backend.load_status("/gitgotten/nope").is_err());
+        assert!(backend.workspace().has_repo("/gitgotten/nope"));
+    }
+
+    #[test]
+    fn remove_repo_unlinks_without_touching_the_disk() {
+        let fx = testutil::Fixture::new("ws-remove");
+        fx.commit_file("a.txt", "x\n", "c1");
+        let dir = store_dir("remove");
+        let (backend, _rx) = Backend::new();
+        backend.set_store(dir.join("app.json"));
+        let id = backend.open(fx.id()).unwrap().id;
+        backend.repo_pin(&id, true).unwrap();
+        let ws = backend.remove_repo_from_workspace(&id).unwrap();
+        assert!(!ws.has_repo(&id));
+        assert!(ws.pinned.is_empty());
+        assert!(backend.load_status(&id).is_err()); // unregistered
+        assert_eq!(fx.git(&["rev-parse", "HEAD"]).trim().len(), 40); // repo untouched
+        let (restarted, _rx2) = Backend::new();
+        restarted.set_store(dir.join("app.json"));
+        assert!(!restarted.workspace().has_repo(&id)); // the unlink persisted
+    }
+
+    #[test]
+    fn workspace_repos_pairs_meta_with_live_status() {
+        let fx = testutil::Fixture::new("ws-pairs");
+        fx.commit_file("a.txt", "x\n", "c1");
+        fx.write_file("dirty.txt", "d\n");
+        let (backend, _rx) = Backend::new();
+        let id = backend.open(fx.id()).unwrap().id;
+        let pairs = backend.workspace_repos();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].meta.id, id);
+        assert_eq!(pairs[0].status.changes.len(), 1);
+        assert!(pairs[0].status.last_commit.is_some());
     }
 }

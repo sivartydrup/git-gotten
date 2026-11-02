@@ -50,6 +50,9 @@
 //! (dropping is `Dangerous`), [`Op::SubmoduleInit`], [`Op::SubmoduleUpdate`],
 //! [`Op::BisectStart`], [`Op::BisectVerdict`], [`Op::BisectTest`],
 //! [`Op::BisectReset`].
+//! Stage 12 adds the workspace shapes (SPEC §7, §11): [`Workspace`], [`Group`],
+//! [`ChildNode`], the `Status.last_commit` field ([`LastCommit`]), and the startup
+//! `workspace_repos` payload [`WorkspaceRepo`].
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -107,6 +110,17 @@ pub struct FileChange {
     pub submodule: bool,
 }
 
+/// The commit HEAD currently points at — the dashboard's "last commit" (SPEC §7).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct LastCommit {
+    /// Full OID (hex) of the HEAD commit.
+    pub hash: Hash,
+    /// First line of its message.
+    pub subject: String,
+    /// Author timestamp (Unix seconds).
+    pub author_time: i64,
+}
+
 /// Live status of an open repository (SPEC §8 read model, computed by `gix`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct Status {
@@ -131,6 +145,9 @@ pub struct Status {
     /// True while a cherry-pick is in progress (`.git/CHERRY_PICK_HEAD` present).
     #[serde(default)]
     pub in_cherry_pick: bool,
+    /// The HEAD commit (`None` on an unborn branch).
+    #[serde(default)]
+    pub last_commit: Option<LastCommit>,
 }
 
 /// Quick summary of an open repo, for the workspace nav (SPEC §7).
@@ -1114,6 +1131,292 @@ pub struct CommitDetail {
     pub diff: Vec<FileDiff>,
 }
 
+// ── Workspace: groups, pins, recents (SPEC §7, persisted to app.json, §11) ──
+
+/// A group's identity inside the workspace tree. Groups are tree nodes, not repos.
+pub type GroupId = String;
+
+/// The always-present top-level group: repos without a named group live here.
+pub const ROOT_GROUP_ID: &str = "root";
+
+/// One node of the workspace tree: a repo or a (nestable) group.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChildNode {
+    /// A repository, referenced by its [`RepoId`] (canonical path).
+    Repo { id: RepoId },
+    /// A group, referenced by its [`GroupId`].
+    Group { id: GroupId },
+}
+
+/// A named folder in the workspace tree (SPEC §7).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Group {
+    pub id: GroupId,
+    pub name: String,
+    /// Ordered children (repos and sub-groups) in nav order.
+    pub children: Vec<ChildNode>,
+}
+
+/// The whole multi-repo workspace (SPEC §7): the group tree plus the ordering
+/// metadata. Persisted to `app.json` (SPEC §11).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct Workspace {
+    pub groups: Vec<Group>,
+    /// Repos pinned to the top of their group (SPEC §7), in pin order.
+    pub pinned: Vec<RepoId>,
+    /// Unpinned repos ordered by last activity (SPEC §7), newest first.
+    pub recents: Vec<RepoId>,
+}
+
+/// One workspace repo as reported by `workspace_repos` (startup hydration for
+/// the nav and the dashboard): the stored summary plus the live status.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct WorkspaceRepo {
+    pub meta: RepoMeta,
+    pub status: Status,
+}
+
+fn child_id(node: &ChildNode) -> &str {
+    match node {
+        ChildNode::Repo { id } | ChildNode::Group { id } => id,
+    }
+}
+
+impl Workspace {
+    /// A workspace holding only the root group.
+    pub fn new() -> Self {
+        Self {
+            groups: vec![Group {
+                id: ROOT_GROUP_ID.into(),
+                name: "Workspace".into(),
+                children: Vec::new(),
+            }],
+            pinned: Vec::new(),
+            recents: Vec::new(),
+        }
+    }
+
+    pub fn group(&self, id: &str) -> Option<&Group> {
+        self.groups.iter().find(|g| g.id == id)
+    }
+
+    fn group_mut(&mut self, id: &str) -> Option<&mut Group> {
+        self.groups.iter_mut().find(|g| g.id == id)
+    }
+
+    /// The group whose children contain `id`, if any.
+    pub fn parent_of(&self, id: &str) -> Option<GroupId> {
+        self.groups
+            .iter()
+            .find(|g| g.children.iter().any(|c| child_id(c) == id))
+            .map(|g| g.id.clone())
+    }
+
+    pub fn has_repo(&self, id: &str) -> bool {
+        self.groups
+            .iter()
+            .any(|g| g.children.iter().any(|c| matches!(c, ChildNode::Repo { id: r } if r == id)))
+    }
+
+    /// Add a group under `parent` (root when `None`); returns the new group's id.
+    pub fn add_group(&mut self, name: &str, parent: Option<&str>) -> Result<GroupId, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("group name must not be empty".into());
+        }
+        let parent = parent.unwrap_or(ROOT_GROUP_ID);
+        if self.group(parent).is_none() {
+            return Err(format!("no such group: {parent}"));
+        }
+        let mut max = 0u64;
+        for g in &self.groups {
+            if let Some(rest) = g.id.strip_prefix('g') {
+                if let Ok(n) = rest.parse::<u64>() {
+                    max = max.max(n);
+                }
+            }
+        }
+        let id = format!("g{}", max + 1);
+        self.groups.push(Group {
+            id: id.clone(),
+            name: name.into(),
+            children: Vec::new(),
+        });
+        if let Some(parent) = self.group_mut(parent) {
+            parent.children.push(ChildNode::Group { id: id.clone() });
+        }
+        Ok(id)
+    }
+
+    pub fn rename_group(&mut self, id: &str, name: &str) -> Result<(), String> {
+        if id == ROOT_GROUP_ID {
+            return Err("the root group cannot be renamed".into());
+        }
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("group name must not be empty".into());
+        }
+        let group = self.group_mut(id).ok_or_else(|| format!("no such group: {id}"))?;
+        group.name = name.into();
+        Ok(())
+    }
+
+    /// Delete a group and its sub-groups; every repo in the subtree is hoisted to
+    /// the root (removing a group never unlinks repos — SPEC §7).
+    pub fn delete_group(&mut self, id: &str) -> Result<(), String> {
+        if id == ROOT_GROUP_ID {
+            return Err("the root group cannot be deleted".into());
+        }
+        if self.group(id).is_none() {
+            return Err(format!("no such group: {id}"));
+        }
+        let mut stack = vec![id.to_string()];
+        let mut subtree = Vec::new();
+        let mut hoisted = Vec::new();
+        while let Some(gid) = stack.pop() {
+            let Some(group) = self.groups.iter().find(|g| g.id == gid) else {
+                continue;
+            };
+            subtree.push(gid.clone());
+            for child in &group.children {
+                match child {
+                    ChildNode::Group { id } => stack.push(id.clone()),
+                    ChildNode::Repo { id } => hoisted.push(ChildNode::Repo { id: id.clone() }),
+                }
+            }
+        }
+        self.groups.retain(|g| !subtree.contains(&g.id));
+        for group in &mut self.groups {
+            group.children.retain(|c| match c {
+                ChildNode::Group { id } => !subtree.contains(id),
+                ChildNode::Repo { .. } => true,
+            });
+        }
+        if let Some(root) = self.group_mut(ROOT_GROUP_ID) {
+            root.children.extend(hoisted);
+        }
+        Ok(())
+    }
+
+    pub fn pin(&mut self, id: &str) {
+        if !self.pinned.iter().any(|r| r == id) {
+            self.pinned.push(id.into());
+        }
+    }
+
+    pub fn unpin(&mut self, id: &str) {
+        self.pinned.retain(|r| r != id);
+    }
+
+    /// Record activity: move the repo to the front of recents.
+    pub fn touch(&mut self, id: &str) {
+        self.recents.retain(|r| r != id);
+        self.recents.insert(0, id.into());
+    }
+
+    /// Unlink a repo from the workspace (the on-disk repo is never touched).
+    pub fn remove_repo(&mut self, id: &str) {
+        for group in &mut self.groups {
+            group.children.retain(|c| !matches!(c, ChildNode::Repo { id: r } if r == id));
+        }
+        self.pinned.retain(|r| r != id);
+        self.recents.retain(|r| r != id);
+    }
+
+    /// Ensure a repo sits in the tree (root group when it is new).
+    pub fn ensure_repo(&mut self, id: &str) {
+        if !self.has_repo(id) {
+            if let Some(root) = self.group_mut(ROOT_GROUP_ID) {
+                root.children.push(ChildNode::Repo { id: id.into() });
+            }
+        }
+    }
+
+    /// Repo ids in nav order (root first, then groups breadth-first).
+    pub fn repo_ids(&self) -> Vec<RepoId> {
+        let mut out = Vec::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(ROOT_GROUP_ID.to_string());
+        while let Some(gid) = queue.pop_front() {
+            let Some(group) = self.group(&gid) else { continue };
+            for child in &group.children {
+                match child {
+                    ChildNode::Repo { id } => out.push(id.clone()),
+                    ChildNode::Group { id } => queue.push_back(id.clone()),
+                }
+            }
+        }
+        out
+    }
+
+    /// Structural validation (the trust boundary for `app.json` and `workspace_set`):
+    /// unique ids, each repo referenced exactly once, every group under the root
+    /// exactly once (no cycles, no orphans).
+    pub fn validate(&self) -> Result<(), String> {
+        let mut ids = std::collections::HashSet::new();
+        for group in &self.groups {
+            if !ids.insert(group.id.clone()) {
+                return Err(format!("duplicate group id: {}", group.id));
+            }
+        }
+        if !ids.contains(ROOT_GROUP_ID) {
+            return Err("missing root group".into());
+        }
+        let mut seen_repos = std::collections::HashSet::new();
+        let mut seen_children = std::collections::HashSet::new();
+        for group in &self.groups {
+            for child in &group.children {
+                match child {
+                    ChildNode::Repo { id } => {
+                        if !seen_repos.insert(id.clone()) {
+                            return Err(format!("repo in more than one group: {id}"));
+                        }
+                    }
+                    ChildNode::Group { id } => {
+                        if id == ROOT_GROUP_ID {
+                            return Err("the root group cannot be a child".into());
+                        }
+                        if !ids.contains(id) {
+                            return Err(format!("unknown group child: {id}"));
+                        }
+                        if !seen_children.insert(id.clone()) {
+                            return Err(format!("group in more than one parent: {id}"));
+                        }
+                    }
+                }
+            }
+        }
+        let mut visited = std::collections::HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        visited.insert(ROOT_GROUP_ID.to_string());
+        queue.push_back(ROOT_GROUP_ID.to_string());
+        while let Some(gid) = queue.pop_front() {
+            if let Some(group) = self.group(&gid) {
+                for child in &group.children {
+                    if let ChildNode::Group { id } = child {
+                        if !visited.insert(id.clone()) {
+                            return Err(format!("group cycle at: {id}"));
+                        }
+                        queue.push_back(id.clone());
+                    }
+                }
+            }
+        }
+        if visited.len() != self.groups.len() {
+            return Err("group not reachable from the root".into());
+        }
+        Ok(())
+    }
+}
+
+impl Default for Workspace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1175,6 +1478,7 @@ mod tests {
             in_merge: false,
             in_rebase: false,
             in_cherry_pick: true,
+            last_commit: None,
         }
     }
 
@@ -1845,5 +2149,141 @@ mod tests {
         let json = serde_json::to_string(&a).unwrap();
         let back: Author = serde_json::from_str(&json).unwrap();
         assert_eq!(back, a);
+    }
+
+    // ── Stage 12: workspace ───────────────────────────────────────────────
+
+    #[test]
+    fn workspace_round_trips_through_serde() {
+        let ws = Workspace {
+            groups: vec![
+                Group {
+                    id: "root".into(),
+                    name: "Workspace".into(),
+                    children: vec![
+                        ChildNode::Repo { id: "/r/a".into() },
+                        ChildNode::Group { id: "g1".into() },
+                    ],
+                },
+                Group {
+                    id: "g1".into(),
+                    name: "Work".into(),
+                    children: vec![ChildNode::Repo { id: "/r/b".into() }],
+                },
+            ],
+            pinned: vec!["/r/a".into()],
+            recents: vec!["/r/b".into(), "/r/a".into()],
+        };
+        let json = serde_json::to_string(&ws).unwrap();
+        assert!(json.contains(r#""kind":"repo""#));
+        assert!(json.contains(r#""kind":"group""#));
+        let back: Workspace = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ws);
+        assert_eq!(back.validate(), Ok(()));
+    }
+
+    #[test]
+    fn workspace_types_are_ts_types() {
+        _assert_ts::<Workspace>();
+        _assert_ts::<Group>();
+        _assert_ts::<ChildNode>();
+        _assert_ts::<LastCommit>();
+        _assert_ts::<WorkspaceRepo>();
+    }
+
+    #[test]
+    fn last_commit_defaults_to_none_in_status() {
+        let json = r#"{"branch":"main","detached_head":null,"head":null,"ahead":0,"behind":0,"upstream":null,"changes":[],"in_merge":false,"in_rebase":false,"in_cherry_pick":false}"#;
+        let status: Status = serde_json::from_str(json).unwrap();
+        assert_eq!(status.last_commit, None);
+    }
+
+    #[test]
+    fn group_add_nests_and_delete_hoists_repos_to_root() {
+        let mut ws = Workspace::new();
+        ws.ensure_repo("/r/a");
+        let g1 = ws.add_group("Work", None).unwrap();
+        let g2 = ws.add_group("Side", Some(&g1)).unwrap();
+        // Move a repo into the nested group (the web does this via workspace_set;
+        // here directly): root -> g2.
+        {
+            let root = ws.group_mut("root").unwrap();
+            root.children.retain(|c| !matches!(c, ChildNode::Repo { .. }));
+            let g2 = ws.group_mut(&g2).unwrap();
+            g2.children.push(ChildNode::Repo { id: "/r/a".into() });
+        }
+        assert_eq!(ws.validate(), Ok(()));
+        assert_eq!(ws.parent_of("/r/a").as_deref(), Some(g2.as_str()));
+
+        ws.delete_group(&g1).unwrap();
+        assert!(ws.group(&g1).is_none());
+        assert!(ws.group(&g2).is_none());
+        assert!(ws.has_repo("/r/a")); // hoisted, not unlinked
+        assert_eq!(ws.validate(), Ok(()));
+    }
+
+    #[test]
+    fn validate_rejects_cycles_orphans_and_double_homes() {
+        let mut ws = Workspace::new();
+        let g1 = ws.add_group("A", None).unwrap();
+        // cycle: root -> g1 -> root
+        ws.group_mut(&g1)
+            .unwrap()
+            .children
+            .push(ChildNode::Group { id: "root".into() });
+        assert!(ws.validate().is_err());
+
+        let mut ws2 = Workspace::new();
+        ws2.group_mut("root")
+            .unwrap()
+            .children
+            .push(ChildNode::Repo { id: "/r/a".into() });
+        ws2.group_mut("root")
+            .unwrap()
+            .children
+            .push(ChildNode::Repo { id: "/r/a".into() });
+        assert!(ws2.validate().is_err());
+
+        let mut ws3 = Workspace::new();
+        ws3.groups.push(Group {
+            id: "orphan".into(),
+            name: "Orphan".into(),
+            children: vec![],
+        });
+        assert!(ws3.validate().is_err(), "orphan group: {g1}");
+    }
+
+    #[test]
+    fn touch_recents_and_pin_bookkeeping() {
+        let mut ws = Workspace::new();
+        ws.touch("/r/b");
+        ws.touch("/r/a");
+        ws.touch("/r/b");
+        assert_eq!(ws.recents, vec!["/r/b".to_string(), "/r/a".to_string()]);
+        ws.pin("/r/a");
+        ws.pin("/r/a");
+        assert_eq!(ws.pinned, vec!["/r/a".to_string()]);
+        ws.unpin("/r/a");
+        assert!(ws.pinned.is_empty());
+        assert_eq!(ws.repo_ids(), Vec::<String>::new());
+        ws.ensure_repo("/r/c");
+        ws.ensure_repo("/r/c");
+        assert_eq!(ws.repo_ids(), vec!["/r/c".to_string()]);
+        ws.touch("/r/c");
+        assert_eq!(ws.recents, vec!["/r/c".to_string(), "/r/b".to_string(), "/r/a".to_string()]);
+        ws.remove_repo("/r/c");
+        assert!(!ws.has_repo("/r/c"));
+        assert_eq!(ws.recents, vec!["/r/b".to_string(), "/r/a".to_string()]);
+    }
+
+    #[test]
+    fn group_ops_reject_bad_input() {
+        let mut ws = Workspace::new();
+        assert!(ws.add_group("", None).is_err());
+        assert!(ws.add_group("A", Some("g404")).is_err());
+        assert!(ws.rename_group("root", "x").is_err());
+        assert!(ws.delete_group("root").is_err());
+        assert!(ws.rename_group("g404", "x").is_err());
+        assert!(ws.delete_group("g404").is_err());
     }
 }

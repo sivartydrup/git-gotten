@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useActivityStore, useBisectStore, useBuildInfo, useConflictStore, useGraphStore, useMainTab, useRebaseStore, useRefsStore, useRepoStore, useStashesStore, useStagingStore, useSubmodulesStore, useWorktreesStore } from "./store";
+import { useActivityStore, useBisectStore, useBuildInfo, useConflictStore, useGraphStore, useMainTab, useRebaseStore, useRefsStore, useRepoStore, useStashesStore, useStagingStore, useSubmodulesStore, useViewStore, useWorktreesStore, useWorkspaceStore } from "./store";
 import { onOpFinished, onOpStarted, onStatusChanged } from "./api";
 import { TopBar } from "./components/TopBar";
 import { RepoNav } from "./components/RepoNav";
@@ -17,6 +17,7 @@ import { ConflictBanner } from "./components/ConflictBanner";
 import { WorktreesPanel } from "./components/WorktreesPanel";
 import { StashPanel } from "./components/StashPanel";
 import { BisectPanel } from "./components/BisectPanel";
+import { Dashboard } from "./components/Dashboard";
 
 
 /**
@@ -112,6 +113,13 @@ export default function App() {
     };
   }, []);
 
+  // Hydrate the persisted workspace tree + every repo's live status (SPEC §7, §11).
+  useEffect(() => {
+    void useWorkspaceStore.getState().load();
+  }, []);
+
+  const dashboard = useViewStore((s) => s.dashboard);
+
   const activeId = useRepoStore((s) => s.activeId);
   // The branching graph follows the active repo and reloads after a finished
   // op (the graph may have changed: branch, reset, cherry-pick, …).
@@ -151,6 +159,9 @@ export default function App() {
       <ConflictBanner />
       <div className="workspace">
         <RepoNav />
+        {dashboard ? (
+          <Dashboard />
+        ) : (
         <div className="main">
           <div className="main-tabs">
             <button
@@ -248,6 +259,7 @@ export default function App() {
           </div>
           <CommitPanel />
         </div>
+        )}
         <InspectDrawer />
       </div>
       <ActivityLog />

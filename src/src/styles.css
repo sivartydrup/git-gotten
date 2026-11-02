@@ -5,7 +5,22 @@
   --accent: #6ea8fe;
   --success: #7ee0a0;
   --warning: #e0b07e;
+  --error: #e05252;
   --border: #23262e;
+  --surface: #171a21;
+}
+
+/* Light theme (SPEC §12): same color roles, dark ink on a light ground. */
+:root[data-theme="light"] {
+  --bg: #f6f7f9;
+  --fg: #1c2027;
+  --muted: #6b7280;
+  --accent: #2f6fd0;
+  --success: #1f9d55;
+  --warning: #b26a1f;
+  --error: #c0392b;
+  --border: #d9dde3;
+  --surface: #ffffff;
 }
 
 * {
@@ -1695,4 +1710,201 @@ code {
   white-space: pre-wrap;
   max-height: 220px;
   overflow: auto;
+}
+
+/* ── Stage 12: workspace tree, dashboard, theme picker (SPEC §7, §12) ────── */
+
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.nav-search {
+  flex: 1;
+  min-width: 0;
+}
+
+.nav-dashboard.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.group-block {
+  margin: 2px 0;
+}
+
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: grab;
+  border-radius: 6px;
+}
+
+.group-head:hover {
+  background: var(--border);
+}
+
+.group-caret {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+}
+
+.group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.group-rename {
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
+.icon-btn {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+
+.icon-btn:hover {
+  color: var(--fg);
+  border-color: var(--border);
+}
+
+.repo-item {
+  flex-direction: row;
+}
+
+.repo-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+}
+
+.repo-pin-mark {
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.theme-control {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.theme-control select {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+.dashboard {
+  flex: 1;
+  min-width: 0;
+  padding: 18px 20px;
+  overflow: auto;
+}
+
+.dashboard-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.dashboard-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.dashboard-filter {
+  max-width: 260px;
+}
+
+.dashboard-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.dashboard-table th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+
+.dashboard-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.dashboard-table tbody tr {
+  cursor: pointer;
+}
+
+.dashboard-table tbody tr:hover {
+  background: var(--surface);
+}
+
+.dash-name {
+  font-weight: 600;
+}
+
+.dashboard .mono,
+.dashboard .dash-commit .hash {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.dashboard .ahead {
+  color: var(--success);
+}
+
+.dashboard .behind {
+  color: var(--warning);
+}
+
+.dashboard .hash {
+  color: var(--muted);
+}
+
+.dashboard .muted {
+  color: var(--muted);
 }

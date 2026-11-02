@@ -44,8 +44,8 @@ As of **2026-10-29** (`stage-10`). Stage numbers match [`PLAN.md`](./PLAN.md).
 | 8 | Conflicts: 3-way view, resolve, continue/abort, `$EDITOR` hand-off | ✅ committed |
 | 9 | Interactive rebase + cherry-pick | ✅ committed |
 | 10 | Worktrees: list / add / switch / remove + graph checkout markers | ✅ committed |
-| 11 | Stash, submodules, bisect | ⬜ not started |
-| 12 | Multi-repo workspace (groups, dashboard), persistence, theming | ⬜ not started |
+| 11 | Stash, submodules, bisect | ✅ committed |
+| 12 | Multi-repo workspace (groups, dashboard), persistence, theming | ✅ committed |
 | 13 | Hardening: performance + reliability | ⬜ not started |
 | 14 | Distribution: packaging, signing, auto-updater | ⬜ not started (unsigned `.msi` builds work) |
 
@@ -63,6 +63,25 @@ As of **2026-10-29** (`stage-10`). Stage numbers match [`PLAN.md`](./PLAN.md).
   retargets status/graph, per-worktree graph markers) run against real `git` in
   fixture tests.
 
+**Verification (macOS 25.6, arm64, 2026-11-02):**
+
+- `cargo test --workspace` — 349 passed (includes the new workspace-tree tests:
+  `app.json` round-trip across simulated restarts, corrupt-file recovery, group
+  ops, pin/remove persistence, reopen-on-startup).
+- `pnpm test` — 165 passed (16 files).
+- `pnpm build` — TypeScript + Vite production build passes.
+- `tauri build` — `GitGotten.app` bundle produced.
+- Stage-12 flows driven headlessly in Chromium against the production bundle:
+  nested groups with pinned-first ordering, `+ group` add, group delete hoisting
+  children, pin reorder, search filter, remove-from-workspace, the
+  All-Repositories dashboard (live branch/state/ahead-behind/dirty/last-commit
+  per repo, row click switches the active repo), Light/Dark recoloring the chrome
+  and swapping the canvas lane palette, and theme persistence across reload.
+- Windows gate (config dir `%APPDATA%\GitGotten` + persistence): not run — no
+  Windows machine available; the config dir uses Tauri's OS-aware
+  `app_data_dir()` and plain `std::fs` persistence, covered by the round-trip
+  tests above.
+
 **Verification (Windows 11, x64, 2026-10-27):**
 
 - `cargo test --workspace` — 267 passed.
@@ -74,7 +93,7 @@ As of **2026-10-29** (`stage-10`). Stage numbers match [`PLAN.md`](./PLAN.md).
   the watcher, conflict resolved in-app, `git merge --continue`, and
   `git push -u origin main` to a local bare remote.
 
-Stages 09–10 have not been mirrored on Windows yet; the run above predates them.
+Stages 09–12 have not been mirrored on Windows yet; the run above predates them.
 
 ## Features implemented today
 
@@ -135,12 +154,25 @@ Stages 09–10 have not been mirrored on Windows yet; the run above predates the
   worktree's checkout with an outlined marker on the commit it looks at.
 - Checking a branch out in two worktrees is refused by git and surfaced as a clean error.
 
+**Stash, submodules & bisect**
+
+- Stash push/list/apply/drop; submodule list/sync/update; git bisect run helper
+  with a live panel (good/bad marking, remaining count, culprit found).
+
+**Workspace & theming**
+
+- Nested repo groups with drag-and-drop reorder, pinning (pinned repos top of
+  their group), recents ordering, search, and remove-from-workspace (never
+  touches disk) — persisted to `app.json` in the OS config dir and re-opened
+  at startup.
+- All-Repositories dashboard: sortable/filterable live status for every open
+  repo; row click switches repos.
+- Light + Dark + system-follow theming (persisted), applied to the chrome and
+  the branch-lane palette on the graph canvas.
+
 ## Not implemented yet
 
-Stash, submodules, bisect;
-multi-repo groups, pinned/reordered repos, cross-repo dashboard; persisted workspace config
-(`%APPDATA%\GitGotten` / macOS config dir); light/dark theming and the full design system;
-performance hardening on very large repositories; Windows/macOS signing, notarization, and
+Performance hardening on very large repositories; Windows/macOS signing, notarization, and
 the auto-updater.
 
 Linux is deferred (the architecture stays portable).

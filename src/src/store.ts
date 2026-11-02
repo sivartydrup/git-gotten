@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import {
   fetchBuildInfo,
+  groupAdd,
+  groupDelete,
+  groupRename,
   loadBranches,
   loadCommit,
   loadConflict,
@@ -17,8 +20,20 @@ import {
   loadWorktrees,
   openRepo,
   planOp,
+  removeRepoFromWorkspace,
+  repoPin,
+  repoTouch,
   runOp,
+  workspaceGet,
+  workspaceRepos,
+  workspaceSet,
 } from "./api";
+import {
+  emptyWorkspace,
+  ROOT_GROUP_ID,
+  type ChildNode,
+  type Workspace,
+} from "./types";
 import type {
   BisectState,
   Branch,
@@ -124,6 +139,8 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       if (status) {
         get().applyStatus({ repo: meta.id, status });
       }
+      // The Rust tree now contains the repo; resync nav + dashboard from it.
+      void useWorkspaceStore.getState().load();
     } catch (e) {
       set({
         opening: false,
@@ -132,7 +149,10 @@ export const useRepoStore = create<RepoState>((set, get) => ({
     }
   },
 
-  select: (id) => set({ activeId: id, error: null }),
+  select: (id) => {
+    set({ activeId: id, error: null });
+    if (id) void touchRepo(id);
+  },
 
   applyStatus: ({ repo, status }) => {
     set((s) => ({
@@ -891,3 +911,203 @@ export const useConflictStore = create<ConflictState>((set, get) => ({
   reset: () =>
     set({ files: [], total: 0, file: null, conflict: null, choices: [], loading: false, error: null }),
 }));
+
+// ── Stage 12: workspace tree (SPEC §7) ───────────────────────────────────────
+
+type RepoNode = Extract<ChildNode, { kind: "repo" }>;
+
+export function childrenOf(tree: Workspace, id: string): ChildNode[] {
+  return tree.groups.find((g) => g.id === id)?.children ?? [];
+}
+
+/** All repo ids, breadth-first from the root (mirrors Rust `Workspace::repo_ids`). */
+export function repoIdsInTree(tree: Workspace): RepoId[] {
+  const out: RepoId[] = [];
+  let frontier = childrenOf(tree, ROOT_GROUP_ID);
+  while (frontier.length) {
+    const next: ChildNode[] = [];
+    for (const c of frontier) {
+      if (c.kind === "repo") out.push(c.id);
+      else next.push(...childrenOf(tree, c.id));
+    }
+    frontier = next;
+  }
+  return out;
+}
+
+/** Display order within a group: pinned first, then groups, then unpinned repos by recents. */
+export function navOrder(tree: Workspace, groupId: string): ChildNode[] {
+  const kids = childrenOf(tree, groupId);
+  const repos = kids.filter((c): c is RepoNode => c.kind === "repo");
+  const groups = kids.filter((c) => c.kind === "group");
+  const pinned = tree.pinned
+    .map((id) => repos.find((c) => c.id === id))
+    .filter((c): c is RepoNode => c !== undefined);
+  const rank = (id: RepoId) => {
+    const i = tree.recents.indexOf(id);
+    return i === -1 ? Infinity : i;
+  };
+  const unpinned = repos.filter((c) => !tree.pinned.includes(c.id)).sort((a, b) => rank(a.id) - rank(b.id));
+  return [...pinned, ...groups, ...unpinned];
+}
+
+function inSubtree(tree: Workspace, groupId: string, candidate: string): boolean {
+  return childrenOf(tree, groupId).some(
+    (c) => c.kind === "group" && (c.id === candidate || inSubtree(tree, c.id, candidate)),
+  );
+}
+
+/** Pure drag-and-drop move; the web commits the result through `commitTree`. */
+export function moveNode(
+  tree: Workspace,
+  drag: ChildNode,
+  targetParent: string,
+  index: number,
+): Workspace {
+  const next: Workspace = structuredClone(tree);
+  const fromParent = next.groups.find((g) =>
+    g.children.some((c) => c.kind === drag.kind && c.id === drag.id),
+  );
+  if (!fromParent) {
+    return tree;
+  }
+  // A group may not be dropped into its own subtree.
+  if (drag.kind === "group" && (targetParent === drag.id || inSubtree(next, drag.id, targetParent))) {
+    return tree;
+  }
+  fromParent.children = fromParent.children.filter((c) => !(c.kind === drag.kind && c.id === drag.id));
+  const target =
+    next.groups.find((g) => g.id === targetParent) ??
+    next.groups.find((g) => g.id === ROOT_GROUP_ID)!;
+  target.children.splice(Math.max(0, Math.min(index, target.children.length)), 0, drag);
+  // shortcut: an explicit move re-keys recents to the tree order (nav shows what was
+  // dragged where); selecting a repo re-keys it to last-activity order via `repo_touch`.
+  next.recents = repoIdsInTree(next).filter((id) => !next.pinned.includes(id));
+  return next;
+}
+
+/** Optimistic recents bump; the authoritative tree follows via `repo_touch`. */
+function touchRepo(id: RepoId) {
+  useWorkspaceStore.setState((s) => ({
+    tree: { ...s.tree, recents: [id, ...s.tree.recents.filter((r) => r !== id)] },
+  }));
+  void repoTouch(id).then((next) => {
+    if (next) {
+      useWorkspaceStore.setState({ tree: next });
+    }
+  });
+}
+
+interface WorkspaceState {
+  tree: Workspace;
+  load: () => Promise<void>;
+  addGroup: (name: string, parent: string | null) => Promise<void>;
+  renameGroup: (id: string, name: string) => Promise<void>;
+  deleteGroup: (id: string) => Promise<void>;
+  commitTree: (tree: Workspace) => Promise<void>;
+  pin: (id: RepoId, pinned: boolean) => Promise<void>;
+  removeRepo: (id: RepoId) => Promise<void>;
+}
+
+export const useWorkspaceStore = create<WorkspaceState>((set) => ({
+  tree: emptyWorkspace(),
+  load: async () => {
+    const [tree, pairs] = await Promise.all([workspaceGet(), workspaceRepos()]);
+    if (tree) {
+      set({ tree });
+    }
+    if (pairs) {
+      useRepoStore.setState((s) => ({
+        repos: pairs.map((p) => p.meta),
+        status: { ...s.status, ...Object.fromEntries(pairs.map((p) => [p.meta.id, p.status])) },
+      }));
+    }
+  },
+  addGroup: async (name, parent) => {
+    const next = await groupAdd(name, parent);
+    if (next) set({ tree: next });
+  },
+  renameGroup: async (id, name) => {
+    const next = await groupRename(id, name);
+    if (next) set({ tree: next });
+  },
+  deleteGroup: async (id) => {
+    const next = await groupDelete(id);
+    if (next) set({ tree: next });
+  },
+  commitTree: async (tree) => {
+    set({ tree });
+    try {
+      const next = await workspaceSet(tree);
+      if (next) set({ tree: next });
+    } catch (e) {
+      // Rust rejected the tree: resync the nav from the authoritative copy.
+      const authoritative = await workspaceGet();
+      if (authoritative) set({ tree: authoritative });
+      useRepoStore.setState({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+  pin: async (id, pinned) => {
+    const next = await repoPin(id, pinned);
+    if (next) set({ tree: next });
+  },
+  removeRepo: async (id) => {
+    const next = await removeRepoFromWorkspace(id);
+    if (next) set({ tree: next });
+    useRepoStore.setState((s) => ({
+      repos: s.repos.filter((m) => m.id !== id),
+      activeId: s.activeId === id ? null : s.activeId,
+    }));
+  },
+}));
+
+/** Whether the main area shows the active repo (false) or the all-repos dashboard (true). */
+interface ViewState {
+  dashboard: boolean;
+  setDashboard: (dashboard: boolean) => void;
+}
+
+export const useViewStore = create<ViewState>((set) => ({
+  dashboard: false,
+  setDashboard: (dashboard) => set({ dashboard }),
+}));
+
+// ── Stage 12: theming (SPEC §12) ─────────────────────────────────────────────
+
+export type ThemeMode = "system" | "light" | "dark";
+
+interface ThemeState {
+  mode: ThemeMode;
+  resolved: "light" | "dark";
+  setMode: (mode: ThemeMode) => void;
+}
+
+function savedMode(): ThemeMode {
+  const v = localStorage.getItem("gitgotten.theme");
+  return v === "light" || v === "dark" || v === "system" ? v : "system";
+}
+
+function prefersDark(): boolean {
+  return !!window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+}
+
+function applyTheme(mode: ThemeMode): "light" | "dark" {
+  const resolved = mode === "system" ? (prefersDark() ? "dark" : "light") : mode;
+  document.documentElement.dataset.theme = resolved;
+  localStorage.setItem("gitgotten.theme", mode);
+  return resolved;
+}
+
+export const useThemeStore = create<ThemeState>((set) => ({
+  mode: savedMode(),
+  resolved: applyTheme(savedMode()),
+  setMode: (mode) => set({ mode, resolved: applyTheme(mode) }),
+}));
+
+if (window.matchMedia) {
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    if (useThemeStore.getState().mode === "system") {
+      useThemeStore.setState({ resolved: applyTheme("system") });
+    }
+  });
+}

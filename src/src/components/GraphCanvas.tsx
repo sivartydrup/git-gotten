@@ -8,11 +8,14 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { useActivityStore, useBisectStore, useGraphStore, useMainTab, useRepoStore } from "../store";
+import { useActivityStore, useBisectStore, useGraphStore, useMainTab, useRepoStore, useThemeStore } from "../store";
 import {
+  DARK_GRAPH_COLORS,
   paletteColor,
+  resolveGraphColors,
   type BisectState,
   type Graph,
+  type GraphColors,
   type Node,
   type Op,
 } from "../types";
@@ -174,7 +177,9 @@ export function renderGraph(
   viewport: Viewport,
   state: RenderState,
   dpr: number,
+  colors: GraphColors = DARK_GRAPH_COLORS,
 ): void {
+  const C = colors;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
   const graph = state.graph;
@@ -246,7 +251,7 @@ export function renderGraph(
       }
     }
     if (badTop >= 0 && goodBottom >= badTop) {
-      ctx.fillStyle = "#e05252";
+      ctx.fillStyle = C.error;
       ctx.globalAlpha = 0.1;
       ctx.fillRect(
         MIN_X,
@@ -275,7 +280,7 @@ export function renderGraph(
 
     // Row highlight for the selection (drawn first, under everything).
     if (state.selected === node.hash) {
-      ctx.fillStyle = "var(--accent, #4c8bf5)";
+      ctx.fillStyle = C.accent;
       ctx.globalAlpha = dimmed ? 0.08 : 0.14;
       ctx.fillRect(
         tx - TEXT_X_OFFSET,
@@ -296,7 +301,7 @@ export function renderGraph(
       if (!seg) {
         continue;
       }
-      ctx.strokeStyle = paletteColor(line.color);
+      ctx.strokeStyle = paletteColor(line.color, C.palette);
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(laneX(seg.lane), y - ROW_H / 2);
@@ -316,7 +321,7 @@ export function renderGraph(
       const px = laneX(parent.lane);
       const py = rowY(parent.row);
       const ownLine = graph.lines[node.lines[0]];
-      ctx.strokeStyle = paletteColor(ownLine?.color ?? 0);
+      ctx.strokeStyle = paletteColor(ownLine?.color ?? 0, C.palette);
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(x, y);
@@ -339,7 +344,7 @@ export function renderGraph(
         px2 = MIN_X + pillW;
       }
       const py2 = y + (i < 2 ? -1 : 1) * (6 + Math.floor(i / 2) * 12);
-      const color = paletteColor(ref.color);
+      const color = paletteColor(ref.color, C.palette);
       if (ref.kind === "Worktree") {
         ctx.strokeStyle = color;
         ctx.lineWidth = 1;
@@ -354,7 +359,7 @@ export function renderGraph(
       ctx.fillText(ref.name, px2 - pillW + 4, py2 + 3);
     }
     if (node.refs.length > MAX_REF_PILLS) {
-      ctx.fillStyle = "var(--muted, #888)";
+      ctx.fillStyle = C.muted;
       ctx.font = "9px ui-monospace, monospace";
       ctx.fillText(`+${node.refs.length - MAX_REF_PILLS}`, Math.max(MIN_X, x - DOT_R - 34), y + 18);
     }
@@ -368,19 +373,19 @@ export function renderGraph(
             (s) => s.lane === node.lane && s.from_row <= r && s.to_row >= r,
           ),
       );
-    ctx.fillStyle = paletteColor(ownLine?.color ?? 0);
+    ctx.fillStyle = paletteColor(ownLine?.color ?? 0, C.palette);
     ctx.beginPath();
     ctx.arc(x, y, DOT_R, 0, Math.PI * 2);
     ctx.fill();
 
     // HEAD marker: an outer ring around the dot.
     if (node.is_head) {
-      ctx.strokeStyle = paletteColor(ownLine?.color ?? 0);
+      ctx.strokeStyle = paletteColor(ownLine?.color ?? 0, C.palette);
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.arc(x, y, DOT_R + 3, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.fillStyle = "var(--fg, #333)";
+      ctx.fillStyle = C.fg;
       ctx.font = "bold 10px ui-monospace, monospace";
       ctx.fillText("HEAD", Math.max(MIN_X, x - DOT_R - 30), y - 10);
     }
@@ -411,7 +416,7 @@ export function renderGraph(
 
     // Hover ring.
     if (state.hovered === node.hash) {
-      ctx.strokeStyle = "var(--fg, #333)";
+      ctx.strokeStyle = C.fg;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.arc(x, y, DOT_R + 2, 0, Math.PI * 2);
@@ -419,10 +424,10 @@ export function renderGraph(
     }
 
     // The text block: subject + author · date.
-    ctx.fillStyle = "var(--fg, #333)";
+    ctx.fillStyle = C.fg;
     ctx.font = "12px -apple-system, 'Segoe UI', sans-serif";
     ctx.fillText(truncate(node.subject, maxChars), tx, y - 4);
-    ctx.fillStyle = "var(--muted, #888)";
+    ctx.fillStyle = C.muted;
     ctx.font = "11px -apple-system, 'Segoe UI', sans-serif";
     ctx.fillText(
       truncate(`${node.author} · ${formatDate(node.date)}`, maxChars),
@@ -475,6 +480,7 @@ export function GraphCanvas() {
     hover,
   } = useGraphStore();
   const bisect = useBisectStore((s) => s.bisect);
+  const theme = useThemeStore((s) => s.resolved);
   const { requestPreview, running } = useActivityStore();
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -504,7 +510,7 @@ export function GraphCanvas() {
   // Redraw when anything renderable changes.
   useEffect(() => {
     dirtyRef.current = true;
-  }, [graph, selected, hovered, query, bisect, nodesCount, menu]);
+  }, [graph, selected, hovered, query, bisect, nodesCount, menu, theme]);
 
   // Size tracking (device pixels) via ResizeObserver.
   useEffect(() => {
@@ -548,6 +554,7 @@ export function GraphCanvas() {
         viewportRef.current,
         stateRef.current,
         dpr,
+        resolveGraphColors(),
       );
     };
     raf = requestAnimationFrame(draw);
