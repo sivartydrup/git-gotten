@@ -453,8 +453,15 @@ shell. The web UI is the only "view" layer.
   Windows code-signing certificate. (Cert provisioning is a build-infra prerequisite.)
 - **Auto-updater** — Tauri updater + a **version manifest** (can start as a statically
   hosted JSON). Checks on launch + periodically.
-- **Minimum OS:** macOS 12+, Windows 10+.
+- **Minimum OS:** macOS 12+, Windows 10+ — pinned as
+  `tauri.conf.json > bundle > macOS > minimumSystemVersion = "12.0"`.
 - Linux: portable code, **no** packaging/testing in v1.
+
+**Stage 14 realization:** the feed is GitHub Releases' static manifest
+(`…/releases/latest/download/latest.json`), checked at launch and every 6 h; signed update
+artifacts are produced only with `TAURI_SIGNING_PRIVATE_KEY` present, so
+`createUpdaterArtifacts` stays `false` and unsigned development builds keep bundling.
+Signing and notarization themselves stay blocked on certificate provisioning (§21).
 
 ---
 
@@ -500,8 +507,11 @@ These were **not** in the interview; I chose reasonable defaults. Flag any to ch
 3. **In-app editor:** CodeMirror 6 (lighter than Monaco, adequate for the quick-edit scope).
    Monaco is the alternative if you want LSP-grade editing. *(confirm)*
 4. **Persistence:** plain JSON files for v1; SQLite only if it outgrows them. *(confirm)*
-5. **Auto-update feed:** statically hosted version manifest. *(confirm)*
-6. **Min OS:** macOS 12+, Windows 10+. *(confirm)*
+5. **Auto-update feed:** statically hosted version manifest. **Decided at stage 14:**
+   GitHub Releases — `releases/latest/download/latest.json`, minisign-verified against the
+   pubkey pinned in `tauri.conf.json`; template at `updater/latest.json`.
+6. **Min OS:** macOS 12+, Windows 10+. **Decided at stage 14:** macOS 12 enforced via
+   `bundle.macOS.minimumSystemVersion`; Windows 10 is the build target's floor.
 7. **v1 cross-repo:** status dashboard + single-repo active working set (no simultaneous
    multi-repo editing). *(confirm the boundary.)*
 8. **App icon / name lock-in:** `GitGotten`, a git-themed mark. *(art later.)*

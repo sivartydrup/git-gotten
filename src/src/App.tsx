@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useActivityStore, useBisectStore, useBuildInfo, useConflictStore, useGraphStore, useMainTab, useRebaseStore, useRefsStore, useRepoStore, useStashesStore, useStagingStore, useSubmodulesStore, useViewStore, useWorktreesStore, useWorkspaceStore } from "./store";
+import { useActivityStore, useBisectStore, useBuildInfo, useConflictStore, useGraphStore, useMainTab, useRebaseStore, useRefsStore, useRepoStore, useStashesStore, useStagingStore, useSubmodulesStore, useUpdaterStore, useViewStore, useWorktreesStore, useWorkspaceStore } from "./store";
 import { onOpFinished, onOpStarted, onStatusChanged } from "./api";
 import { TopBar } from "./components/TopBar";
 import { RepoNav } from "./components/RepoNav";
@@ -18,6 +18,7 @@ import { WorktreesPanel } from "./components/WorktreesPanel";
 import { StashPanel } from "./components/StashPanel";
 import { BisectPanel } from "./components/BisectPanel";
 import { Dashboard } from "./components/Dashboard";
+import { UpdatePrompt } from "./components/UpdatePrompt";
 
 
 /**
@@ -54,6 +55,13 @@ export default function App() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Update feed (SPEC §17): once at launch, then every 6h while the app runs.
+  useEffect(() => {
+    void useUpdaterStore.getState().check();
+    const timer = setInterval(() => void useUpdaterStore.getState().check(), 6 * 3600_000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Live status updates from the Rust core (SPEC §13). No-op outside Tauri.
   useEffect(() => {
@@ -157,6 +165,7 @@ export default function App() {
     <main className="shell">
       <TopBar />
       <ConflictBanner />
+      <UpdatePrompt />
       <div className="workspace">
         <RepoNav />
         {dashboard ? (

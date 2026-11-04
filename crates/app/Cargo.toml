@@ -24,7 +24,13 @@ parking_lot = { workspace = true }
 git-gotten-protocol = { workspace = true }
 gitcore = { workspace = true }
 notify = { workspace = true }
+tauri-plugin-updater = { workspace = true }
+tauri-plugin-process = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
 git-gotten-testutil = { workspace = true }
+semver = { workspace = true }
+# `test` only for test targets (resolver 2 keeps it out of the shipped binary):
+# it is what gives the updater integration tests a mock Tauri app.
+tauri = { workspace = true, features = ["test"] }

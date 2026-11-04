@@ -9,9 +9,9 @@ GitGotten is a **Tauri v2** desktop app: a React + TypeScript UI over a Rust cor
 reads with [`gix`](https://github.com/GitoxideLabs/gitoxide) and writes with the real
 `git` CLI.
 
-> Status: **in build — stages 0–10 of 15 complete, stage 11 next.** There is no release
-> yet. See [Status](#status) below, [`PLAN.md`](./PLAN.md) for the stage plan, and
-> [`SPEC.md`](./SPEC.md) for the full product design.
+> Status: **all 15 stages (0–14) are committed.** The app builds, bundles, installs and
+> self-updates locally — but nothing is published yet: no signed release exists. See
+> [Status](#status), [`PLAN.md`](./PLAN.md) and [`SPEC.md`](./SPEC.md).
 
 ---
 
@@ -47,7 +47,7 @@ As of **2026-10-29** (`stage-10`). Stage numbers match [`PLAN.md`](./PLAN.md).
 | 11 | Stash, submodules, bisect | ✅ committed |
 | 12 | Multi-repo workspace (groups, dashboard), persistence, theming | ✅ committed |
 | 13 | Hardening: performance + reliability | ✅ committed |
-| 14 | Distribution: packaging, signing, auto-updater | ⬜ not started (unsigned `.msi` builds work) |
+| 14 | Distribution: packaging, signing, auto-updater | ✅ committed (signing/notarization infra missing) |
 
 **Verification (macOS 25.6, arm64, 2026-10-29):**
 
@@ -113,6 +113,27 @@ As of **2026-10-29** (`stage-10`). Stage numbers match [`PLAN.md`](./PLAN.md).
   `Backend` restart recovers workspace and log.
 - Windows gate: not run — no Windows machine available. The new paths are plain `std::fs`
   over the OS-aware app-data dir already covered by the persistence round-trip tests.
+
+**Verification (macOS 25.6, arm64, 2026-11-04 — stage 14):**
+
+- `cargo test` — 375 passed, including 7 new updater integration tests in
+  `crates/app/tests/updater.rs`. `pnpm test` — 198 passed (18 files). `pnpm build` —
+  TypeScript + Vite production build passes.
+- Update decisions are exercised against a **real local HTTP feed**, not a mock: a feed
+  announcing 9.9.9 yields an update whose version, notes and download URL are the entry
+  for *this* os-arch; a feed announcing the running version (or an older one) yields none;
+  a feed with no endpoints fails loudly instead of silently; a manifest signed with a
+  placeholder signature is rejected against the pinned pubkey. The published manifest
+  template (`updater/latest.json`) is parsed by the plugin's own schema type in a test.
+- `tauri build` with no signing environment set: exit 0, `GitGotten.app` (7.65 MiB) and
+  `GitGotten_0.1.0_aarch64.dmg` (3.93 MiB) under `target/release/bundle`.
+- The `.dmg` was mounted, `GitGotten.app` copied out and launched: the window renders, and
+  the launch-time feed check fired (two `GET /latest.json` hits in the mock feed's access
+  log, 8 s apart) and the prompt appeared on screen — "Update available: **9.9.9**" with
+  the manifest's release notes and Install / Dismiss buttons.
+- Not verified: the Install path end to end (download → signature check → install →
+  relaunch) needs a real signed artifact; macOS signing/notarization and the Windows
+  `.msi` gate for this stage need infrastructure that does not exist (see below).
 
 **Verification (Windows 11, x64, 2026-10-27):**
 
@@ -223,10 +244,30 @@ Stages 09–12 have not been mirrored on Windows yet; the run above predates the
   JSON file per repo, restored on restart, monotonic ids, and rebuilt from scratch if
   the file is corrupt.
 
+**Distribution & auto-update (stage 14)**
+
+- `tauri build` bundles `.app` + `.dmg` on macOS and `.msi` on Windows from one config
+  (`bundle.targets = "all"`), with the SPEC §17 floor pinned as
+  `bundle.macOS.minimumSystemVersion = "12.0"`.
+- The updater plugin is wired on both sides: Rust (`tauri_plugin_updater` +
+  `tauri_plugin_process` in `crates/app/src/lib.rs`) and web (`checkForUpdate` /
+  `installUpdate` in `api.ts`, an updater slice in `store.ts`, `components/UpdatePrompt.tsx`),
+  with `updater:default` + `process:allow-restart` granted to the main window capability.
+- Checks run once at launch and every 6 hours while the app is open, against the static
+  GitHub Releases manifest
+  `https://github.com/sivartydrup/git-gotten/releases/latest/download/latest.json`,
+  verified against the minisign pubkey pinned in `tauri.conf.json`.
+- An unreachable or unreadable feed is *not* an update: the failure reason is recorded and
+  no prompt renders. When a newer release is announced, the prompt shows its version and
+  release notes with Install / Dismiss; Install downloads, verifies the signature, installs
+  and relaunches.
+
 ## Not implemented yet
 
-Windows/macOS signing, notarization, and the auto-updater; the remaining per-repo
-state files (branch colors, last selection).
+macOS code signing + notarization, Windows Authenticode signing, and publishing the first
+signed release (which is what makes the update feed live) — all gated on certificates and
+CI that do not exist yet; the updater itself is implemented and verified against a mock
+feed. The remaining per-repo state files (branch colors, last selection).
 
 Linux is deferred (the architecture stays portable).
 
@@ -313,14 +354,15 @@ pnpm tauri:build -- --bundles msi
 # -> target/release/bundle/msi/GitGotten_0.1.0_x64_en-US.msi
 ```
 
-The release executable is `target/release/git-gotten-app.exe` on Windows. Bundles are
-unsigned; signing is gated on infrastructure that does not exist yet (Stage 14).
+The release executable is `target/release/git-gotten-app.exe` on Windows. Bundles stay
+unsigned today; see [Building, signing and updating](#building-signing-and-updating) for
+what a signed release needs.
 
 ### Tests
 
 ```bash
-cargo test                  # Rust: 267 tests (unit + integration + real-git fixtures)
-pnpm test                   # Web: 88 tests (Vitest + Testing Library)
+cargo test                  # Rust: 375 tests (unit + integration + real-git fixtures)
+pnpm test                   # Web: 198 tests (Vitest + Testing Library)
 pnpm build                  # tsc + Vite production build
 ```
 
@@ -333,6 +375,38 @@ Test strategy:
 - **Command plans as contracts.** Tests assert the exact argv/display for every `Op`.
 - **UI behavior.** Component tests drive the real stores against a mocked IPC layer;
   the Rust backend is exercised separately.
+
+## Building, signing and updating
+
+**Unsigned local build** (what development does today):
+
+```bash
+pnpm tauri:build     # -> bundle/macos/GitGotten.app + bundle/dmg/GitGotten_<ver>_<arch>.dmg
+```
+
+`bundle.createUpdaterArtifacts = false` is what keeps this working with no signing key: an
+unsigned build still produces an installer, and the installed app still checks the feed.
+
+**Updater identity:** `pnpm tauri signer generate -- -w ~/.tauri/gitgotten.key` created the
+minisign keypair. The public half is pinned in
+`crates/app/tauri.conf.json → plugins.updater.pubkey`; the private key stays out of the
+repo. The feed is GitHub Releases' static manifest (`…/releases/latest/download/latest.json`)
+and `updater/latest.json` is that manifest's template — the same shape the app's manifest
+test parses.
+
+**A signed release** adds, at build time:
+
+| Gate | What it needs |
+|---|---|
+| Signed updater artifacts + `latest.json` | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, and `bundle.createUpdaterArtifacts = true` — e.g. `pnpm tauri:build --config bundle.createUpdaterArtifacts=true`; produces `GitGotten_<ver>_<arch>.app.tar.gz` + `.sig` (`.msi.zip` + `.sig` on Windows) to publish with the release |
+| macOS code signing | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` (hardened runtime is on by default) |
+| macOS notarization | `APPLE_ID` + `APPLE_PASSWORD` + `APPLE_TEAM_ID`, or `APPLE_API_KEY` + `APPLE_API_ISSUER`; `APPLE_PROVIDER_SHORT_NAME` when the account spans teams |
+| Windows code signing | an Authenticode certificate plus `TAURI_WINDOWS_SIGNTOOL_PATH` / `bundle.windows.signCommand` |
+
+`--config` takes a *file path* or a `dotted.key=value` pair — not inline JSON. Pointing a
+build at a mock feed (the way stage 14 was hand-verified) is exactly that: an override file
+setting `plugins.updater.endpoints` + `dangerousInsecureTransportProtocol`, never a
+committed config value or a code path.
 
 ## Windows notes
 

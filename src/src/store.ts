@@ -1,9 +1,11 @@
 import { create } from "zustand";
 import {
+  checkForUpdate,
   fetchBuildInfo,
   groupAdd,
   groupDelete,
   groupRename,
+  installUpdate,
   loadBranches,
   loadCommit,
   loadConflict,
@@ -1122,3 +1124,70 @@ if (window.matchMedia) {
     }
   });
 }
+
+interface UpdaterState {
+  /** A newer release the feed announced (and the user has not dismissed). */
+  available: boolean;
+  version: string | null;
+  notes: string | null;
+  /** The user declined this version for the rest of the session. */
+  dismissed: boolean;
+  /** Download + install is in flight (the app relaunches when it lands). */
+  installing: boolean;
+  /** Last updater failure, verbatim from the plugin (SPEC §18). */
+  error: string | null;
+  /** Check the update feed once (SPEC §17: on launch + periodically). */
+  check: () => Promise<void>;
+  /** Install the announced update and relaunch into it. */
+  install: () => Promise<void>;
+  dismiss: () => void;
+}
+
+/** Client state for the auto-updater prompt (SPEC §17). */
+export const useUpdaterStore = create<UpdaterState>((set, get) => ({
+  available: false,
+  version: null,
+  notes: null,
+  dismissed: false,
+  installing: false,
+  error: null,
+
+  check: async () => {
+    try {
+      const update = await checkForUpdate();
+      if (!update) {
+        set({ available: false, version: null, notes: null, error: null });
+        return;
+      }
+      set({
+        // A version the user already declined stays declined.
+        available: !(get().dismissed && get().version === update.version),
+        version: update.version,
+        notes: update.notes,
+        error: null,
+      });
+    } catch (e) {
+      // A dead or unreadable feed is not an update: stay quiet, keep the reason.
+      set({
+        available: false,
+        version: null,
+        notes: null,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+
+  install: async () => {
+    set({ installing: true, error: null });
+    try {
+      await installUpdate();
+    } catch (e) {
+      set({
+        installing: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  },
+
+  dismiss: () => set({ available: false, dismissed: true }),
+}));

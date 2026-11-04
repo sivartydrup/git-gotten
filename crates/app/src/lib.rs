@@ -1081,6 +1081,12 @@ pub fn run() {
     let (backend, events) = Backend::new();
     tauri::Builder::default()
         .manage(backend)
+        // Stage 14 (SPEC §17): the auto-updater. Its `check` / `download_and_install`
+        // commands are the plugin's own; the web shows the prompt, so every updater
+        // action stays one the UI can name. Pointing the app at a mock feed is a
+        // dev-time `--config` override, not a code path.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             build_info,
             open_repo,

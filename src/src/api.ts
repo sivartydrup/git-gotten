@@ -1,4 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { check as checkUpdater, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { listen } from "@tauri-apps/api/event";
 import type {
   BisectState,
@@ -415,4 +417,43 @@ export async function removeRepoFromWorkspace(id: string): Promise<Workspace | n
     return null;
   }
   return await invoke<Workspace>("remove_repo_from_workspace", { id });
+}
+
+// ── Stage 14: auto-updater (SPEC §17) ──────────────────────────────────────
+
+/**
+ * The update the feed announced on the last check. `installUpdate` needs the
+ * plugin's own handle (it carries the download URL + signature), so the
+ * wrapper keeps it rather than handing it to the store.
+ */
+let announced: Update | null = null;
+
+/**
+ * Ask the update feed once (plugin `check`). Returns the announced release,
+ * or `null` when the app is up to date / outside Tauri. Rejects when the
+ * feed is unreachable or the manifest is unreadable.
+ */
+export async function checkForUpdate(): Promise<{ version: string; notes: string | null } | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  announced = await checkUpdater();
+  if (!announced) {
+    return null;
+  }
+  return { version: announced.version, notes: announced.body ?? null };
+}
+
+/**
+ * Download, verify and install the update announced by the last check, then
+ * relaunch into it. Throws with the plugin's own message on any failure
+ * (the store shows it verbatim, per the transparency contract).
+ */
+export async function installUpdate(): Promise<void> {
+  if (!announced) {
+    throw new Error("no update has been announced by the last check");
+  }
+  await announced.downloadAndInstall();
+  announced = null;
+  await relaunch();
 }

@@ -1920,3 +1920,38 @@ code {
 .dashboard .muted {
   color: var(--muted);
 }
+
+/* ── Stage 14: auto-updater prompt ────────────────────────────────────────── */
+
+.update-prompt {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 13px;
+}
+
+.update-prompt-label {
+  color: var(--muted);
+}
+
+.update-prompt-label strong {
+  color: var(--fg);
+}
+
+.update-prompt-notes {
+  margin-left: 8px;
+  color: var(--muted);
+}
+
+.update-prompt-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
+.update-prompt-error {
+  color: var(--error);
+}
