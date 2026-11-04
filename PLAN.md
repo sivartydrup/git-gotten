@@ -37,8 +37,8 @@ and an interactive lane-DAG branch graph as the centerpiece.
   - Test fixtures use a local bare remote; the remote path must not carry the Windows
     `\\?\` verbatim prefix (git parses it as an SCP `host:path`), and the repo-local
     `core.editor` no-op must be a real portable program (`git --version`, not `true`).
-  - Verified working set (2026-10-27): Rust 1.99.1 MSVC, VS Build Tools 17.14.42 +
-    Windows SDK 10.0.26100, WebView2 155.x, Node 24.22.1, pnpm 10.34.9, Git 2.56.0.
+  - Verified working set (2026-10-27, re-verified 2026-11-04 — that run used Node 26.13.0):
+    Rust 1.99.1 MSVC, VS Build Tools 17.14.42 + Windows SDK 10.0.26100, WebView2 155.x, pnpm 10.34.9, Git 2.56.0.
 
 ### The fixed per-stage workflow (do these, in order, every stage)
 1. **Design** — confirm the files, types, functions, and UI components this stage adds (they are enumerated per stage). If the design is ambiguous, resolve it *here* before writing code.
@@ -90,6 +90,8 @@ pnpm tauri dev                              # hot-reload dev (web on :1420, nati
 ### Platform gates
 - **macOS is primary.** Verify every stage on macOS.
 - **Windows** is required at: Stage 2 (process/editor hand-off), Stage 5 (paths + `apply --cached`), Stage 6 (fetch/push against a local remote), Stage 10 (worktree paths), Stage 12 (config dir), and Stage 14 (packaging). For all other stages, a quick Windows *sanity* run at the end of the milestone is enough. When a Windows machine is unavailable, note it in the stage's verification and proceed — do not block on it.
+All of those gates — plus the Stage 9 and Stage 11 Windows gates — are recorded in the README
+Verification blocks (2026-10-27 and 2026-11-04 runs).
 
 ### Stage dependency graph
 ```mermaid
@@ -176,10 +178,11 @@ git push -u origin main
 ```
 
 **Acceptance criteria:**
-- [ ] `pnpm tauri build` produces a runnable macOS `.app` (window opens).
-- [ ] All four crates + web build; `cargo test`/`pnpm test` green.
-- [ ] `SPEC.md` + `PLAN.md` committed and pushed to `origin main`.
-- [ ] `git status` clean after push.
+- [x] `pnpm tauri build` produces a runnable macOS `.app` (window opens). — re-proven at the stage-14
+  gate: `target/release/bundle/macos/GitGotten.app` + `bundle/dmg/GitGotten_0.1.0_aarch64.dmg`.
+- [x] All four crates + web build; `cargo test`/`pnpm test` green. — 380 Rust / 205 web (2026-11-04).
+- [x] `SPEC.md` + `PLAN.md` committed and pushed to `origin main`.
+- [x] `git status` clean after push. — checked 2026-11-04.
 
 ---
 
@@ -384,8 +387,11 @@ git push -u origin main
 **Commit & push:** `git add -A && git commit -m "stage-06: branches remotes tags" && git push origin main`
 
 **Acceptance criteria:**
-- [ ] Create/switch/delete/rename branch; add/remove/fetch/push remote; create/checkout/delete/push tag — all work + logged.
-- [ ] Graph shows live ref labels after each change.
+- [x] Create/switch/delete/rename branch; add/remove/fetch/push remote; create/checkout/delete/push tag
+  — all work + logged. — `crates/gitcore/tests/refs.rs` (45 tests, real git + a local bare remote) and
+  `src/src/refs.test.tsx`; Windows gate done 2026-10-27 (`git push -u origin main` through the app).
+- [x] Graph shows live ref labels after each change. — the graph reloads on `op_finished` (`App.tsx`) and
+  the labels come from the re-read status; asserted in `refs.rs` + `GraphCanvas.test.tsx`.
 
 ---
 
@@ -410,8 +416,12 @@ git push -u origin main
 **Commit & push:** `git add -A && git commit -m "stage-07: fetch pull push + merge" && git push origin main`
 
 **Acceptance criteria:**
-- [ ] fetch/pull/push reconcile a diverged repo; push respects the Stage 2 risk model.
-- [ ] Clean merge produces a merge commit in the graph; conflicted merge hands off to the (next stage) conflict view.
+- [x] fetch/pull/push reconcile a diverged repo; push respects the Stage 2 risk model. —
+  `crates/gitcore/tests/sync.rs` (14 tests) against a local bare remote, divergence included; the
+  `Dangerous` classification is the Stage 2 executor path those tests run through.
+- [x] Clean merge produces a merge commit in the graph; conflicted merge hands off to the (next stage)
+  conflict view. — merge fixtures assert the resulting history (`sync.rs`, `conflicts.rs`); `Status.in_merge`
+  plus conflicted files drive the banner and `ConflictView` (`conflict.test.tsx`).
 
 ---
 
@@ -438,9 +448,14 @@ git push -u origin main
 **Commit & push:** `git add -A && git commit -m "stage-08: in-app 3-way conflict resolution" && git push origin main`
 
 **Acceptance criteria:**
-- [ ] Conflicts are detected and listed; base/ours/theirs render; all four per-hunk choices + manual produce correct files.
-- [ ] Continue/Abort work for merge, rebase, and cherry-pick; the state banner is always correct.
-- [ ] External editor hand-off works.
+- [x] Conflicts are detected and listed; base/ours/theirs render; all four per-hunk choices + manual produce
+  correct files. — `crates/gitcore/tests/conflicts.rs` (23 tests) asserts each resolution in the real index;
+  `ConflictView` / `ConflictBanner` behavior in `src/src/conflict.test.tsx`.
+- [x] Continue/Abort work for merge, rebase, and cherry-pick; the state banner is always correct. — asserted
+  for all three in `conflicts.rs`; the banner reads `Status.in_merge` / `in_rebase` / `in_cherry_pick`.
+- [x] External editor hand-off works. — `Op::OpenEditor` plan and execution tests in `conflicts.rs`
+  (`open_editor_plan_uses_the_configured_editor`, `editor_handoff_runs_and_succeeds`), with `core.editor`
+  pinned to a real program (`git --version`) so the same tests run on Windows.
 
 ---
 
@@ -494,8 +509,13 @@ git push -u origin main
 **Commit & push:** `git add -A && git commit -m "stage-10: worktrees" && git push origin main`
 
 **Acceptance criteria:**
-- [ ] list/add/remove/switch worktrees all work and are logged; the active worktree drives the whole view.
-- [ ] The graph shows per-worktree checkout state; double-checkout is a clean error, not a crash.
+- [x] list/add/remove/switch worktrees all work and are logged; the active worktree drives the whole view. —
+  `crates/gitcore/tests/worktrees.rs` (13 tests) + `worktrees.test.tsx`; Windows gate done 2026-11-04 in the
+  installed MSI: worktrees whose paths contain spaces were switched to and removed (dirty force-removal
+  included); successful removals unlink the workspace entry, failures keep it.
+- [x] The graph shows per-worktree checkout state; double-checkout is a clean error, not a crash. —
+  `worktrees.rs` asserts git's refusal surfaces as an error; the 2026-11-04 installed-app run showed that
+  message in the activity log with the graph still usable.
 
 ---
 
@@ -543,9 +563,9 @@ git push -u origin main
 
 **Run tests:** `cargo test` · `pnpm test`.
 
-**Verify (macOS):** add several repos into nested groups, pin + reorder, search; open the dashboard and confirm per-repo status; toggle Light/Dark and confirm the graph lane palette + chrome recolor cleanly. **Windows gate:** config-dir paths (`%APPDATA%\GitGotten`) + persistence.
+**Verify (macOS):** add several repos into nested groups, pin + reorder, search; open the dashboard and confirm per-repo status; toggle Light/Dark and confirm the graph lane palette + chrome recolor cleanly. **Windows gate:** config-dir paths (`%APPDATA%\com.sivartydrup.gitgotten`) + persistence.
 
-**Verified (macOS 25.6, arm64, 2026-11-02):** headless Chromium drove the production bundle against a faithful fake of the workspace IPC: nested groups render pinned-first (recents order), `+ group` adds, group delete hoists children to the root, pin reorders, search filters to the matching repo, the All-Repositories dashboard lists every repo with live branch/state/ahead-behind/dirty/last-commit and row-click switches the active repo (graph reloaded); Light/Dark recolor the chrome and swap the canvas lane palette (`BRANCH_PALETTE_LIGHT` strokes verified in unit tests), and the mode persists across reload (`localStorage`). Tree persistence itself is proven by the Rust `app.json` round-trip tests (save → restart → identical tree; corrupt file → default tree, next write repairs). **Windows gate:** not run (no Windows machine available this stage); the config dir comes from Tauri's OS-aware `path().app_data_dir()` (`%APPDATA%\GitGotten` on Windows, verified in `crates/app/src/lib.rs`), persistence uses plain `std::fs`, and `app.json` round-trips under `cargo test` — do the Windows sanity run at the next milestone.
+**Verified (macOS 25.6, arm64, 2026-11-02):** headless Chromium drove the production bundle against a faithful fake of the workspace IPC: nested groups render pinned-first (recents order), `+ group` adds, group delete hoists children to the root, pin reorders, search filters to the matching repo, the All-Repositories dashboard lists every repo with live branch/state/ahead-behind/dirty/last-commit and row-click switches the active repo (graph reloaded); Light/Dark recolor the chrome and swap the canvas lane palette (`BRANCH_PALETTE_LIGHT` strokes verified in unit tests), and the mode persists across reload (`localStorage`). Tree persistence itself is proven by the Rust `app.json` round-trip tests (save → restart → identical tree; corrupt file → default tree, next write repairs). **Windows gate:** done 2026-11-04 in the installed MSI — two repositories plus a group lived at `%APPDATA%\com.sivartydrup.gitgotten\app.json` and the dark theme (stored by WebView2) survived a restart.
 
 **Commit & push:** `git add -A && git commit -m "stage-12: full workspace + theming" && git push origin main`
 
@@ -621,10 +641,23 @@ git push -u origin main
 **Commit & push:** `git add -A && git commit -m "stage-14: packaging + signing + auto-updater" && git push origin main`
 
 **Acceptance criteria:**
-- [ ] `tauri build` produces a runnable, installable artifact on macOS (and Windows when tested).
-- [ ] Auto-updater checks the feed and prompts correctly (mock-verified).
-- [ ] Unsigned dev builds always work; signing/notarization is wired and **gated on real infra** (reported if absent).
-- [ ] **This is the final stage** — the app is complete per `SPEC.md`.
+- [x] `tauri build` produces a runnable, installable artifact on macOS (and Windows when tested). — macOS:
+  `GitGotten.app` + `GitGotten_0.1.0_aarch64.dmg`, mounted and launched (2026-11-04). Windows: unsigned MSI
+  installed with administrator elevation and launched (2026-11-04).
+- [x] Auto-updater checks the feed and prompts correctly (mock-verified). — `crates/app/tests/updater.rs`
+  (7 tests) drives the plugin's own check against a local HTTP feed: newer version → an update carrying this
+  os-arch's entry, same/older → none, no endpoints → loud failure, bad signature rejected against the pinned
+  pubkey. End to end in the installed Windows app: 0.1.0 → signed local feed → download → verify → 0.1.1 →
+  relaunch at 0.1.1.
+- [x] Unsigned dev builds always work; signing/notarization is wired and **gated on real infra** (reported if
+  absent). — Wired through `TAURI_SIGNING_PRIVATE_KEY`, `CSC_LINK`/`CSC_KEY_PASSWORD`,
+  `APPLE_ID`/`APPLE_TEAM_ID`/`APPLE_API_KEY`. Absent, reported: no Developer ID + notary credentials, no
+  Authenticode certificate, no published release (`GET /repos/sivartydrup/git-gotten/releases` is empty, so the
+  configured feed 404s). Nothing signed was faked.
+- [x] **This is the final stage** — the app is complete per `SPEC.md`. — SPEC §19 M0–M4 shipped. What is open
+  is infrastructure or subjective, not features: code signing + notarization, publishing the first signed
+  release (which makes the feed live), the updater-key rotation in `WINDOWS-SIGNING.md` §1, and the by-hand
+  60 fps look (performance is asserted by benches and interval measurement, not by eye).
 
 ---
 

@@ -29,7 +29,8 @@ reads with [`gix`](https://github.com/GitoxideLabs/gitoxide) and writes with the
 
 ## Status
 
-As of **2026-10-29** (`stage-10`). Stage numbers match [`PLAN.md`](./PLAN.md).
+As of **2026-11-04** — all 14 stages are committed and pushed; what remains in stage 14 is signing /
+notarization / release infrastructure, not features. Stage numbers match [`PLAN.md`](./PLAN.md).
 
 | Stage | Area | State |
 |---|---|---|
@@ -292,10 +293,12 @@ As of **2026-10-29** (`stage-10`). Stage numbers match [`PLAN.md`](./PLAN.md).
 
 ## Not implemented yet
 
-macOS code signing + notarization, Windows Authenticode signing, and publishing the first
-signed release (which is what makes the update feed live) — all gated on certificates and
-CI that do not exist yet; the updater itself is implemented and verified against a mock
-feed. The remaining per-repo state files (branch colors, last selection).
+macOS code signing + notarization, Windows Authenticode signing, and publishing the first signed
+release (which is what makes the update feed live) — all gated on certificates and CI that do not exist
+yet; the updater itself is implemented and verified end to end (macOS: launch-time feed check plus the
+on-screen prompt; Windows: a signed 0.1.0 → 0.1.1 install inside the installed MSI). The pinned updater
+key still needs rotating (`WINDOWS-SIGNING.md` §1) and `releases/latest/download/latest.json` 404s until
+a release exists. The remaining per-repo state files (branch colors, last selection).
 
 Linux is deferred (the architecture stays portable).
 
@@ -388,9 +391,8 @@ what a signed release needs.
 
 ### Tests
 
-```bash
-cargo test                  # Rust: 375 tests (unit + integration + real-git fixtures)
-pnpm test                   # Web: 198 tests (Vitest + Testing Library)
+cargo test                  # Rust: 380 tests (unit + integration + real-git fixtures)
+pnpm test                   # Web: 205 tests (Vitest + Testing Library)
 pnpm build                  # tsc + Vite production build
 ```
 
