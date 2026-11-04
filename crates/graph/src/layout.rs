@@ -35,7 +35,7 @@
 //!   branched from, and a merged branch's lane dies where its line converges;
 //!   the graph keeps the familiar "mainline straight on the left" shape.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use git_gotten_protocol::{BRANCH_PALETTE, Edge, Graph, Line, LineId, LineSegment, Node, RefKind};
 
@@ -67,6 +67,19 @@ impl LaneLayout {
     /// The input node order is irrelevant (the layout is deterministic under
     /// shuffles — see the tests). An empty DAG yields [`GraphError::Empty`].
     pub fn compute(&mut self, dag: &RawDag) -> Result<Graph, GraphError> {
+        self.compute_sticky(dag, &BTreeMap::new())
+    }
+
+    /// The same layout with **stored color assignments** applied (SPEC §16): `stored`
+    /// maps a branch name to the palette index the repository has already committed to
+    /// for it. A stored color is used whenever it is free for that line's row interval;
+    /// otherwise the line falls back to the greedy pass, so lines that are alive at the
+    /// same row never share a color.
+    pub fn compute_sticky(
+        &mut self,
+        dag: &RawDag,
+        stored: &BTreeMap<String, u32>,
+    ) -> Result<Graph, GraphError> {
         let n = dag.nodes.len();
         if n == 0 {
             return Err(GraphError::Empty);
@@ -298,6 +311,7 @@ impl LaneLayout {
             &line_of,
             &node_lines,
             &mut lines,
+            stored,
         );
         Ok(g)
     }
@@ -334,18 +348,45 @@ fn assemble(
     line_of: &[u32],
     node_lines: &[Vec<LineId>],
     lines: &mut Vec<LineRec>,
+    stored: &BTreeMap<String, u32>,
 ) -> Graph {
-    // Final colors: greedy interval coloring over each line's row span.
-    let mut color_last_end = vec![-1i64; BRANCH_PALETTE.len()];
-    let mut final_colors = vec![0u32; lines.len()];
+    // Final colors, in two passes over each line's row span:
+    //  1. a line whose branch has a stored index (SPEC §16) keeps it — in creation
+    //     order, and only if no already-stored line holds that index over these rows;
+    //  2. every other line takes the first index free for its span.
+    // Claiming stored indices first is what stops a newer branch from spending a color
+    // an existing branch is already committed to.
+    let palette = BRANCH_PALETTE.len();
+    const UNSET: u32 = u32::MAX;
+    let mut color_last_end = vec![-1i64; palette];
+    let mut final_colors = vec![UNSET; lines.len()];
     for (l, rec) in lines.iter().enumerate() {
-        if let (Some(first), Some(last)) = (rec.segments.first(), rec.segments.last()) {
-            let (color, end) = color_for(first.1, last.2, &color_last_end, rec.color);
-            color_last_end[color as usize] = end;
-            final_colors[l] = color;
-        } else {
-            final_colors[l] = rec.color;
+        let (Some(first), Some(last)) = (rec.segments.first(), rec.segments.last()) else {
+            final_colors[l] = rec.color; // a line that never held a lane
+            continue;
+        };
+        let Some(keep) = rec
+            .name
+            .as_ref()
+            .and_then(|name| stored.get(name).copied())
+        else {
+            continue;
+        };
+        if (keep as usize) < palette && color_last_end[keep as usize] < first.1 as i64 {
+            color_last_end[keep as usize] = last.2 as i64;
+            final_colors[l] = keep;
         }
+    }
+    for (l, rec) in lines.iter().enumerate() {
+        if final_colors[l] != UNSET {
+            continue;
+        }
+        let (Some(first), Some(last)) = (rec.segments.first(), rec.segments.last()) else {
+            continue;
+        };
+        let (color, end) = color_for(first.1, last.2, &color_last_end, rec.color);
+        color_last_end[color as usize] = end;
+        final_colors[l] = color;
     }
     for (l, rec) in lines.iter_mut().enumerate() {
         rec.color = final_colors[l];
@@ -933,6 +974,44 @@ mod tests {
             })
             .unwrap();
         assert_eq!(g, again);
+    }
+
+    /// SPEC §16: replaying a repository's stored assignment must reproduce the colors
+    /// it already committed to, and even a map that hands *every* branch the same
+    /// index cannot make two lines alive at one row share a color.
+    #[test]
+    fn stored_colors_are_reproduced_and_cannot_break_the_row_rule() {
+        let d = kitchen_sink();
+        let baseline = LaneLayout::default().compute(&d).unwrap();
+        assert_invariants(&baseline);
+
+        let stored: BTreeMap<String, u32> = baseline
+            .lines
+            .iter()
+            .filter_map(|line| line.name.clone().map(|name| (name, line.color)))
+            .collect();
+        assert!(
+            stored.values().collect::<HashSet<_>>().len() > 1,
+            "the kitchen sink should hold more than one assignment"
+        );
+        assert_eq!(
+            LaneLayout::default().compute_sticky(&d, &stored).unwrap(),
+            baseline,
+            "replaying stored colors must not re-roll them"
+        );
+
+        let selfish: BTreeMap<String, u32> = baseline
+            .lines
+            .iter()
+            .filter_map(|line| line.name.clone().map(|name| (name, 0)))
+            .collect();
+        let forced = LaneLayout::default().compute_sticky(&d, &selfish).unwrap();
+        assert_invariants(&forced);
+        assert_eq!(
+            forced.lines.len(),
+            baseline.lines.len(),
+            "stored colors must not change the geometry"
+        );
     }
 
     // Cargo sets `debug_assertions` for dev/test builds and leaves it unset for

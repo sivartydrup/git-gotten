@@ -20,6 +20,7 @@ import type {
   Remote,
   RepoId,
   RepoMeta,
+  RepoSelection,
   Status,
   StatusChanged,
   Stash,
@@ -417,6 +418,27 @@ export async function removeRepoFromWorkspace(id: string): Promise<Workspace | n
     return null;
   }
   return await invoke<Workspace>("remove_repo_from_workspace", { id });
+}
+
+// ── Stage 15: per-repo state (SPEC §16) ────────────────────────────────────
+
+/** The commit/branch the user last selected in a repo (Rust `load_repo_selection`). */
+export async function loadRepoSelection(repo: RepoId): Promise<RepoSelection | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<RepoSelection>("load_repo_selection", { repo });
+}
+
+/** Store the last selection of a repo (Rust `save_repo_selection`). */
+export async function saveRepoSelection(
+  repo: RepoId,
+  selection: RepoSelection,
+): Promise<RepoSelection | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  return await invoke<RepoSelection>("save_repo_selection", { repo, selection });
 }
 
 // ── Stage 14: auto-updater (SPEC §17) ──────────────────────────────────────

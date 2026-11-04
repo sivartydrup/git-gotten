@@ -291,14 +291,21 @@ notarization / release infrastructure, not features. Stage numbers match [`PLAN.
   release notes with Install / Dismiss; Install downloads, verifies the signature, installs
   and relaunches.
 
+- Every repository keeps its own state file (`<hashed id>.state.json`, next to `app.json`): the
+  branch→color assignments — a branch keeps the color it was first given, so the graph does not
+  re-shuffle when a new branch appears — and the commit you last opened. Reopening a repository
+  redraws the graph with the stored colors and reopens the inspect drawer on the stored commit;
+  if a rebase or reset rewrote that commit away, the drawer opens on the stored branch's tip.
+  A corrupt state file is rebuilt from the repository, never a crash.
+
 ## Not implemented yet
 
 macOS code signing + notarization, Windows Authenticode signing, and publishing the first signed
 release (which is what makes the update feed live) — all gated on certificates and CI that do not exist
 yet; the updater itself is implemented and verified end to end (macOS: launch-time feed check plus the
 on-screen prompt; Windows: a signed 0.1.0 → 0.1.1 install inside the installed MSI). The pinned updater
-key still needs rotating (`WINDOWS-SIGNING.md` §1) and `releases/latest/download/latest.json` 404s until
-a release exists. The remaining per-repo state files (branch colors, last selection).
+key still needs rotating (`WINDOWS-SIGNING.md` §1); `releases/latest/download/latest.json` 404s
+until a release exists.
 
 Linux is deferred (the architecture stays portable).
 

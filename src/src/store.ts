@@ -15,6 +15,7 @@ import {
   loadBisect,
   loadRebaseCommits,
   loadRemotes,
+  loadRepoSelection,
   loadStashes,
   loadStatus,
   loadSubmodules,
@@ -26,6 +27,7 @@ import {
   repoPin,
   repoTouch,
   runOp,
+  saveRepoSelection,
   workspaceGet,
   workspaceRepos,
   workspaceSet,
@@ -54,6 +56,7 @@ import type {
   RebaseCommit,
   Remote,
   RepoId,
+  RepoSelection,
   Risk,
   RepoMeta,
   Status,
@@ -418,13 +421,37 @@ interface GraphState {
   detailLoading: boolean;
   /** Last `loadCommit` failure. */
   detailError: string | null;
-  /** Load the graph of `repo`, clearing the selection (SPEC §10.1). */
+  /** Load the graph of `repo`, restoring the selection stored for it (SPEC §10.1, §16). */
   load: (repo: RepoId) => Promise<void>;
-  /** Select a node (and open the inspect drawer for it), or clear the selection. */
+  /** Select a node (and open the inspect drawer for it), or clear the selection. The
+   *  choice is stored per repository, so a restart reopens where the user left off. */
   select: (hash: string | null) => void;
   hover: (hash: string | null) => void;
   setQuery: (query: string) => void;
   closeDetail: () => void;
+}
+
+/**
+ * The commit a graph load should reopen from a repository's stored selection
+ * (SPEC §16): the stored commit while it exists, otherwise the stored branch's tip
+ * (a rebase or a reset can rewrite the stored commit away), otherwise nothing.
+ */
+function restoreSelection(graph: Graph, selection: RepoSelection | null): string | null {
+  if (!selection) {
+    return null;
+  }
+  if (selection.commit && graph.nodes.some((node) => node.hash === selection.commit)) {
+    return selection.commit;
+  }
+  if (selection.branch) {
+    const tip = graph.nodes.find((node) =>
+      node.refs.some((ref) => ref.kind === "Branch" && ref.name === selection.branch),
+    );
+    if (tip) {
+      return tip.hash;
+    }
+  }
+  return null;
 }
 
 /** Client state for the branching graph + inspect drawer (SPEC §10.1). */
@@ -448,13 +475,20 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       detailError: null,
     });
     try {
-      const graph = await loadGraph(repo);
+      const [graph, selection] = await Promise.all([
+        loadGraph(repo),
+        loadRepoSelection(repo),
+      ]);
       if (!graph) {
         // Outside Tauri: nothing to draw, no error.
         set({ graph: null, loading: false });
         return;
       }
       set({ graph, loading: false });
+      const restore = restoreSelection(graph, selection);
+      if (restore) {
+        get().select(restore); // reopen the drawer where the user left off (SPEC §16)
+      }
     } catch (e) {
       set({
         graph: null,
@@ -466,11 +500,20 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
   select: (hash) => {
     set({ selected: hash, detail: null, detailError: null, detailLoading: false });
-    if (!hash) {
-      return;
-    }
     const repo = useRepoStore.getState().activeId;
     if (!repo) {
+      return;
+    }
+    // SPEC §16: the selection is per-repo state. The branch stored with it is the
+    // anchor the restore falls back to if a rewrite later removes this commit.
+    const branch =
+      hash === null
+        ? null
+        : (get()
+            .graph?.nodes.find((node) => node.hash === hash)
+            ?.refs.find((ref) => ref.kind === "Branch")?.name ?? null);
+    void saveRepoSelection(repo, { commit: hash, branch });
+    if (!hash) {
       return;
     }
     set({ detailLoading: true });
@@ -495,8 +538,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
   hover: (hash) => set({ hovered: hash }),
   setQuery: (query) => set({ query }),
-  closeDetail: () =>
-    set({ selected: null, detail: null, detailError: null, detailLoading: false }),
+  closeDetail: () => get().select(null),
 }));
 // ── Refs: branches, remotes, tags (SPEC §10.5) ──────────────────────────────
 

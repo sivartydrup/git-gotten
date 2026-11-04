@@ -1,11 +1,14 @@
 import { beforeEach, expect, test, vi } from "vitest";
 
-const { openRepo, loadStatus, loadGraph, loadCommit } = vi.hoisted(() => ({
-  openRepo: vi.fn(),
-  loadStatus: vi.fn(),
-  loadGraph: vi.fn(),
-  loadCommit: vi.fn(),
-}));
+const { openRepo, loadStatus, loadGraph, loadCommit, loadRepoSelection, saveRepoSelection } =
+  vi.hoisted(() => ({
+    openRepo: vi.fn(),
+    loadStatus: vi.fn(),
+    loadGraph: vi.fn(),
+    loadCommit: vi.fn(),
+    loadRepoSelection: vi.fn().mockResolvedValue(null),
+    saveRepoSelection: vi.fn().mockResolvedValue(null),
+  }));
 
 // Mock the IPC layer; per-test behavior is configured on the hoisted mocks.
 vi.mock("./api", () => ({
@@ -30,6 +33,8 @@ vi.mock("./api", () => ({
   onOpFinished: vi.fn().mockResolvedValue(null),
   loadGraph,
   loadCommit,
+  loadRepoSelection,
+  saveRepoSelection,
   loadStashes: async () => [],
   loadSubmodules: async () => [],
   loadBisect: async () => ({ active: false, current: null, good: [], bad: [], remaining: 0, found: null, log: [] }),
@@ -301,6 +306,73 @@ test("graph select outside an open repo stores no detail", async () => {
   expect(s.selected).toBe("a1b2c3");
   expect(s.detail).toBeNull();
   expect(s.detailLoading).toBe(false);
+});
+
+// ── Stage 15: the stored selection (SPEC §16) ──────────────────────────────
+
+test("graph load reopens the selection stored for the repository", async () => {
+  useRepoStore.setState({ activeId: "/repo/alpha" });
+  loadGraph.mockResolvedValueOnce(graphFixture);
+  loadRepoSelection.mockResolvedValueOnce({ commit: "d4e5f6", branch: null });
+  loadCommit.mockResolvedValueOnce({ ...detailFixture, hash: "d4e5f6" });
+
+  await useGraphStore.getState().load("/repo/alpha");
+  await flush();
+
+  const s = useGraphStore.getState();
+  expect(loadRepoSelection).toHaveBeenCalledWith("/repo/alpha");
+  expect(s.selected).toBe("d4e5f6");
+  expect(loadCommit).toHaveBeenCalledWith("/repo/alpha", "d4e5f6");
+});
+
+test("a stored commit that no longer exists falls back to its branch tip", async () => {
+  useRepoStore.setState({ activeId: "/repo/alpha" });
+  loadGraph.mockResolvedValueOnce(graphFixture);
+  loadRepoSelection.mockResolvedValueOnce({ commit: "rewritten", branch: "main" });
+  loadCommit.mockResolvedValueOnce(detailFixture);
+
+  await useGraphStore.getState().load("/repo/alpha");
+  await flush();
+
+  const s = useGraphStore.getState();
+  expect(s.selected).toBe("a1b2c3"); // `main`'s tip in the fixture
+  expect(loadCommit).toHaveBeenCalledWith("/repo/alpha", "a1b2c3");
+});
+
+test("a stored selection nothing can resolve to restores nothing", async () => {
+  useRepoStore.setState({ activeId: "/repo/alpha" });
+  loadGraph.mockResolvedValueOnce(graphFixture);
+  loadRepoSelection.mockResolvedValueOnce({ commit: "gone", branch: "deleted-branch" });
+
+  await useGraphStore.getState().load("/repo/alpha");
+  await flush();
+
+  const s = useGraphStore.getState();
+  expect(s.selected).toBeNull();
+  expect(s.detail).toBeNull();
+  expect(loadCommit).not.toHaveBeenCalled();
+});
+
+test("selecting stores the commit with its branch; dismissing stores an empty one", async () => {
+  useRepoStore.setState({ activeId: "/repo/alpha" });
+  useGraphStore.setState({ graph: graphFixture });
+  loadCommit.mockResolvedValueOnce(detailFixture);
+
+  useGraphStore.getState().select("a1b2c3");
+  expect(saveRepoSelection).toHaveBeenCalledWith("/repo/alpha", {
+    commit: "a1b2c3",
+    branch: "main",
+  });
+
+  useGraphStore.getState().closeDetail();
+  expect(saveRepoSelection).toHaveBeenCalledWith("/repo/alpha", { commit: null, branch: null });
+  expect(useGraphStore.getState().selected).toBeNull();
+});
+
+test("a selection made with no active repository is not stored", () => {
+  useRepoStore.setState({ activeId: null });
+  useGraphStore.getState().select("a1b2c3");
+  expect(saveRepoSelection).not.toHaveBeenCalled();
 });
 
 // ── Safe failure (SPEC §18): the activity store on a failed op ──────────────

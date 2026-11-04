@@ -169,6 +169,17 @@ pub struct RepoMeta {
     pub dirty_count: u32,
 }
 
+/// What the user last selected in one repository, restored at startup so the graph
+/// reopens where they left off (SPEC §16; one per-repo state file).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RepoSelection {
+    /// The commit hash selected in the graph (`None` = nothing selected).
+    pub commit: Option<Hash>,
+    /// The branch that commit carried. When the stored commit no longer exists (a
+    /// rebase or a reset rewrote it) the restore falls back to this branch's tip.
+    pub branch: Option<String>,
+}
+
 /// Payload of the `status_changed` event (Rust → web, SPEC §13).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct StatusChanged {

@@ -654,11 +654,40 @@ git push -u origin main
   `APPLE_ID`/`APPLE_TEAM_ID`/`APPLE_API_KEY`. Absent, reported: no Developer ID + notary credentials, no
   Authenticode certificate, no published release (`GET /repos/sivartydrup/git-gotten/releases` is empty, so the
   configured feed 404s). Nothing signed was faked.
-- [x] **This is the final stage** — the app is complete per `SPEC.md`. — SPEC §19 M0–M4 shipped. What is open
+- [x] **M0–M4 complete** — the app is feature-complete per `SPEC.md` (stage 15 adds the §16 per-repo state these stages deferred). — SPEC §19 M0–M4 shipped. What is open
   is infrastructure or subjective, not features: code signing + notarization, publishing the first signed
   release (which makes the feed live), the updater-key rotation in `WINDOWS-SIGNING.md` §1, and the by-hand
   60 fps look (performance is asserted by benches and interval measurement, not by eye).
 
+
+---
+
+## Stage 15 — Per-repo state: branch colors + last selection (SPEC §16)
+
+**Goal:** every repository remembers itself — its branch→color assignments and the commit the user last opened — so the graph looks the same after a restart and lands where the user left off.
+
+**Design:**
+- `crates/app/src/lib.rs`: `RepoState { repo, branch_colors: BTreeMap<String, u32>, selection: RepoSelection }`, persisted to `<app_data_dir>/<hashed repo id>.state.json` — the same flat-file mechanism as the per-repo activity log (`STATE_SUFFIX`), no new storage layer.
+- Colors are assigned on first sight and never re-rolled: a new branch takes a palette index no open branch already uses, existing assignments are kept, so `git branch new-thing` does not recolor the graph.
+- `RepoSelection { commit, branch }` (crate: `protocol`, ts-rs export): the branch is the anchor for the case where the stored commit no longer exists.
+- IPC: `load_repo_selection(repo)` / `save_repo_selection(repo, selection)`; the graph command feeds the stored color map into the layout so lane/ref colors are the stored ones.
+- Web (`src/src/store.ts`): `select()` stores the commit plus the branch whose label opened it; `load()` restores it — the stored commit if it is still in the graph, else the stored branch's tip, else nothing; `closeDetail()` clears the stored selection too.
+
+**Tests (write first):** Rust — color stability across a layout change and a restart, selection across a restart, a corrupt state file rebuilt, state isolated per repository, and an IPC-level round trip of the payload the web actually sends. Web — restore (commit present), fallback (branch tip), nothing restored, and that selecting/clearing persists.
+
+**Build:** `RepoState` + persistence in `Backend`, wire the color map into the graph layout and the two commands, then the web restore path.
+
+**Run tests:** `cargo test --workspace` · `pnpm test`.
+
+**Verify (macOS):** restart the app with a repo open → the graph keeps every branch's color and the inspect drawer reopens on the last commit; create a branch → only the new branch gets a new color.
+
+**Commit & push:** `git add -A && git commit -m "stage-15: per-repo state (branch colors + last selection)" && git push origin main`
+
+**Acceptance criteria:**
+- [x] Branch colors are stable across restarts and when new branches appear. — `crates/app/tests/repo_state.rs::branch_colors_survive_a_layout_change_and_a_restart` (existing refs keep their index, the new branch gets an unused one, a fresh backend re-renders identical colors).
+- [x] The last selection is restored, with a branch-tip fallback. — `repo_state.rs::the_last_selection_survives_a_restart` (backend), `lib.rs::selection_commands_round_trip_over_ipc` (the `{ repo, selection }` payload through the real command dispatcher, typed reply, unknown repo errors), and `src/src/store.test.ts` for commit-present / branch-tip / nothing-restored and that clearing the drawer stores an empty selection.
+- [x] Corrupt per-repo state is rebuilt, never a crash. — `repo_state.rs::a_corrupt_state_file_is_rebuilt_not_fatal`; `state_is_per_repository` keeps one repo's state out of another's.
+- [x] `cargo test --workspace` + `pnpm test` green (2026-11-04): all Rust test binaries 0 failures, 210 web tests. The app boots with the shared `app_context()` (`pnpm tauri dev` → window renders the shell); the on-screen reopen was not clicked through by hand — the terminal has no accessibility permission to drive the window.
 ---
 
 ## Appendix A — Per-stage checklist template (copy per stage)
@@ -688,3 +717,4 @@ Stage NN — <name>
 | M2 — Sync & integration | 6, 7, 8, 9 |
 | M3 — Full operation set + workspace | 10, 11, 12 |
 | M4 — Hardening & ship | 13, 14 |
+| Follow-up — per-repo state (SPEC §16) | 15 |

@@ -21,7 +21,7 @@
 //! `bisect_test`, which runs the test command and the resulting
 //! `git bisect good|bad` verdict as two fully planned, logged steps.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -29,9 +29,11 @@ use std::time::{Duration, Instant};
 
 use git_gotten_protocol::{
     BisectState, BisectVerdict, Branch, CommandPlan, CommitDetail, ConflictFile, FileDiff, Graph,
-    GroupId, LogEntry, Op, OpResult, OpStarted, RebaseCommit, Remote, RepoId, RepoMeta, Risk,
-    Stash, Status, StatusChanged, Submodule, Tag, Worktree, Workspace, WorkspaceRepo,
+    GroupId, LogEntry, Op, OpResult, OpStarted, RebaseCommit, Remote, RepoId, RepoMeta,
+    RepoSelection, Risk, Stash, Status, StatusChanged, Submodule, Tag, Worktree, Workspace,
+    WorkspaceRepo,
 };
+use serde::{Deserialize, Serialize};
 use gitcore::{GitError, GitExecutor};
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::{Mutex, MutexGuard};
@@ -145,7 +147,9 @@ pub struct Backend {
     workspace: Mutex<Workspace>,
     /// Where the tree is persisted (`app_data_dir()/app.json`, None until the store is set).
     store_path: Mutex<Option<PathBuf>>,
-
+    /// Per-repository state (SPEC §16): branch color assignments + last selection,
+    /// mirrored in memory and persisted one JSON file per repo.
+    states: Mutex<HashMap<RepoId, RepoState>>,
 }
 
 impl Backend {
@@ -168,6 +172,7 @@ impl Backend {
                 log: LogBuffer::new(),
                 workspace: Mutex::new(Workspace::new()),
                 store_path: Mutex::new(None),
+                states: Mutex::new(HashMap::new()),
             },
             event_rx,
         )
@@ -210,10 +215,12 @@ impl Backend {
     /// A corrupt or missing file yields the default tree (SPEC §11).
     pub fn set_store(&self, path: PathBuf) {
         *self.workspace.lock() = load_workspace(&path);
-        // SPEC §11: every repository keeps its own state file in the same directory —
-        // here, its activity log. Loading it is what makes the log survive a restart.
+        // SPEC §11: every repository keeps its own state files in the same directory —
+        // its activity log, plus its branch colors and last selection (SPEC §16).
+        // Loading them is what makes that state survive a restart.
         if let Some(dir) = path.parent() {
             self.log.set_dir(dir.to_path_buf());
+            *self.states.lock() = load_states(dir);
         }
         *self.store_path.lock() = Some(path);
     }
@@ -322,13 +329,105 @@ impl Backend {
     }
 
     /// The laid-out commit graph of an open repository (IPC `load_graph`,
-    /// SPEC §10.1): the web renders it on a canvas.
+    /// SPEC §10.1): the web renders it on a canvas. Named lines take the palette
+    /// index stored for their branch (SPEC §16), and a line the store has never seen
+    /// is recorded there so its color survives the next layout.
     pub fn load_graph(&self, id: &str) -> Result<Graph, AppError> {
-        let repos = self.registry.lock_repos();
-        let repo = repos
+        let stored = self.branch_colors(id);
+        let graph = {
+            let repos = self.registry.lock_repos();
+            let repo = repos
+                .get(id)
+                .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
+            repo.graph_with_colors(&stored)?
+        };
+        self.remember_colors(id, &graph);
+        Ok(graph)
+    }
+
+    /// The commit/branch the user last selected in an open repository
+    /// (IPC `load_repo_selection`, SPEC §16) — empty when there is none.
+    pub fn load_repo_selection(&self, id: &str) -> Result<RepoSelection, AppError> {
+        self.require_open(id)?;
+        Ok(self
+            .states
+            .lock()
             .get(id)
-            .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
-        Ok(repo.graph()?)
+            .map(|state| state.selection.clone())
+            .unwrap_or_default())
+    }
+
+    /// Store the last selection of an open repository (IPC `save_repo_selection`) and
+    /// hand back what was stored, so the web can trust the Rust-side copy.
+    pub fn save_repo_selection(
+        &self,
+        id: &str,
+        selection: RepoSelection,
+    ) -> Result<RepoSelection, AppError> {
+        self.require_open(id)?;
+        let stored = {
+            let mut states = self.states.lock();
+            let state = states.entry(id.to_string()).or_default();
+            state.repo = id.to_string();
+            state.selection = selection;
+            state.clone()
+        };
+        self.persist_state(id);
+        Ok(stored.selection)
+    }
+
+    /// The color assignments stored for a repository (empty when none).
+    fn branch_colors(&self, id: &str) -> BTreeMap<String, u32> {
+        self.states
+            .lock()
+            .get(id)
+            .map(|state| state.branch_colors.clone())
+            .unwrap_or_default()
+    }
+
+    /// Record the palette index of every named line the store does not have yet
+    /// (SPEC §16). Stored entries are never re-rolled — that is what an *assignment*
+    /// means — and the file is rewritten only when something new appeared.
+    fn remember_colors(&self, id: &str, graph: &Graph) {
+        let changed = {
+            let mut states = self.states.lock();
+            let state = states.entry(id.to_string()).or_default();
+            state.repo = id.to_string();
+            let mut changed = false;
+            for line in &graph.lines {
+                if let Some(name) = &line.name {
+                    if !state.branch_colors.contains_key(name) {
+                        state.branch_colors.insert(name.clone(), line.color);
+                        changed = true;
+                    }
+                }
+            }
+            changed
+        };
+        if changed {
+            self.persist_state(id);
+        }
+    }
+
+    /// Rewrite one repository's state file (best-effort: a failure loses colors and the
+    /// selection, nothing else).
+    fn persist_state(&self, id: &str) {
+        let Some(path) = self.store_path.lock().clone() else { return };
+        let Some(dir) = path.parent() else { return };
+        let Some(state) = self.states.lock().get(id).cloned() else { return };
+        if let Ok(json) = serde_json::to_string(&state) {
+            let _ = std::fs::create_dir_all(dir);
+            let _ = std::fs::write(state_file(dir, id), json);
+        }
+    }
+
+    /// Per-repo commands fail the same way when the repository is not open.
+    fn require_open(&self, id: &str) -> Result<(), AppError> {
+        if self.registry.lock_repos().get(id).is_some() {
+            Ok(())
+        } else {
+            Err(AppError::RepoNotOpen(id.to_string()))
+        }
     }
 
     /// Full details of one commit in an open repository (IPC `load_commit`,
@@ -640,13 +739,61 @@ const LOG_CAP: usize = 500;
 /// Suffix of a per-repo activity-log file inside the app-data directory.
 const LOG_SUFFIX: &str = ".log.json";
 
-/// The file a repository's log lives in: the id hashed, so any repository path
+/// Suffix of a per-repo state file (SPEC §16) in the same directory.
+const STATE_SUFFIX: &str = ".state.json";
+
+/// The flat file a repository's state lives in: the id hashed, so any repository path
 /// becomes a short, filesystem-safe flat name.
-fn log_file(dir: &Path, repo: &str) -> PathBuf {
+fn flat_name(dir: &Path, repo: &str, suffix: &str) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::hash::DefaultHasher::new();
     repo.hash(&mut hasher);
-    dir.join(format!("{:016x}{LOG_SUFFIX}", hasher.finish()))
+    dir.join(format!("{:016x}{suffix}", hasher.finish()))
+}
+
+fn log_file(dir: &Path, repo: &str) -> PathBuf {
+    flat_name(dir, repo, LOG_SUFFIX)
+}
+
+fn state_file(dir: &Path, repo: &str) -> PathBuf {
+    flat_name(dir, repo, STATE_SUFFIX)
+}
+
+/// Per-repository state (SPEC §16), one JSON file per repo in the app-data directory.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+struct RepoState {
+    /// Which repository the file belongs to (its id is hashed into the file name).
+    repo: RepoId,
+    /// Branch name → palette index, assigned on first sight and never re-rolled.
+    branch_colors: BTreeMap<String, u32>,
+    /// The commit/branch the user last selected.
+    selection: RepoSelection,
+}
+
+/// Load every repository's state file. Mirrors [`LogBuffer::set_dir`]: an unreadable or
+/// malformed file is skipped and rebuilt by the next write — corrupt per-repo state is
+/// never a crash (SPEC §11/§18).
+fn load_states(dir: &Path) -> HashMap<RepoId, RepoState> {
+    let mut states: HashMap<RepoId, RepoState> = HashMap::new();
+    if let Ok(files) = std::fs::read_dir(dir) {
+        for path in files.filter_map(|e| e.ok()).map(|e| e.path()) {
+            if !path.to_string_lossy().ends_with(STATE_SUFFIX) {
+                continue;
+            }
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(_) => continue, // corrupt: rebuilt by the next write
+            };
+            let Ok(state) = serde_json::from_str::<RepoState>(&text) else {
+                continue; // corrupt: rebuilt by the next write
+            };
+            if state.repo.is_empty() {
+                continue; // unkeyable; the next write replaces the file
+            }
+            states.insert(state.repo.clone(), state);
+        }
+    }
+    states
 }
 
 impl LogBuffer {
@@ -1028,6 +1175,25 @@ fn workspace_repos(state: State<'_, Backend>) -> Vec<WorkspaceRepo> {
     state.workspace_repos()
 }
 
+/// The commit/branch the user last selected in a repository (SPEC §16).
+#[tauri::command]
+fn load_repo_selection(
+    repo: RepoId,
+    state: State<'_, Backend>,
+) -> Result<RepoSelection, AppError> {
+    state.load_repo_selection(&repo)
+}
+
+/// Store the last selection of a repository (SPEC §16).
+#[tauri::command]
+fn save_repo_selection(
+    repo: RepoId,
+    selection: RepoSelection,
+    state: State<'_, Backend>,
+) -> Result<RepoSelection, AppError> {
+    state.save_repo_selection(&repo, selection)
+}
+
 /// Load `app.json`, best-effort: corrupt or missing → default tree (SPEC §11).
 fn load_workspace(path: &Path) -> Workspace {
     std::fs::read_to_string(path)
@@ -1098,6 +1264,12 @@ fn watcher_loop(app: AppHandle, rx: mpsc::Receiver<notify::Result<Event>>) {
     }
 }
 
+/// The build-time context (assets, capabilities, command ACL). One `generate_context!`
+/// per crate, so `run` and the IPC test share it.
+fn app_context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
+}
+
 /// Entry point: build the Tauri app with a single 1280x800 window, manage the
 /// backend, and run the file-watcher thread.
 pub fn run() {
@@ -1139,6 +1311,8 @@ pub fn run() {
             repo_touch,
             remove_repo_from_workspace,
             workspace_repos,
+            load_repo_selection,
+            save_repo_selection,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -1151,7 +1325,7 @@ pub fn run() {
             std::thread::spawn(move || watcher_loop(handle, events));
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(app_context())
         .expect("error while running tauri application");
 }
 
@@ -2410,5 +2584,75 @@ mod tests {
         let tags = testutil::git(&fx.path, &["for-each-ref", "--format=%(refname:short)", "refs/tags"]);
         assert_eq!(branches.lines().filter(|l| l.starts_with("br")).count(), N / 2);
         assert_eq!(tags.lines().filter(|l| l.starts_with('t')).count(), N - N / 2);
+    }
+
+    // ── Stage 15: the selection commands over the real IPC dispatcher ──────
+
+    /// The wire contract the web depends on: the exact payload `api.ts` sends
+    /// (`{ repo, selection }`) deserializes into the command, and the reply comes
+    /// back as a typed `RepoSelection`.
+    #[test]
+    fn selection_commands_round_trip_over_ipc() {
+        let dir = store_dir("selection-ipc");
+        let fx = testutil::Fixture::new("selection-ipc");
+        fx.commit_file("a.txt", "x\n", "c1");
+        let (backend, _rx) = Backend::new();
+        backend.set_store(dir.join("app.json"));
+        backend.open(fx.id()).unwrap();
+
+        let app = tauri::test::mock_builder()
+            .manage(backend)
+            .invoke_handler(tauri::generate_handler![load_repo_selection, save_repo_selection])
+            // The app's own context: the same capability/ACL resolution the shipped app
+            // uses, so this proves the web can really reach these commands.
+            .build(app_context())
+            .unwrap();
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+
+        let request = |cmd: &str, body: serde_json::Value| tauri::webview::InvokeRequest {
+            cmd: cmd.to_string(),
+            callback: tauri::ipc::CallbackFn(0),
+            error: tauri::ipc::CallbackFn(1),
+            // `tauri://` is local IPC, like the shipped webview: the ACL then behaves
+            // like production instead of treating this as a remote call.
+            url: "tauri://localhost/".parse().unwrap(),
+            body: tauri::ipc::InvokeBody::Json(body),
+            headers: Default::default(),
+            invoke_key: tauri::test::INVOKE_KEY.to_string(),
+        };
+        let call = |cmd: &str, body: serde_json::Value| {
+            tauri::test::get_ipc_response(
+                &window,
+                request(cmd, body),
+            )
+            .unwrap_or_else(|e| panic!("{cmd} failed: {e}"))
+            .deserialize::<RepoSelection>()
+            .expect("a typed RepoSelection reply")
+        };
+
+        let stored = call(
+            "save_repo_selection",
+            serde_json::json!({
+                "repo": fx.id(),
+                "selection": { "commit": "cafe1234", "branch": "main" },
+            }),
+        );
+        assert_eq!(stored.commit.as_deref(), Some("cafe1234"));
+        assert_eq!(stored.branch.as_deref(), Some("main"));
+
+        assert_eq!(
+            call("load_repo_selection", serde_json::json!({ "repo": fx.id() })),
+            stored,
+            "the reload reads back what was stored"
+        );
+
+        // An unknown repo is an error, not a silent empty selection.
+        let err = tauri::test::get_ipc_response(
+            &window,
+            request("load_repo_selection", serde_json::json!({ "repo": "/nope" })),
+        );
+        assert!(err.is_err(), "an unopened repo must fail the command");
     }
 }

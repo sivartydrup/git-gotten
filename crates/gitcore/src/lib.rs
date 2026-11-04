@@ -55,7 +55,7 @@ pub use git_gotten_protocol::{
 pub use show::{numstat, patch};
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -475,13 +475,22 @@ impl Repo {
     /// A repository with no commits is [`GitError::Graph`]. The web renders the result
     /// on a canvas; the layout itself lives in the `graph` crate.
     pub fn graph(&self) -> Result<Graph, GitError> {
-        let fingerprint = self.graph_fingerprint()?;
+        self.graph_with_colors(&BTreeMap::new())
+    }
+
+    /// The laid-out graph with **stored branch colors** (SPEC §16): `stored` is the
+    /// branch-name → palette index the repository has committed to, so a branch keeps
+    /// its color as the history grows. The map is part of the cache key — an assignment
+    /// added for a new branch must recompute rather than replay a cached layout whose
+    /// colors the map no longer describes.
+    pub fn graph_with_colors(&self, stored: &BTreeMap<String, u32>) -> Result<Graph, GitError> {
+        let fingerprint = self.graph_fingerprint(stored)?;
         if let Some((cached, graph)) = self.graph_cache.borrow().as_ref() {
             if *cached == fingerprint {
                 return Ok(graph.clone());
             }
         }
-        let graph = self.compute_graph()?;
+        let graph = self.compute_graph(stored)?;
         *self.graph_cache.borrow_mut() = Some((fingerprint, graph.clone()));
         Ok(graph)
     }
@@ -494,7 +503,7 @@ impl Repo {
     /// would cost more than the saving. A detached worktree HEAD and an added or
     /// removed worktree both move checkout markers without moving a ref, which is why
     /// they belong in the key.
-    fn graph_fingerprint(&self) -> Result<String, GitError> {
+    fn graph_fingerprint(&self, stored: &BTreeMap<String, u32>) -> Result<String, GitError> {
         let mut parts: Vec<String> = graph::collect_ref_labels(&self.inner)
             .map_err(GitError::Graph)?
             .iter()
@@ -517,15 +526,23 @@ impl Repo {
                 ));
             }
         }
+        parts.push(format!(
+            "colors {}",
+            stored
+                .iter()
+                .map(|(name, color)| format!("{name}={color}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
         parts.sort();
         Ok(parts.join("\n"))
     }
 
     /// Rebuild the DAG, the lanes and the worktree markers from scratch.
-    fn compute_graph(&self) -> Result<Graph, GitError> {
+    fn compute_graph(&self, stored: &BTreeMap<String, u32>) -> Result<Graph, GitError> {
         let dag = graph::build_dag(&self.inner).map_err(GitError::Graph)?;
         let mut layout = graph::LaneLayout;
-        let mut out = layout.compute(&dag).map_err(GitError::Graph)?;
+        let mut out = layout.compute_sticky(&dag, stored).map_err(GitError::Graph)?;
 
         // Stage 10: worktree checkout markers (SPEC §10.7). From two checkouts
         // up, each worktree's HEAD commit gets a `Worktree`-kind ref label

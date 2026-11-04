@@ -79,6 +79,15 @@ export interface RepoMeta {
   dirty_count: number;
 }
 
+/** What the user last selected in one repository (Rust `RepoSelection`, SPEC §16). */
+export interface RepoSelection {
+  /** The selected commit hash, or `null` when nothing is selected. */
+  commit: string | null;
+  /** The branch that commit carried, or `null`; the fallback anchor when the
+   * stored commit no longer exists after a rebase or a reset. */
+  branch: string | null;
+}
+
 /** The commit HEAD points at (Rust `LastCommit`, the dashboard's "last commit"). */
 export interface LastCommit {
   hash: string;

@@ -65,6 +65,8 @@ vi.mock("../api", () => ({
   onOpStarted: vi.fn().mockResolvedValue(null),
   onOpFinished: vi.fn().mockResolvedValue(null),
   loadGraph: vi.fn().mockResolvedValue(null),
+  loadRepoSelection: vi.fn().mockResolvedValue(null),
+  saveRepoSelection: vi.fn().mockResolvedValue(null),
   loadCommit,
   loadStashes: async () => [],
   loadSubmodules: async () => [],
