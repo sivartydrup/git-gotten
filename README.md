@@ -408,6 +408,10 @@ build at a mock feed (the way stage 14 was hand-verified) is exactly that: an ov
 setting `plugins.updater.endpoints` + `dangerousInsecureTransportProtocol`, never a
 committed config value or a code path.
 
+The Windows-side runbook — getting the updater key onto that machine, building signed
+artifacts, filling in `latest.json`, and proving the Install flow against a local feed — is
+[`WINDOWS-SIGNING.md`](./WINDOWS-SIGNING.md).
+
 ## Windows notes
 
 Discovered while getting the first Windows build green:
@@ -429,6 +433,7 @@ Discovered while getting the first Windows build green:
 | [`SPEC.md`](./SPEC.md) | Product design and decisions — the source of truth for behavior and scope. |
 | [`PLAN.md`](./PLAN.md) | 15-stage implementation plan, per-stage acceptance criteria, platform gates, and build workflow. |
 | `README.md` | This overview: what exists today, how to build/test, and where the project is. |
+| [`WINDOWS-SIGNING.md`](./WINDOWS-SIGNING.md) | Windows runbook for the stage-14 signing + updater verification steps. |
 
 Per-stage workflow from `PLAN.md`: write failing tests → implement → `cargo test` +
 `pnpm test` + `pnpm build` + `tauri build` → hand-verify → commit → push. Commit messages
