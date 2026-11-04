@@ -23,8 +23,7 @@ use crate::GitError;
 /// Environment variables that must never leak into a git child process.
 ///
 /// A user's shell (or a parent `git` invocation) may set these; if they did, git
-/// would operate on the *wrong* repository. The cwd is always the worktree root,
-/// which is what we want git to target.
+/// would operate on the wrong repository. The cwd is always the worktree root.
 pub(crate) const ENV_UNSET: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -42,11 +41,8 @@ pub(crate) const ENV_UNSET: &[&str] = &[
 /// file. `GIT_EDITOR` outranks both `VISUAL`/`EDITOR` and `core.editor`, so
 /// one variable pins the behavior.
 ///
-/// `GIT_SEQUENCE_EDITOR` is deliberately *not* pinned: an env value would
-/// outrank the `sequence.editor` config the interactive-rebase plan passes
-/// with `git -c` (plan.rs), which is what injects the edited todo. With only
-/// `GIT_EDITOR` pinned, git uses the config for the todo and `true` for every
-/// commit-message editor (`squash`, `rebase --continue`).
+/// Interactive-rebase steps separately remove any inherited
+/// `GIT_SEQUENCE_EDITOR` so their `sequence.editor` config takes precedence.
 pub(crate) const ENV_SET: &[(&str, &str)] = &[
     ("GIT_TERMINAL_PROMPT", "0"),
     ("GIT_PAGER", "cat"),
@@ -302,6 +298,16 @@ impl GitExecutor {
             }
             for key in ENV_UNSET {
                 cmd.env_remove(key);
+            }
+            // Git gives this variable precedence over `-c sequence.editor`.
+            // Remove it only for the interactive-rebase plan that supplies
+            // its own editor, not for unrelated commands or external programs.
+            if step.program.is_none()
+                && step.argv.get(1).map(String::as_str) == Some("-c")
+                && step.argv.get(2).is_some_and(|s| s.starts_with("sequence.editor="))
+                && step.argv.get(3).map(String::as_str) == Some("rebase")
+            {
+                cmd.env_remove("GIT_SEQUENCE_EDITOR");
             }
 
             match cmd.spawn() {

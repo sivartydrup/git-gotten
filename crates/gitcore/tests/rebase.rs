@@ -313,6 +313,96 @@ async fn interactive_rebase_edit_stop_resumes_with_continue() {
     let _ = (h1, h2, h3, fx);
 }
 
+#[tokio::test]
+async fn interactive_rebase_ignores_inherited_sequence_editor() {
+    const CHILD: &str = "GITGOTTEN_REBASE_EDITOR_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // Isolate the environment change from the other tests running in
+        // parallel; a no-op editor would otherwise silently keep Git's todo.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "interactive_rebase_ignores_inherited_sequence_editor"])
+            .env(CHILD, "1")
+            .env("GIT_SEQUENCE_EDITOR", "git --version")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    let (fx, repo, [h1, h2, h3]) = feature_fixture();
+    let result = run(
+        &repo,
+        &Op::Rebase {
+            target: "main".to_string(),
+            edits: vec![
+                edit(&h1, RebaseAction::Reword, Some("first")),
+                edit(&h3, RebaseAction::Squash, Some("B+C")),
+                edit(&h2, RebaseAction::Pick, None),
+            ],
+        },
+    )
+    .await;
+    assert!(result.ok, "stderr: {}", result.stderr);
+    assert_eq!(subjects(&fx, "main..feature"), ["first", "B+C"]);
+
+    let (_fx, repo, [h1, h2, h3]) = feature_fixture();
+    let result = run(
+        &repo,
+        &Op::Rebase {
+            target: "main".to_string(),
+            edits: vec![
+                edit(&h3, RebaseAction::Edit, None),
+                edit(&h2, RebaseAction::Pick, None),
+                edit(&h1, RebaseAction::Pick, None),
+            ],
+        },
+    )
+    .await;
+    assert!(repo.status().unwrap().in_rebase, "stderr: {}", result.stderr);
+    let result = run(&repo, &Op::ContinueOp).await;
+    assert!(result.ok, "stderr: {}", result.stderr);
+    assert!(!repo.status().unwrap().in_rebase);
+}
+
+#[tokio::test]
+async fn interactive_rebase_handles_quoted_repository_paths() {
+    let parent = testutil::Fixture::new("rebase-path");
+    let path = parent.path.join("repo with spaces 'and quotes'");
+    std::fs::create_dir_all(&path).unwrap();
+    let fx = testutil::Fixture::from_path(path);
+    fx.git(&["init", "-b", "main"]);
+    fx.git(&["config", "user.name", "Test User"]);
+    fx.git(&["config", "user.email", "test@example.com"]);
+    fx.git(&["config", "commit.gpgsign", "false"]);
+    fx.commit_file("base.txt", "base\n", "base");
+    fx.git(&["checkout", "-b", "feature"]);
+    fx.commit_file("a.txt", "one\n", "one");
+    let h1 = fx.git(&["rev-parse", "HEAD"]);
+    fx.commit_file("b.txt", "two\n", "two");
+    let h2 = fx.git(&["rev-parse", "HEAD"]);
+    let repo = Repo::open(&fx.path).unwrap();
+    let op = Op::Rebase {
+        target: "main".to_string(),
+        edits: vec![
+            edit(&h1, RebaseAction::Reword, Some("first")),
+            edit(&h2, RebaseAction::Pick, None),
+        ],
+    };
+    let plan = repo.plan(&op).unwrap();
+    #[cfg(windows)]
+    assert!(!plan.steps[0].argv[2].contains("//?/"));
+    let result = GitExecutor::new()
+        .run_plan(repo.queue_key(), &repo.path, &plan)
+        .await;
+    assert!(result.ok, "stderr: {}", result.stderr);
+    assert_eq!(subjects(&fx, "main..feature"), ["first", "two"]);
+}
+
 // ── conflict-aware rebase (Stage 8 flow reused, SPEC §10.5) ──────────────────
 
 #[tokio::test]

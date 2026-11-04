@@ -2029,9 +2029,18 @@ fn write_rebase_todo_script(repo: &Repo, todo: &[String]) -> Result<String, GitE
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
     }
-    // The editor runs through git's bundled shell even on Windows, so the
-    // path must be in slash form (`C:/…` is what that shell understands).
-    Ok(script.to_string_lossy().replace('\\', "/"))
+    // Git's shell understands forward-slash paths, but not Windows' verbatim
+    // path prefix (which canonicalized repository paths commonly carry).
+    let path = script.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    let path = if let Some(rest) = path.strip_prefix("//?/UNC/") {
+        format!("//{rest}")
+    } else if let Some(rest) = path.strip_prefix("//?/") {
+        rest.to_string()
+    } else {
+        path
+    };
+    Ok(path)
 }
 
 /// `git -c sequence.editor=sh '<git-dir>/gitgotten-todo.sh' rebase -i <target>` —

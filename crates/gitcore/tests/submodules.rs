@@ -5,8 +5,7 @@
 //! state, end to end against real git repositories.
 //! The full path the app uses is exercised: `Repo::plan(&Op)` →
 //! `GitExecutor::run_plan` → the real `git` binary. Requires a `git` binary on
-//! `PATH` (macOS primary; the Windows gate for submodule paths is noted where a
-//! Windows machine is unavailable).
+//! `PATH`.
 
 use git_gotten_protocol::{ChangeKind, Op, Risk};
 use git_gotten_testutil as testutil;
@@ -38,12 +37,16 @@ fn sub_fixture(label: &str) -> SubFixture {
     let parent = testutil::Fixture::new(label);
     parent.commit_file("README", "main\n", "m1");
     parent.git(&["config", "protocol.file.allow", "always"]);
+    let sub_url = testutil::canonical_path(&sub.path);
+    // Git interprets a Windows verbatim path as an SCP-style remote.
+    #[cfg(windows)]
+    assert!(!sub_url.to_string_lossy().starts_with(r"\\?\"));
     parent.git(&[
         "-c",
         "protocol.file.allow=always",
         "submodule",
         "add",
-        &sub.path.to_string_lossy(),
+        &sub_url.to_string_lossy(),
         "extras/dep",
     ]);
     parent.git(&["commit", "-m", "add dep"]);
@@ -83,7 +86,7 @@ async fn submodules_lists_path_url_recorded_commit_and_state() {
         s.name, "extras/dep",
         "`git submodule add` defaults the name to the path"
     );
-    assert_eq!(s.url, sx.sub.path.to_string_lossy());
+    assert_eq!(s.url, testutil::canonical_path(&sx.sub.path).to_string_lossy());
     assert_eq!(s.recorded, sx.dep2);
     assert_eq!(s.head.as_deref(), Some(sx.dep2.as_str()));
     assert!(s.initialized);

@@ -25,5 +25,6 @@ export default defineConfig(() => ({
   // Unit tests run in a DOM environment (there is no real webview in Vitest).
   test: {
     environment: "jsdom",
+    setupFiles: ["./test-setup.js"],
   },
 }));

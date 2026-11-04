@@ -182,6 +182,16 @@ test("submodules store loads the active repo's submodules", async () => {
 
 // ── FilesPanel badge + section ──────────────────────────────────────────────
 
+test("files panel remains usable when repository status finishes loading", () => {
+  useRepoStore.setState({ status: {} });
+  render(<FilesPanel />);
+  expect(screen.getByText("Reading status…")).toBeTruthy();
+
+  act(() => useRepoStore.setState({ status: { [REPO]: status } }));
+  expect(screen.getByText("src/a.ts")).toBeTruthy();
+  expect(screen.getAllByText("vendor/protocol").length).toBeGreaterThan(0);
+});
+
 test("a gitlink change gets the submodule badge", () => {
   render(<FilesPanel />);
   const badge = screen.getByText("submodule");

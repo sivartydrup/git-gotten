@@ -59,7 +59,7 @@ pub struct Fixture {
 /// `git` parses a `\\?\C:\…` argument as an SCP-style `host:path` remote and
 /// fails with "hostname contains invalid characters", so local remotes must be
 /// plain absolute paths.
-fn canonical_path(dir: &Path) -> PathBuf {
+pub fn canonical_path(dir: &Path) -> PathBuf {
     let path = dir
         .canonicalize()
         .unwrap_or_else(|e| panic!("failed to canonicalize {dir:?}: {e}"));

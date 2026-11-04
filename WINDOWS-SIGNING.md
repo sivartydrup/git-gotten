@@ -27,18 +27,20 @@ pnpm --dir src install
 
 ## 1. Choose a key — rotate (recommended) or move
 
-Nothing is published yet, so no installed app pins any key. Rotating costs nothing and
-avoids copying an unencrypted secret across the network.
+No signed release has been published. Existing local builds still pin the old public
+key and must be reinstalled after rotation. The key transferred through the guest-readable
+share must be considered exposed and rotated before release.
 
 **Option A — generate the key on this PC (recommended).** The release machine keeps its
 private key locally, password-protected:
 
 ```powershell
 mkdir "$env:USERPROFILE\.tauri" -Force
-pnpm tauri signer generate -- -w "$env:USERPROFILE\.tauri\gitgotten.key" -p
+pnpm exec tauri signer generate -w "$env:USERPROFILE\.tauri\gitgotten-rotated.key"
 ```
 
-`-p` prompts for the key password (it is also a flag: `-p "<password>"`). The command
+Choose a password when prompted. `-p` requires a password argument; avoid passing secrets
+on the command line, where process listings or shell history can expose them. The command
 prints the **public key** — a single base64 line. Copy that line into
 `crates/app/tauri.conf.json → plugins.updater.pubkey` (replacing the current value), then:
 
@@ -72,19 +74,18 @@ environment variables only, in the same shell that runs the build.
 ```powershell
 $env:TAURI_SIGNING_PRIVATE_KEY="$env:USERPROFILE\.tauri\gitgotten.key"
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD="<password or empty string>"
-pnpm tauri:build --config bundle.createUpdaterArtifacts=true
+[System.IO.File]::WriteAllText("$env:TEMP\gitgotten-signed.json", '{"bundle":{"createUpdaterArtifacts":true}}', [System.Text.UTF8Encoding]::new($false))
+pnpm tauri:build --config "$env:TEMP\gitgotten-signed.json"
 ```
 
 Expected output (from `bundle.targets = "all"`):
 
 ```
 target\release\bundle\msi\GitGotten_<version>_x64_en-US.msi            # the installer
-target\release\bundle\msi\GitGotten_<version>_x64_en-US.msi.zip        # the updater payload
-target\release\bundle\msi\GitGotten_<version>_x64_en-US.msi.zip.sig    # its minisign signature (base64 armor)
-target\release\bundle\nsis\GitGotten_<version>_x64-setup.nsis.zip      # + .sig, if NSIS is bundled
+target\release\bundle\msi\GitGotten_<version>_x64_en-US.msi.sig        # updater signature (base64 armor)
 ```
 
-`--config` accepts a **file path** or a `dotted.key=value` pair — never inline JSON.
+`--config` accepts a **file path** or a JSON string; a `dotted.key=value` argument is not accepted by the installed CLI.
 `pnpm tauri signer sign <file>` signs an existing artifact by hand if needed.
 
 ## 3. Fill in the manifest
@@ -96,7 +97,7 @@ target\release\bundle\nsis\GitGotten_<version>_x64-setup.nsis.zip      # + .sig,
 For each platform entry:
 
 - `url` → the published artifact for that os-arch:
-  `windows-x86_64` → the `.msi.zip`, `darwin-aarch64` → `GitGotten_<version>_aarch64.app.tar.gz`.
+  `windows-x86_64` → the `.msi`, `darwin-aarch64` → `GitGotten_<version>_aarch64.app.tar.gz`.
 - `signature` → the **entire contents** of that artifact's `.sig` file (already base64 armor).
 - `version` → the version you just built, `notes` → the release notes the app will show.
 
@@ -133,9 +134,9 @@ The updater only offers what is *newer* than the running build, so you need two 
 
    Unsigned: SmartScreen will warn — "More info" → "Run anyway".
 
-2. **New build to serve.** Bump the version, rebuild with `TAURI_SIGNING_PRIVATE_KEY` +
-   `createUpdaterArtifacts=true`, copy the `.msi.zip` and a `latest.json` (version = the new
-   version, `windows-x86_64` → `http://127.0.0.1:8099/GitGotten_<new>_x64_en-US.msi.zip`,
+2. **New build to serve.** Bump the version, rebuild with `TAURI_SIGNING_PRIVATE_KEY` and
+   an override enabling `createUpdaterArtifacts`, then copy the `.msi` and a `latest.json`
+   (version = the new version, `windows-x86_64` → `http://127.0.0.1:8099/GitGotten_<new>_x64_en-US.msi`,
    signature = that `.sig` file's contents) into `C:\gg-feed`, and serve it:
 
    ```powershell

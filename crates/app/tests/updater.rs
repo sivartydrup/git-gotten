@@ -75,7 +75,7 @@ fn manifest(version: &str) -> serde_json::Value {
                 "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IG1vY2sgc2lnbmF0dXJlCm5vdC1hLXJlYWwtc2lnbmF0dXJlCg=="
             },
             "windows-x86_64": {
-                "url": "https://mock.invalid/GitGotten_windows-x86_64.msi.zip",
+                "url": "https://mock.invalid/GitGotten_windows-x86_64.msi",
                 "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IG1vY2sgc2lnbmF0dXJlCm5vdC1hLXJlYWwtc2lnbmF0dXJlCg=="
             }
         }
@@ -122,7 +122,7 @@ async fn mock_feed_announcing_a_newer_version_is_an_update() {
         update.body.as_deref(),
         Some("GitGotten 9.9.9 — mock release notes")
     );
-    let artifact = if os == "windows" { "msi.zip" } else { "app.tar.gz" };
+    let artifact = if os == "windows" { "msi" } else { "app.tar.gz" };
     assert_eq!(
         update.download_url.as_str(),
         format!("https://mock.invalid/GitGotten_{host}.{artifact}"),

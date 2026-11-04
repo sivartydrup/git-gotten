@@ -14,6 +14,8 @@ const {
   loadWorktrees,
   openRepo,
   onOpFinished,
+  workspaceGet,
+  workspaceRepos,
 } = vi.hoisted(() => ({
   planOp: vi.fn().mockResolvedValue(null),
   runOp: vi.fn().mockResolvedValue(null),
@@ -22,11 +24,13 @@ const {
   loadWorktrees: vi.fn().mockResolvedValue(null),
   openRepo: vi.fn().mockResolvedValue(null),
   onOpFinished: vi.fn().mockResolvedValue(null),
+  workspaceGet: vi.fn().mockResolvedValue(null),
+  workspaceRepos: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("./api", () => ({
-  workspaceGet: async () => null,
-  workspaceRepos: async () => null,
+  workspaceGet,
+  workspaceRepos,
   workspaceSet: async () => null,
   groupAdd: async () => null,
   groupRename: async () => null,
@@ -58,9 +62,9 @@ vi.mock("./api", () => ({
   bisectTest: async () => ({ active: false, current: null, good: [], bad: [], remaining: 0, found: null, log: [] }),
 }));
 
-import { useActivityStore, useMainTab, useRepoStore, useWorktreesStore } from "./store";
+import { repoIdsInTree, useActivityStore, useMainTab, useRepoStore, useWorkspaceStore, useWorktreesStore } from "./store";
 import { WorktreesPanel } from "./components/WorktreesPanel";
-import type { CommandPlan, RepoMeta, Status, Worktree } from "./types";
+import { emptyWorkspace, type CommandPlan, type RepoMeta, type Status, type Worktree } from "./types";
 
 const REPO = "/repo/alpha";
 const WT = "/repo/alpha-side";
@@ -146,6 +150,9 @@ function seed(): void {
   loadGraph.mockReset().mockResolvedValue(null);
   loadWorktrees.mockReset().mockResolvedValue(worktrees);
   openRepo.mockReset().mockResolvedValue(meta);
+  workspaceGet.mockReset().mockResolvedValue(null);
+  workspaceRepos.mockReset().mockResolvedValue(null);
+  useWorkspaceStore.setState({ tree: emptyWorkspace() });
 }
 
 /** Flush the microtask queue deterministically (no wall-clock timers). */
@@ -212,6 +219,78 @@ test("switch opens the linked worktree as the active repo", async () => {
   await flush();
   expect(openRepo).toHaveBeenCalledWith(WT);
   expect(useRepoStore.getState().activeId).toBe(WT);
+});
+
+test.each([false, true])("successful removal (force=%s) syncs workspace without disturbing another active repo", async (force) => {
+  const tree = emptyWorkspace();
+  tree.groups[0].children = [{ kind: "repo", id: REPO }];
+  workspaceGet.mockResolvedValue(tree);
+  workspaceRepos.mockResolvedValue([{ meta, status }]);
+  useRepoStore.setState({ repos: [meta, wtMeta], activeId: REPO, status: { [REPO]: status, [WT]: status } });
+  const executed = plan(`git worktree remove ${force ? "--force " : ""}${WT}`);
+  runOp.mockResolvedValue({ plan: executed, ok: true, exit: 0, stdout: "", stderr: "", duration_ms: 0, conflicts: [] });
+
+  await useActivityStore.getState().requestPreview(REPO, { kind: "worktree_remove", path: "/alias/side", force });
+  await useActivityStore.getState().confirmPreview();
+
+  expect(repoIdsInTree(useWorkspaceStore.getState().tree)).toEqual([REPO]);
+  expect(useRepoStore.getState().repos.map((repo) => repo.id)).toEqual([REPO]);
+  expect(useRepoStore.getState().activeId).toBe(REPO);
+  expect(useRepoStore.getState().status[WT]).toBeUndefined();
+  expect(useRepoStore.getState().status[REPO]).toEqual(status);
+});
+
+test("a failed workspace refresh does not offer to repeat a successful removal", async () => {
+  useRepoStore.setState({ repos: [meta, wtMeta], activeId: REPO, status: { [REPO]: status, [WT]: status } });
+  const executed = plan(`git worktree remove ${WT}`);
+  runOp.mockResolvedValue({ plan: executed, ok: true, exit: 0, stdout: "", stderr: "", duration_ms: 0, conflicts: [] });
+  workspaceGet.mockRejectedValue(new Error("IPC unavailable"));
+
+  await useActivityStore.getState().requestPreview(REPO, { kind: "worktree_remove", path: WT, force: false });
+  await useActivityStore.getState().confirmPreview();
+
+  expect(useActivityStore.getState().preview).toBeNull();
+  expect(useActivityStore.getState().error).toContain("Worktree removed, but workspace refresh failed: IPC unavailable");
+  expect(useRepoStore.getState().repos.map((repo) => repo.id)).toEqual([REPO]);
+});
+
+test("a worktree selected while removal runs is no longer active after success", async () => {
+  const tree = emptyWorkspace();
+  tree.groups[0].children = [{ kind: "repo", id: REPO }];
+  workspaceGet.mockResolvedValue(tree);
+  workspaceRepos.mockResolvedValue([{ meta, status }]);
+  useRepoStore.setState({ repos: [meta, wtMeta], activeId: REPO, status: { [REPO]: status, [WT]: status } });
+  const executed = plan(`git worktree remove ${WT}`);
+  let finish!: (result: unknown) => void;
+  runOp.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  await useActivityStore.getState().requestPreview(REPO, { kind: "worktree_remove", path: WT, force: false });
+  const pending = useActivityStore.getState().confirmPreview();
+  useRepoStore.setState({ activeId: WT });
+  finish({ plan: executed, ok: true, exit: 0, stdout: "", stderr: "", duration_ms: 0, conflicts: [] });
+  await pending;
+
+  expect(useRepoStore.getState().activeId).toBeNull();
+  expect(useRepoStore.getState().repos.map((repo) => repo.id)).toEqual([REPO]);
+});
+
+test.each([false, true])("failed removal (force=%s) leaves workspace and selection intact", async (force) => {
+  const tree = emptyWorkspace();
+  tree.groups[0].children = [{ kind: "repo", id: REPO }, { kind: "repo", id: WT }];
+  tree.pinned = [WT];
+  tree.recents = [WT, REPO];
+  useWorkspaceStore.setState({ tree });
+  useRepoStore.setState({ repos: [meta, wtMeta], activeId: WT, status: { [REPO]: status, [WT]: status } });
+  const executed = plan(`git worktree remove ${force ? "--force " : ""}${WT}`);
+  runOp.mockResolvedValue({ plan: executed, ok: false, exit: 1, stdout: "", stderr: "locked", duration_ms: 0, conflicts: [] });
+
+  await useActivityStore.getState().requestPreview(REPO, { kind: "worktree_remove", path: WT, force });
+  await useActivityStore.getState().confirmPreview();
+
+  expect(useWorkspaceStore.getState().tree).toEqual(tree);
+  expect(useRepoStore.getState().repos.map((repo) => repo.id)).toEqual([REPO, WT]);
+  expect(useRepoStore.getState().activeId).toBe(WT);
+  expect(useRepoStore.getState().status[WT]).toEqual(status);
+  expect(workspaceGet).not.toHaveBeenCalled();
 });
 
 test("add dialog sends worktree_add with path and optional new branch", async () => {

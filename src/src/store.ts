@@ -301,6 +301,28 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
       const result = await runOp(preview.repo, preview.op);
       if (result) {
         get().record(preview.repo, result);
+        if (result.ok && preview.op.kind === "worktree_remove") {
+          // The executed plan contains the canonical worktree path, which is
+          // also the workspace repo id even when the requested path was an alias.
+          const argv = result.plan.steps[0]?.argv;
+          const removedId = argv?.[argv.length - 1] ?? preview.op.path;
+          useRepoStore.setState((s) => {
+            const status = { ...s.status };
+            delete status[removedId];
+            return {
+              repos: s.repos.filter((repo) => repo.id !== removedId),
+              activeId: s.activeId === removedId ? null : s.activeId,
+              status,
+            };
+          });
+          try {
+            await useWorkspaceStore.getState().load();
+          } catch (e) {
+            // Git already removed the worktree. Never leave a retryable
+            // confirmation for an operation that has completed.
+            set({ error: `Worktree removed, but workspace refresh failed: ${e instanceof Error ? e.message : String(e)}` });
+          }
+        }
       }
       set({ preview: null, busy: false });
     } catch (e) {

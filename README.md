@@ -77,10 +77,8 @@ As of **2026-10-29** (`stage-10`). Stage numbers match [`PLAN.md`](./PLAN.md).
   All-Repositories dashboard (live branch/state/ahead-behind/dirty/last-commit
   per repo, row click switches the active repo), Light/Dark recoloring the chrome
   and swapping the canvas lane palette, and theme persistence across reload.
-- Windows gate (config dir `%APPDATA%\GitGotten` + persistence): not run — no
-  Windows machine available; the config dir uses Tauri's OS-aware
-  `app_data_dir()` and plain `std::fs` persistence, covered by the round-trip
-  tests above.
+- Windows gate was not run at that time; later Windows verification is recorded below.
+  The observed workspace path is `%APPDATA%\com.sivartydrup.gitgotten\app.json`.
 
 **Verification (macOS 25.6, arm64, 2026-11-04):**
 
@@ -131,9 +129,8 @@ As of **2026-10-29** (`stage-10`). Stage numbers match [`PLAN.md`](./PLAN.md).
   the launch-time feed check fired (two `GET /latest.json` hits in the mock feed's access
   log, 8 s apart) and the prompt appeared on screen — "Update available: **9.9.9**" with
   the manifest's release notes and Install / Dismiss buttons.
-- Not verified: the Install path end to end (download → signature check → install →
-  relaunch) needs a real signed artifact; macOS signing/notarization and the Windows
-  `.msi` gate for this stage need infrastructure that does not exist (see below).
+- Not verified at that time: the Install path end to end (download → signature check →
+  install → relaunch) needs a real signed artifact. Windows MSI verification is below.
 
 **Verification (Windows 11, x64, 2026-10-27):**
 
@@ -146,7 +143,38 @@ As of **2026-10-29** (`stage-10`). Stage numbers match [`PLAN.md`](./PLAN.md).
   the watcher, conflict resolved in-app, `git merge --continue`, and
   `git push -u origin main` to a local bare remote.
 
-Stages 09–12 have not been mirrored on Windows yet; the run above predates them.
+**Verification (Windows 11, x64, 2026-11-04):**
+
+- `cargo test --workspace --no-fail-fast` — 380 passed, including updater integration
+  tests, bisect, interactive rebase, submodules, and worktrees.
+- Node 26.13.0 / pnpm 10.34.9: `pnpm test` — 205 passed; `pnpm build` — passed.
+- The unsigned MSI was built, installed with administrator elevation, and launched.
+  In the installed app, worktrees with spaces in their paths were switched to and
+  removed, including a dirty force-removal. Successful removals disappear from
+  `app.json` and the nav after restart; failed removals preserve workspace entries.
+  Two repositories, a group and the dark theme survived restart. Workspace data was
+  observed at `%APPDATA%\com.sivartydrup.gitgotten\app.json`; the theme is stored by
+  WebView2.
+- A 10,120-commit synthetic repository opened and rendered; automated drag and zoom
+  each yielded about 60 `requestAnimationFrame` callbacks per second, p95 16.8 ms,
+  with no interval over 33.4 ms (4 s drag; 3 s zoom). This measures callback
+  scheduling, not presented-frame timing. A rejected double checkout showed Git's
+  error in the activity log, and the graph remained usable.
+  The installed UI bisected a six-commit history to its known first bad commit, reset
+  the session, initialized a submodule, and restored a drifted submodule checkout.
+- A local feed offered a real updater-signed Windows MSI to an installed 0.1.0 test
+  build. Install downloaded and verified the signed payload, upgraded it to 0.1.1,
+  and relaunched the app at 0.1.1. The test versions and feed were local only; no
+  signed release is published, and the configured GitHub release feed returns 404.
+  The test key was exposed on a guest-readable share and must be rotated before release.
+  Windows Authenticode signing and macOS signing/notarization remain unverified.
+- Git 2.56's bisect result format, Windows rebase editor paths, inherited sequence-editor
+  overrides, submodule fixture paths, Node's storage globals, and the updater test
+  executable's Windows manifest were corrected during this verification. A real
+  interactive rebase through the app dropped the chosen commit.
+- Successful worktree removals now unlink registered checkouts from the persisted
+  workspace; failed removals retain them. Files-panel hooks now remain stable when
+  status loads asynchronously, avoiding a blank window when opening the tab early.
 
 ## Features implemented today
 
@@ -350,7 +378,7 @@ cargo run -p git-gotten-app   # dev run; needs the Vite dev server on :1420
 Windows installer:
 
 ```bash
-pnpm tauri:build -- --bundles msi
+pnpm tauri:build --bundles msi
 # -> target/release/bundle/msi/GitGotten_0.1.0_x64_en-US.msi
 ```
 
@@ -398,15 +426,14 @@ test parses.
 
 | Gate | What it needs |
 |---|---|
-| Signed updater artifacts + `latest.json` | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, and `bundle.createUpdaterArtifacts = true` — e.g. `pnpm tauri:build --config bundle.createUpdaterArtifacts=true`; produces `GitGotten_<ver>_<arch>.app.tar.gz` + `.sig` (`.msi.zip` + `.sig` on Windows) to publish with the release |
+| Signed updater artifacts + `latest.json` | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, and an override file setting `bundle.createUpdaterArtifacts` to `true`; produces `GitGotten_<ver>_<arch>.app.tar.gz` + `.sig` on macOS or `.msi` + `.sig` on Windows |
 | macOS code signing | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` (hardened runtime is on by default) |
 | macOS notarization | `APPLE_ID` + `APPLE_PASSWORD` + `APPLE_TEAM_ID`, or `APPLE_API_KEY` + `APPLE_API_ISSUER`; `APPLE_PROVIDER_SHORT_NAME` when the account spans teams |
 | Windows code signing | an Authenticode certificate plus `TAURI_WINDOWS_SIGNTOOL_PATH` / `bundle.windows.signCommand` |
 
-`--config` takes a *file path* or a `dotted.key=value` pair — not inline JSON. Pointing a
-build at a mock feed (the way stage 14 was hand-verified) is exactly that: an override file
-setting `plugins.updater.endpoints` + `dangerousInsecureTransportProtocol`, never a
-committed config value or a code path.
+`--config` accepts a file path or a JSON string. Pointing a build at a mock feed is done
+with an override file setting `plugins.updater.endpoints` and
+`dangerousInsecureTransportProtocol`, never a committed config value or a code path.
 
 The Windows-side runbook — getting the updater key onto that machine, building signed
 artifacts, filling in `latest.json`, and proving the Install flow against a local feed — is

@@ -148,6 +148,7 @@ function SubmodulesSection() {
 export function FilesPanel() {
   const { activeId, status, repos } = useRepoStore();
   const { file, selectFile } = useStagingStore();
+  const conflictFile = useConflictStore((s) => s.file);
 
   const meta = repos.find((r) => r.id === activeId) ?? null;
   const activeStatus = activeId ? (status[activeId] ?? null) : null;
@@ -175,7 +176,6 @@ export function FilesPanel() {
     (c) => !c.staged && c.kind !== "Untracked" && c.kind !== "Conflicted"
   );
 
-  const conflictFile = useConflictStore((s) => s.file);
   const openConflict = (path: string) => {
     useMainTab.getState().setTab("conflicts");
     useConflictStore.getState().selectFile(path);

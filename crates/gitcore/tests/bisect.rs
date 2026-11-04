@@ -4,9 +4,8 @@
 //! known culprit commit via a test command's exit code, end to end against real
 //! git repositories.
 //! The full path the app uses is exercised: `Repo::plan(&Op)` →
-//! `GitExecutor::run_plan` → the real `git` binary. Requires a `git` binary on
-//! `PATH` (macOS primary; the Windows gate for the test-command process is
-//! noted where a Windows machine is unavailable).
+//! `GitExecutor::run_plan` → the real `git` binary. Requires `git` and `sh` on
+//! `PATH`.
 
 use git_gotten_protocol::{BisectVerdict, Op, Risk};
 use git_gotten_testutil as testutil;
@@ -168,7 +167,15 @@ async fn bisect_test_command_verdicts_on_exit_code_and_converges_on_the_culprit(
         state.remaining, 0,
         "converged sessions have no candidates left"
     );
-    assert!(state.log.iter().any(|l| l.contains("first bad commit")));
+    assert!(
+        state.log.iter().any(|line| {
+            (line.starts_with("# first bad commit: ")
+                || line.starts_with("# first 'bad' commit: "))
+                && line.contains(&bx.culprit)
+        }),
+        "the log records the culprit: {:?}",
+        state.log
+    );
 }
 
 #[tokio::test]

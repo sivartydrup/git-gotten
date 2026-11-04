@@ -30,18 +30,7 @@ pub(crate) fn state(cwd: &Path) -> Result<BisectState, GitError> {
         });
     }
     let log = show::run_git_sync(cwd, &["bisect", "log"])?;
-    let mut good = Vec::new();
-    let mut bad = Vec::new();
-    let mut found = None;
-    for line in log.lines() {
-        if let Some(rest) = line.strip_prefix("# good: ") {
-            push_once(&mut good, rest);
-        } else if let Some(rest) = line.strip_prefix("# bad: ") {
-            push_once(&mut bad, rest);
-        } else if let Some(rest) = line.strip_prefix("# first bad commit: ") {
-            found = bracketed_hash(rest);
-        }
-    }
+    let (good, bad, found) = parse_log(&log);
     let current = show::run_git_sync(cwd, &["rev-parse", "HEAD"])?
         .trim()
         .to_string();
@@ -58,6 +47,27 @@ pub(crate) fn state(cwd: &Path) -> Result<BisectState, GitError> {
         found,
         log: log.lines().map(str::to_string).collect(),
     })
+}
+
+/// Git versions differ in whether the verdict term in the result is quoted:
+/// `# first bad commit: ...` versus `# first 'bad' commit: ...`.
+fn parse_log(log: &str) -> (Vec<String>, Vec<String>, Option<String>) {
+    let mut good = Vec::new();
+    let mut bad = Vec::new();
+    let mut found = None;
+    for line in log.lines() {
+        if let Some(rest) = line.strip_prefix("# good: ") {
+            push_once(&mut good, rest);
+        } else if let Some(rest) = line.strip_prefix("# bad: ") {
+            push_once(&mut bad, rest);
+        } else if let Some(rest) = line
+            .strip_prefix("# first bad commit: ")
+            .or_else(|| line.strip_prefix("# first 'bad' commit: "))
+        {
+            found = bracketed_hash(rest);
+        }
+    }
+    (good, bad, found)
 }
 
 fn push_once(list: &mut Vec<String>, rest: &str) {
@@ -89,4 +99,32 @@ fn untested_candidates(cwd: &Path, bad: &[String], good: &[String]) -> Result<u6
     let out = show::run_git_sync(cwd, &argv)?;
     let reachable: u64 = out.trim().parse().unwrap_or(0);
     Ok(reachable.saturating_sub(bad.len() as u64))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_log;
+
+    #[test]
+    fn parses_both_git_result_formats_without_confusing_skipped_candidates() {
+        let good = "1111111111111111111111111111111111111111";
+        let bad = "2222222222222222222222222222222222222222";
+        let culprit = "3333333333333333333333333333333333333333";
+        let prefix = format!(
+            "# bad: [{bad}] original bad\r\n# good: [{good}] original good\r\n\
+             # possible first 'bad' commit: [{bad}] skipped\r\n"
+        );
+        let (goods, bads, found) = parse_log(&prefix);
+        assert_eq!(goods, [good]);
+        assert_eq!(bads, [bad]);
+        assert_eq!(found, None);
+
+        for result in ["first bad commit", "first 'bad' commit"] {
+            let log = format!("{prefix}# {result}: [{culprit}] culprit\r\n");
+            let (goods, bads, found) = parse_log(&log);
+            assert_eq!(goods, [good]);
+            assert_eq!(bads, [bad]);
+            assert_eq!(found.as_deref(), Some(culprit));
+        }
+    }
 }

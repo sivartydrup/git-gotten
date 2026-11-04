@@ -348,8 +348,8 @@ in the worker; open-to-interactive < 1s. (These are v1 targets to be verified in
 
 ## 11. Data model & persistence
 
-Stored in the OS app-config dir (macOS `~/Library/Application Support/GitGotten`,
-Windows `%APPDATA%\GitGotten`).
+Stored in the OS app-data dir (Windows `%APPDATA%\com.sivartydrup.gitgotten`,
+derived from the Tauri application identifier).
 
 - **app.json** (user-level): workspace tree (groups, repos, pinned, recents), last-open
   repo, theme preference, per-repo last view state, editor preference (`$EDITOR`), diff

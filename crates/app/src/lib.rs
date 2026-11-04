@@ -544,6 +544,29 @@ impl Backend {
             // the unmerged file list in the result — the web routes it to the
             // conflict view (SPEC §10.5). A clean op yields an empty list.
             result.conflicts = self.registry.unmerged_files(&repo_id).unwrap_or_default();
+            // Worktree paths in plans are canonicalized by the planner while
+            // the directory still exists, matching the workspace repository id.
+            if result.ok {
+                if let [step] = result.plan.steps.as_slice() {
+                    let removed = match step.argv.as_slice() {
+                        [git, worktree, remove, path]
+                            if git == "git" && worktree == "worktree" && remove == "remove" =>
+                        {
+                            Some(path)
+                        }
+                        [git, worktree, remove, force, path]
+                            if git == "git" && worktree == "worktree" && remove == "remove"
+                                && force == "--force" =>
+                        {
+                            Some(path)
+                        }
+                        _ => None,
+                    };
+                    if let Some(path) = removed {
+                        self.remove_repo_from_workspace(path)?;
+                    }
+                }
+            }
             entries.push(self.log.record(&repo_id, result));
         }
         Ok((results, entries))
@@ -1254,6 +1277,108 @@ mod tests {
         let result = backend.run_op(fx.id(), &plan).await.unwrap();
         assert!(result.ok, "stderr: {}", result.stderr);
         assert_eq!(backend.load_worktrees(fx.id()).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn removed_worktrees_are_unlinked_from_the_persisted_workspace() {
+        for force in [false, true] {
+            let dir = store_dir("worktree-remove");
+            let wt = dir.join("linked");
+            let fx = testutil::Fixture::new("workspace-worktree");
+            fx.commit_file("a.txt", "base\n", "base");
+            fx.git(&["branch", "side"]);
+            let other = testutil::Fixture::new("workspace-other");
+            other.commit_file("other.txt", "other\n", "other");
+
+            let (backend, _rx) = Backend::new();
+            backend.set_store(dir.join("app.json"));
+            backend.open(fx.id()).unwrap();
+            backend.open(other.id()).unwrap();
+            let add = backend.plan(fx.id(), &Op::WorktreeAdd {
+                committish: "side".into(),
+                path: wt.to_string_lossy().into_owned(),
+                new_branch: None,
+            }).unwrap();
+            assert!(backend.run_op(fx.id(), &add).await.unwrap().ok);
+            let linked = backend.open(wt.to_str().unwrap()).unwrap();
+            backend.repo_pin(&linked.id, true).unwrap();
+            backend.repo_pin(other.id(), true).unwrap();
+            let mut expected = backend.group_add("Linked", None).unwrap();
+            let group = expected.groups.iter().find(|g| g.name == "Linked").unwrap().id.clone();
+            expected.groups.iter_mut().find(|g| g.id == "root").unwrap().children
+                .retain(|child| !matches!(child, ChildNode::Repo { id } if id == &linked.id));
+            expected.groups.iter_mut().find(|g| g.id == group).unwrap().children
+                .push(ChildNode::Repo { id: linked.id.clone() });
+            backend.set_workspace(expected.clone()).unwrap();
+            expected.remove_repo(&linked.id);
+            if force {
+                std::fs::write(wt.join("a.txt"), "dirty\n").unwrap();
+            }
+            let remove = backend.plan(fx.id(), &Op::WorktreeRemove {
+                path: linked.id.clone(),
+                force,
+            }).unwrap();
+            let result = backend.run_op(fx.id(), &remove).await.unwrap();
+            assert!(result.ok, "stderr: {}", result.stderr);
+            let workspace = backend.workspace();
+            assert_eq!(workspace, expected);
+            assert!(!workspace.has_repo(&linked.id));
+            assert!(!workspace.pinned.contains(&linked.id));
+            assert!(!workspace.recents.contains(&linked.id));
+            assert!(workspace.has_repo(fx.id()));
+            assert!(workspace.has_repo(other.id()));
+            assert!(workspace.pinned.contains(&other.id().to_string()));
+            assert!(backend.load_status(&linked.id).is_err());
+            assert!(backend.load_status(other.id()).is_ok());
+
+            let (restarted, _rx2) = Backend::new();
+            restarted.set_store(dir.join("app.json"));
+            restarted.reopen_workspace_repos();
+            assert_eq!(restarted.workspace(), workspace);
+            assert!(restarted.load_status(&linked.id).is_err());
+            assert!(restarted.load_status(fx.id()).is_ok());
+            assert!(restarted.load_status(other.id()).is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_worktree_removal_keeps_the_persisted_workspace() {
+        for force in [false, true] {
+            let dir = store_dir("worktree-remove-failed");
+            let wt = dir.join("linked");
+            let fx = testutil::Fixture::new("workspace-worktree-failed");
+            fx.commit_file("a.txt", "base\n", "base");
+            fx.git(&["branch", "side"]);
+            let (backend, _rx) = Backend::new();
+            backend.set_store(dir.join("app.json"));
+            backend.open(fx.id()).unwrap();
+            let add = backend.plan(fx.id(), &Op::WorktreeAdd {
+                committish: "side".into(),
+                path: wt.to_string_lossy().into_owned(),
+                new_branch: None,
+            }).unwrap();
+            assert!(backend.run_op(fx.id(), &add).await.unwrap().ok);
+            let linked = backend.open(wt.to_str().unwrap()).unwrap();
+            backend.repo_pin(&linked.id, true).unwrap();
+            let before = backend.workspace();
+            let remove = backend.plan(fx.id(), &Op::WorktreeRemove {
+                path: linked.id.clone(),
+                force,
+            }).unwrap();
+            // A lock acquired after planning makes git refuse even --force;
+            // removing a locked worktree requires --force twice.
+            fx.git(&["worktree", "lock", wt.to_str().unwrap()]);
+            let result = backend.run_op(fx.id(), &remove).await.unwrap();
+            assert!(!result.ok);
+            assert_eq!(backend.workspace(), before);
+            assert!(backend.load_status(&linked.id).is_ok());
+
+            let (restarted, _rx2) = Backend::new();
+            restarted.set_store(dir.join("app.json"));
+            restarted.reopen_workspace_repos();
+            assert_eq!(restarted.workspace(), before);
+            assert!(restarted.load_status(&linked.id).is_ok());
+        }
     }
 
     #[tokio::test]
