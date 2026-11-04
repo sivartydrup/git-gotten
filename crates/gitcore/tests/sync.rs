@@ -78,7 +78,7 @@ fn diverged_fixture() -> (testutil::Fixture, Repo) {
 async fn run(repo: &Repo, op: &Op) -> gitcore::OpResult {
     let plan = repo.plan(op).expect("plan must compile");
     GitExecutor::new()
-        .run_plan(&repo.id, &repo.path, &plan)
+        .run_plan(repo.queue_key(), &repo.path, &plan)
         .await
 }
 

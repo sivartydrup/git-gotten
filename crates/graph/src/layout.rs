@@ -935,9 +935,10 @@ mod tests {
         assert_eq!(g, again);
     }
 
-    // `release` is a profile cfg that is only set for `--release` builds; the
-    // dev-profile test build does not list it, so allow the lint.
-    #[allow(unexpected_cfgs)]
+    // Cargo sets `debug_assertions` for dev/test builds and leaves it unset for
+    // `--release` (there is no `release` cfg), so the profile split — and with it
+    // the SPEC §10.1 budget in the shipping profile — is detected through
+    // `debug_assertions`. Run `cargo test --release -p graph` to enforce 300ms.
     #[test]
     fn ten_k_commit_layout_is_fast() {
         // 5000-commit trunk + 500 branches of 5–20 commits, mostly merged.
@@ -993,7 +994,7 @@ mod tests {
         // builds run ~10x slower, so the guard is profile-relative to keep
         // `cargo test` non-failing (the plan's acceptance criterion) while
         // still catching algorithmic regressions.
-        let limit_ms = if cfg!(release) { 300 } else { 5_000 };
+        let limit_ms = if cfg!(debug_assertions) { 5_000 } else { 300 };
         assert!(
             elapsed.as_millis() < limit_ms,
             "layout took {elapsed:?}; limit {limit_ms}ms for this profile"

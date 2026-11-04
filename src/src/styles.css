@@ -656,6 +656,13 @@ code {
   flex: none;
 }
 
+.log-hint {
+  flex-basis: 100%;
+  margin: 2px 0 0 22px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* Preview / confirm dialog */
 .dialog-overlay {
   position: fixed;
@@ -774,6 +781,11 @@ code {
 
 .dialog .error {
   margin-top: 10px;
+}
+
+.error-hint {
+  display: block;
+  margin-bottom: 4px;
 }
 
 .dialog-actions {

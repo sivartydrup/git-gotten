@@ -210,6 +210,11 @@ impl Backend {
     /// A corrupt or missing file yields the default tree (SPEC §11).
     pub fn set_store(&self, path: PathBuf) {
         *self.workspace.lock() = load_workspace(&path);
+        // SPEC §11: every repository keeps its own state file in the same directory —
+        // here, its activity log. Loading it is what makes the log survive a restart.
+        if let Some(dir) = path.parent() {
+            self.log.set_dir(dir.to_path_buf());
+        }
         *self.store_path.lock() = Some(path);
     }
 
@@ -444,30 +449,104 @@ impl Backend {
         Ok(plan)
     }
 
+    /// The executor's targets for an open repository: its serialization key, its
+    /// workspace id and its worktree cwd.
+    ///
+    /// The key is the repository's **common** git dir, not the worktree id, so linked
+    /// worktrees of one object database share a turn (SPEC §18). The `parking_lot`
+    /// guard is `!Send`, so it is dropped here — before anything is awaited.
+    fn op_target(&self, id: &str) -> Result<(String, RepoId, PathBuf), AppError> {
+        let repos = self.registry.lock_repos();
+        let repo = repos
+            .get(id)
+            .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
+        Ok((
+            repo.queue_key().to_string(),
+            repo.id.clone(),
+            repo.path.clone(),
+        ))
+    }
+
     /// Run a planned op: execute it (serialized per repo) and record it in the
     /// activity log. A non-zero git exit is a *successful* return value with
     /// `ok: false` — the exact output is data for the UI (safe failure, SPEC §8).
     pub async fn run_op(&self, id: &str, plan: &CommandPlan) -> Result<OpResult, AppError> {
-        // The registry lock is a `parking_lot` guard, which is `!Send`: extract the
-        // data the executor needs (id + cwd) and drop the guard *before* awaiting.
-        let (repo_id, repo_path) = {
-            let repos = self.registry.lock_repos();
-            let repo = repos
-                .get(id)
-                .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
-            (repo.id.clone(), repo.path.clone())
-        };
-        let mut result = self.executor.run_plan(&repo_id, &repo_path, plan).await;
+        let (mut results, _) = self.run_op_group(id, std::iter::once(plan.clone())).await?;
+        Ok(results.pop().expect("one result is recorded for one plan"))
+    }
+
+    /// Run bisect's test command and the verdict it decides as **one** serialized
+    /// flow: the verdict plan cannot exist before the test command's exit code does,
+    /// and the per-repo turn must not be released between them — a concurrent op
+    /// could move HEAD out from under the verdict (SPEC §18).
+    ///
+    /// Returns the results (test, then verdict) with their activity-log entries.
+    pub async fn run_bisect_flow(
+        &self,
+        id: &str,
+        test_plan: CommandPlan,
+    ) -> Result<(Vec<OpResult>, Vec<LogEntry>), AppError> {
+        let (queue_key, repo_id, repo_path) = self.op_target(id)?;
+        // A shared borrow, so the flow can re-plan while `repo_id` stays owned here.
+        let plan_repo = &repo_id;
+        let (results, plan_error) = self
+            .executor
+            .run_flow(&queue_key, &repo_path, |turn| async move {
+                let test = turn.run(&test_plan).await;
+                let verdict = if test.ok {
+                    BisectVerdict::Good
+                } else {
+                    BisectVerdict::Bad
+                };
+                match self.plan(plan_repo, &Op::BisectVerdict { verdict }) {
+                    Ok(verdict_plan) => {
+                        let applied = turn.run(&verdict_plan).await;
+                        (vec![test, applied], None)
+                    }
+                    Err(err) => (vec![test], Some(err)),
+                }
+            })
+            .await;
+        self.registry.refresh(&repo_id);
+        // Both git commands reach the activity log even if the verdict could not be
+        // planned: the UI always gets the command that ran (SPEC §18).
+        let mut entries = Vec::with_capacity(results.len());
+        for result in &results {
+            entries.push(self.log.record(&repo_id, result));
+        }
+        if let Some(err) = plan_error {
+            return Err(err);
+        }
+        Ok((results, entries))
+    }
+
+    /// Run several plans as **one** serialized critical section and return their
+    /// results with the activity-log entries they produced (in plan order).
+    ///
+    /// The per-repo queue turn is held across the whole group, so no other op can
+    /// slip between the git commands of one logical flow (SPEC §18). Each plan is
+    /// still executed, capped, refreshed and recorded exactly as a standalone op, so
+    /// the activity log looks identical either way.
+    pub async fn run_op_group(
+        &self,
+        id: &str,
+        plans: impl IntoIterator<Item = CommandPlan>,
+    ) -> Result<(Vec<OpResult>, Vec<LogEntry>), AppError> {
+        let (queue_key, repo_id, repo_path) = self.op_target(id)?;
+        let mut results = self.executor.run_plans(&queue_key, &repo_path, plans).await;
         // An op may have changed the repository's config or refs (`branch.*`,
         // remotes, tags): the registry's `gix` handle caches both at open time,
         // so refresh it to keep the read model and the next `plan` live.
         self.registry.refresh(&repo_id);
-        // If the op stopped on a conflict (a merge/rebase/cherry-pick), carry
-        // the unmerged file list in the result — the web routes it to the
-        // conflict view (SPEC §10.5). A clean op yields an empty list.
-        result.conflicts = self.registry.unmerged_files(&repo_id).unwrap_or_default();
-        self.log.record(id, &result);
-        Ok(result)
+        let mut entries = Vec::with_capacity(results.len());
+        for result in &mut results {
+            // If the op stopped on a conflict (a merge/rebase/cherry-pick), carry
+            // the unmerged file list in the result — the web routes it to the
+            // conflict view (SPEC §10.5). A clean op yields an empty list.
+            result.conflicts = self.registry.unmerged_files(&repo_id).unwrap_or_default();
+            entries.push(self.log.record(&repo_id, result));
+        }
+        Ok((results, entries))
     }
 
     /// The most recent recorded log entry for `repo` (backs the `op_finished` event).
@@ -515,23 +594,84 @@ impl RepoRegistry {
     }
 }
 
-/// In-memory activity log: a bounded ring of the most recent [`LogEntry`]s
-/// (SPEC §11 — the command stream, kept in memory for the session).
+/// The activity log (SPEC §11): a bounded ring of the most recent [`LogEntry`]s
+/// **per repository** — the command stream — mirrored to one JSON file per repo in
+/// the app-data directory, so the log survives a restart.
+///
+/// Persistence is best-effort in both directions: a log file that cannot be read or
+/// parsed is treated as an empty ring and rewritten by the next recorded op, so a
+/// corrupt per-repo state file is *rebuilt*, never a crash (SPEC §11/§18).
 #[derive(Default)]
 pub struct LogBuffer {
     next_id: AtomicU64,
-    entries: Mutex<VecDeque<LogEntry>>,
+    /// One ring per repository id; SPEC §11 keeps the "last 500" per repo, so a
+    /// busy repository cannot evict another repo's history.
+    rings: Mutex<HashMap<RepoId, VecDeque<LogEntry>>>,
+    /// Directory holding the per-repo files (`None` until the store is set).
+    dir: Mutex<Option<PathBuf>>,
 }
 
-/// Maximum number of entries retained (SPEC §11: "last 500").
+/// Maximum number of entries retained per repository (SPEC §11: "last 500").
 const LOG_CAP: usize = 500;
+
+/// Suffix of a per-repo activity-log file inside the app-data directory.
+const LOG_SUFFIX: &str = ".log.json";
+
+/// The file a repository's log lives in: the id hashed, so any repository path
+/// becomes a short, filesystem-safe flat name.
+fn log_file(dir: &Path, repo: &str) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    repo.hash(&mut hasher);
+    dir.join(format!("{:016x}{LOG_SUFFIX}", hasher.finish()))
+}
 
 impl LogBuffer {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Append a finished op to the ring, returning the entry with its id.
+    /// Point the log at the app-data directory and load every repository's ring.
+    ///
+    /// Never fails (SPEC §11): an unreadable or malformed file — wrong shape,
+    /// truncated, not JSON — is skipped, and the next op rewrites it. Entry ids
+    /// seed the id counter so ids stay monotonic across restarts.
+    pub fn set_dir(&self, dir: PathBuf) {
+        let mut rings: HashMap<RepoId, VecDeque<LogEntry>> = HashMap::new();
+        let mut max_id = 0u64;
+        if let Ok(files) = std::fs::read_dir(&dir) {
+            for path in files.filter_map(|e| e.ok()).map(|e| e.path()) {
+                if !path.to_string_lossy().ends_with(LOG_SUFFIX) {
+                    continue;
+                }
+                let text = match std::fs::read_to_string(&path) {
+                    Ok(text) => text,
+                    Err(_) => continue, // corrupt: rebuilt by the next record
+                };
+                let entries: Vec<LogEntry> = serde_json::from_str(&text).unwrap_or_default();
+                for entry in entries {
+                    max_id = max_id.max(entry.id);
+                    let ring = rings.entry(entry.repo.clone()).or_default();
+                    // Two files can name one repository (a renamed path, an old
+                    // hash): merge by id, never duplicate a row.
+                    if !ring.iter().any(|kept| kept.id == entry.id) {
+                        ring.push_back(entry);
+                    }
+                }
+            }
+        }
+        for ring in rings.values_mut() {
+            ring.make_contiguous().sort_by_key(|entry| entry.id);
+            if ring.len() > LOG_CAP {
+                ring.drain(0..ring.len() - LOG_CAP);
+            }
+        }
+        self.next_id.store(max_id, Ordering::Relaxed);
+        *self.rings.lock() = rings;
+        *self.dir.lock() = Some(dir);
+    }
+
+    /// Append a finished op to its repository's ring, returning the entry with its id.
     pub fn record(&self, repo: &str, result: &OpResult) -> LogEntry {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -548,33 +688,48 @@ impl LogBuffer {
             stderr: result.stderr.clone(),
             conflicts: result.conflicts.clone(),
         };
-        let mut ring = self.entries.lock();
-        ring.push_back(entry.clone());
-        if ring.len() > LOG_CAP {
-            let overflow = ring.len() - LOG_CAP;
-            ring.drain(0..overflow);
+        {
+            let mut rings = self.rings.lock();
+            let ring = rings.entry(entry.repo.clone()).or_default();
+            ring.push_back(entry.clone());
+            if ring.len() > LOG_CAP {
+                let overflow = ring.len() - LOG_CAP;
+                ring.drain(0..overflow);
+            }
         }
+        self.persist(&entry.repo);
         entry
     }
 
     /// The retained entries (oldest first), optionally filtered to one repo.
     pub fn snapshot(&self, repo: Option<&str>) -> Vec<LogEntry> {
-        self.entries
+        let mut entries: Vec<LogEntry> = self
+            .rings
             .lock()
-            .iter()
-            .filter(|e| repo.is_none_or(|r| e.repo == *r))
-            .cloned()
-            .collect()
+            .values()
+            .flat_map(|ring| ring.iter().filter(|e| repo.is_none_or(|r| e.repo == *r)).cloned())
+            .collect();
+        entries.sort_by_key(|entry| entry.id);
+        entries
     }
 
     /// The most recent entry for `repo`, if any.
     pub fn last(&self, repo: &str) -> Option<LogEntry> {
-        self.entries
+        self.rings.lock().get(repo).and_then(|r| r.back().cloned())
+    }
+
+    /// Rewrite one repository's log file (best-effort; a failure only loses history).
+    fn persist(&self, repo: &str) {
+        let Some(dir) = self.dir.lock().clone() else { return };
+        let entries: Vec<LogEntry> = self
+            .rings
             .lock()
-            .iter()
-            .rev()
-            .find(|e| e.repo == *repo)
-            .cloned()
+            .get(repo)
+            .map(|ring| ring.iter().cloned().collect())
+            .unwrap_or_default();
+        if let Ok(json) = serde_json::to_string(&entries) {
+            let _ = std::fs::write(log_file(&dir, repo), json);
+        }
     }
 }
 
@@ -688,12 +843,13 @@ fn load_bisect(repo: RepoId, state: State<'_, Backend>) -> Result<BisectState, A
 }
 
 /// Run the bisect test command against the checked-out candidate and apply
-/// the resulting verdict (IPC `bisect_test`, SPEC §10.9). Both steps run as
-/// fully planned, evented, activity-logged ops — the transparency contract
-/// holds for each: first the literal test argv (`GitStep::program`, no
-/// shell), then `git bisect good|bad` decided by the test's exit code
-/// (exit 0 → Good, git's `bisect run` convention). Returns the session state
-/// after the verdict.
+/// the resulting verdict (IPC `bisect_test`, SPEC §10.9). The literal test argv
+/// (`GitStep::program`, no shell) runs first, then `git bisect good|bad` decided by
+/// its exit code (exit 0 → Good, git's `bisect run` convention).
+///
+/// The two are **one** serialized flow (SPEC §18): the repo's queue turn is held
+/// across both, so no other op can slip between the test and the verdict it decides.
+/// Each is still planned, announced and logged exactly like a standalone op.
 #[tauri::command]
 async fn bisect_test(
     repo: RepoId,
@@ -701,13 +857,14 @@ async fn bisect_test(
     app: AppHandle,
     state: State<'_, Backend>,
 ) -> Result<BisectState, AppError> {
-    let test = run_planned(&repo, &Op::BisectTest { command }, &app, &state).await?;
-    let verdict = if test.ok {
-        BisectVerdict::Good
-    } else {
-        BisectVerdict::Bad
-    };
-    run_planned(&repo, &Op::BisectVerdict { verdict }, &app, &state).await?;
+    let test_plan = state.plan(&repo, &Op::BisectTest { command })?;
+    emit_started(&app, &repo, &test_plan);
+    let (_, entries) = state.run_bisect_flow(&repo, test_plan).await?;
+    // Replay the lifecycle in order, so the command stream reads the same as two
+    // independent ops: each one finishes before the next appears.
+    for entry in entries {
+        let _ = app.emit(OP_FINISHED, entry);
+    }
     state.load_bisect(&repo)
 }
 
@@ -730,6 +887,17 @@ async fn run_planned(
     state: &Backend,
 ) -> Result<OpResult, AppError> {
     let plan = state.plan(repo, op)?;
+    emit_started(app, repo, &plan);
+    let result = state.run_op(repo, &plan).await?;
+    if let Some(entry) = state.last_entry(repo) {
+        let _ = app.emit(OP_FINISHED, entry);
+    }
+    Ok(result)
+}
+
+/// Announce an op's start: the plan's exact display plus the highest risk of its
+/// steps, so the UI names the command before it runs (SPEC §8/§18).
+fn emit_started(app: &AppHandle, repo: &RepoId, plan: &CommandPlan) {
     let risk = plan
         .steps
         .iter()
@@ -744,11 +912,6 @@ async fn run_planned(
             risk,
         },
     );
-    let result = state.run_op(repo, &plan).await?;
-    if let Some(entry) = state.last_entry(repo) {
-        let _ = app.emit(OP_FINISHED, entry);
-    }
-    Ok(result)
 }
 
 /// Run an operation (IPC `run_op`): compiles `op` and runs it through
@@ -1159,8 +1322,9 @@ mod tests {
         .await;
         assert!(backend.load_bisect(fx.id()).unwrap().active);
 
-        // The `bisect_test` command's body: test plan → exit-code verdict →
-        // verdict plan. With only one candidate (c2), one round must converge.
+        // The `bisect_test` command's body: the test plan and the verdict plan it
+        // decides run as one serialized flow. With only one candidate (c2), one
+        // round must converge.
         let test_plan = backend
             .plan(
                 fx.id(),
@@ -1173,14 +1337,15 @@ mod tests {
             test_plan.display, "sh check.sh",
             "the literal test argv is what runs"
         );
-        let test = backend.run_op(fx.id(), &test_plan).await.unwrap();
-        assert!(!test.ok, "the bug commit must fail the test");
-        let verdict = if test.ok {
-            BisectVerdict::Good
-        } else {
-            BisectVerdict::Bad
-        };
-        run(&backend, &fx, Op::BisectVerdict { verdict }).await;
+        let (results, entries) = backend.run_bisect_flow(fx.id(), test_plan).await.unwrap();
+        assert_eq!(results.len(), 2, "test + verdict in one critical section");
+        assert!(!results[0].ok, "the bug commit must fail the test");
+        assert!(results[1].ok, "verdict accepted: {}", results[1].stderr);
+        assert!(
+            entries[1].display.contains("bisect bad"),
+            "a failing test must produce `git bisect bad`, got {:?}",
+            entries[1].display
+        );
 
         let state = backend.load_bisect(fx.id()).unwrap();
         assert_eq!(
@@ -1939,5 +2104,180 @@ mod tests {
         assert_eq!(pairs[0].meta.id, id);
         assert_eq!(pairs[0].status.changes.len(), 1);
         assert!(pairs[0].status.last_commit.is_some());
+    }
+
+    // ── Stage 13: per-repo state — activity log persistence + recovery ──────
+
+    /// SPEC §11: the activity log is *per-repository* state — it survives a restart,
+    /// and one busy repo cannot evict another repo's command stream.
+    #[tokio::test]
+    async fn activity_log_is_per_repo_state_and_survives_a_restart() {
+        let dir = store_dir("log-restart");
+        let fx_a = testutil::Fixture::new("log-a");
+        let fx_b = testutil::Fixture::new("log-b");
+        let (backend, _rx) = Backend::new();
+        backend.set_store(dir.join("app.json"));
+        backend.open(fx_a.id()).unwrap();
+        backend.open(fx_b.id()).unwrap();
+        for i in 0..LOG_CAP + 2 {
+            backend
+                .run_op(fx_a.id(), &noop_plan(&format!("git echo a{i}")))
+                .await
+                .unwrap();
+        }
+        backend
+            .run_op(fx_b.id(), &noop_plan("git echo b1"))
+            .await
+            .unwrap();
+        let highest = backend.log().snapshot(None).last().unwrap().id;
+
+        // A second launch over the same store sees both streams, each capped on its
+        // own: repo A kept its newest 500 (the two oldest are gone), B kept its one.
+        let (restarted, _rx2) = Backend::new();
+        restarted.set_store(dir.join("app.json"));
+        let a = restarted.log().snapshot(Some(fx_a.id()));
+        assert_eq!(a.len(), LOG_CAP);
+        assert_eq!(a.first().unwrap().display, "git echo a2");
+        let b = restarted.log().snapshot(Some(fx_b.id()));
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].display, "git echo b1");
+
+        // Ids stay monotonic across the restart: the next entry continues after the
+        // highest id on disk, so the web's log keys never collide with restored rows.
+        restarted.open(fx_a.id()).unwrap();
+        restarted
+            .run_op(fx_a.id(), &noop_plan("git echo a-next"))
+            .await
+            .unwrap();
+        assert_eq!(restarted.log().last(fx_a.id()).unwrap().id, highest + 1);
+        assert_eq!(restarted.log().snapshot(Some(fx_a.id())).len(), LOG_CAP);
+    }
+
+    /// A malformed per-repo state file is rebuilt, never a crash — with every flavour
+    /// of damage a half-written cache file can be (SPEC §11/§18).
+    #[test]
+    fn corrupt_per_repo_log_files_are_rebuilt() {
+        let dir = store_dir("log-corrupt");
+        std::fs::write(log_file(&dir, "repo-a"), "{ not json").unwrap();
+        std::fs::write(log_file(&dir, "repo-b"), "[{\"id\": 1}]").unwrap(); // JSON, wrong shape
+        std::fs::write(log_file(&dir, "repo-c"), "").unwrap();
+        std::fs::write(log_file(&dir, "repo-d"), "[]").unwrap();
+        std::fs::write(dir.join("app.json"), "not a log file").unwrap(); // ignored by the loader
+
+        let log = LogBuffer::new();
+        log.set_dir(dir.clone()); // must not panic
+        assert!(log.snapshot(None).is_empty(), "corrupt files rebuild to empty");
+
+        log.record("repo-a", &result_with(&noop_plan("git status"), false));
+        assert_eq!(log.snapshot(Some("repo-a")).len(), 1);
+        let repaired: Vec<LogEntry> =
+            serde_json::from_str(&std::fs::read_to_string(log_file(&dir, "repo-a")).unwrap())
+                .unwrap();
+        assert_eq!(repaired.len(), 1);
+        assert!(!repaired[0].ok);
+    }
+
+    /// SPEC §18's verification step, end to end: corrupt a repository's state file,
+    /// restart, and the app recovers by rebuilding it.
+    #[tokio::test]
+    async fn corrupt_repo_state_file_recovers_through_the_backend() {
+        let dir = store_dir("log-recover");
+        let fx = testutil::Fixture::new("log-recover");
+        let (backend, _rx) = Backend::new();
+        backend.set_store(dir.join("app.json"));
+        backend.open(fx.id()).unwrap();
+        backend
+            .run_op(fx.id(), &noop_plan("git commit -m \"first\""))
+            .await
+            .unwrap();
+
+        // Damage it exactly like a crash mid-write would.
+        std::fs::write(log_file(&dir, fx.id()), "[{\"id\": 1, \"repo\":").unwrap();
+
+        let (restarted, _rx2) = Backend::new();
+        restarted.set_store(dir.join("app.json"));
+        restarted.open(fx.id()).unwrap();
+        assert!(restarted.log().snapshot(Some(fx.id())).is_empty());
+        restarted
+            .run_op(fx.id(), &noop_plan("git commit -m \"second\""))
+            .await
+            .unwrap();
+
+        let (again, _rx3) = Backend::new();
+        again.set_store(dir.join("app.json"));
+        let entries = again.log().snapshot(Some(fx.id()));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].display, "git commit -m \"second\"");
+    }
+
+    /// The "last 500" ring is per repo (SPEC §11): a busy repository must not push
+    /// another repository's history out of the log.
+    #[test]
+    fn log_cap_is_per_repo_not_global() {
+        let log = LogBuffer::new();
+        let busy = result_with(&noop_plan("git a"), true);
+        let quiet = result_with(&noop_plan("git b"), true);
+        for _ in 0..LOG_CAP + 2 {
+            log.record("busy-repo", &busy);
+        }
+        log.record("quiet-repo", &quiet);
+        assert_eq!(log.snapshot(Some("busy-repo")).len(), LOG_CAP);
+        assert_eq!(log.snapshot(Some("quiet-repo")).len(), 1);
+    }
+
+    /// SPEC §18 stress: every mutating op the app can fire at one repository runs
+    /// **serialized**. N ops launched at once must all succeed (no `index.lock` /
+    /// "cannot lock ref" leaking into a result), all reach the activity log, and the
+    /// repository must end in exactly the state all N of them describe.
+    #[tokio::test]
+    async fn concurrent_ops_on_one_repo_all_land() {
+        let fx = testutil::Fixture::new("app-concurrent");
+        fx.commit_file("seed.txt", "seed\n", "seed");
+        let tip = testutil::git(&fx.path, &["rev-parse", "HEAD"]);
+        let (backend, _rx) = Backend::new();
+        let id = backend.open(fx.id()).unwrap().id;
+        let backend = std::sync::Arc::new(backend);
+
+        const N: usize = 24;
+        let mut handles = Vec::new();
+        for i in 0..N {
+            let backend = backend.clone();
+            let id = id.clone();
+            let tip = tip.clone();
+            handles.push(tokio::spawn(async move {
+                let op = if i % 2 == 0 {
+                    Op::BranchCreate {
+                        name: format!("br{i}"),
+                        from: tip,
+                        checkout: false,
+                    }
+                } else {
+                    Op::TagCreate {
+                        name: format!("t{i}"),
+                        target: tip,
+                        annotated: false,
+                        message: None,
+                    }
+                };
+                let plan = backend.plan(&id, &op).unwrap();
+                backend.run_op(&id, &plan).await.unwrap()
+            }));
+        }
+        // The tasks are already racing each other; awaiting in order only collects.
+        let mut results = Vec::with_capacity(N);
+        for handle in handles {
+            results.push(handle.await.unwrap());
+        }
+
+        let failed: Vec<&OpResult> = results.iter().filter(|r| !r.ok).collect();
+        assert!(failed.is_empty(), "every serialized op must succeed: {failed:?}");
+        let log = backend.log().snapshot(Some(&id));
+        assert_eq!(log.len(), N, "every op is in the activity log");
+        assert!(log.iter().all(|e| e.ok), "no op reported a lock failure");
+
+        let branches = testutil::git(&fx.path, &["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+        let tags = testutil::git(&fx.path, &["for-each-ref", "--format=%(refname:short)", "refs/tags"]);
+        assert_eq!(branches.lines().filter(|l| l.starts_with("br")).count(), N / 2);
+        assert_eq!(tags.lines().filter(|l| l.starts_with('t')).count(), N - N / 2);
     }
 }

@@ -21,7 +21,7 @@ fn stash_fixture(label: &str) -> (testutil::Fixture, Repo) {
 
 async fn run(fx: &testutil::Fixture, repo: &Repo, op: Op) -> git_gotten_protocol::OpResult {
     let plan = repo.plan(&op).unwrap();
-    let result = GitExecutor::new().run_plan(&repo.id, &fx.path, &plan).await;
+    let result = GitExecutor::new().run_plan(repo.queue_key(), &fx.path, &plan).await;
     assert!(
         result.ok,
         "op failed: plan `{}`\nstderr: {}",

@@ -354,9 +354,13 @@ Windows `%APPDATA%\GitGotten`).
 - **app.json** (user-level): workspace tree (groups, repos, pinned, recents), last-open
   repo, theme preference, per-repo last view state, editor preference (`$EDITOR`), diff
   tool preference, updater settings, panel sizes.
-- **per-repo state** (one file each): graph layout cache, branch color assignments,
-  last selected commit/branch.
-- **activity log** (per repo, bounded ring, e.g. last 500 entries): the command stream.
+- **activity log** (per repo, bounded ring, e.g. last 500 entries): the command stream,
+  stored as one JSON file per repository in the same directory and restored at startup.
+- **per-repo state** (one file each): branch color assignments, last selected
+  commit/branch — the same per-repo file mechanism, not yet written.
+- **graph layout cache** (§10.1): in memory per open repository, keyed on every ref
+  target + `HEAD` + each worktree's recorded HEAD, so browsing/staging reuses it and
+  any commit, ref move, checkout or worktree change rebuilds it.
 
 v1 uses **plain JSON files** (simple, inspectable, no DB). **SQLite** is the fallback if
 the activity log or graph cache outgrows files at scale — a later optimization, not a

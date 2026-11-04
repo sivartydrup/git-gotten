@@ -36,7 +36,7 @@ vi.mock("./api", () => ({
   bisectTest: async () => ({ active: false, current: null, good: [], bad: [], remaining: 0, found: null, log: [] }),
 }));
 
-import { useGraphStore, useRepoStore } from "./store";
+import { useActivityStore, useGraphStore, useMainTab, useRepoStore } from "./store";
 import type { CommitDetail, Graph, RepoMeta, Status } from "./types";
 
 const meta: RepoMeta = {
@@ -84,6 +84,15 @@ beforeEach(() => {
     detail: null,
     detailLoading: false,
     detailError: null,
+  });
+  useActivityStore.setState({
+    activities: [],
+    running: false,
+    runningDisplay: null,
+    runningRisk: null,
+    preview: null,
+    error: null,
+    busy: false,
   });
   vi.clearAllMocks();
 });
@@ -292,4 +301,109 @@ test("graph select outside an open repo stores no detail", async () => {
   expect(s.selected).toBe("a1b2c3");
   expect(s.detail).toBeNull();
   expect(s.detailLoading).toBe(false);
+});
+
+// ── Safe failure (SPEC §18): the activity store on a failed op ──────────────
+
+const failedRunPlan = {
+  display: 'git commit -m "fix: thing"',
+  steps: [
+    { argv: ["git", "commit", "-m", "fix: thing"], summary: "commit", risk: "Mutating" as const, effect: null, input: null, program: null },
+  ],
+  preview: null,
+};
+
+function failedCommitEntry(id: number) {
+  // The web's `record()` and Rust's `op_finished` payload for the same op:
+  // identical data, different id source (`nextEntryId` vs. the Rust ring).
+  const entry = {
+    id,
+    repo: "/repo/alpha",
+    display: 'git commit -m "fix: thing"',
+    ok: false,
+    duration_ms: 3,
+    ts: 20,
+    stdout: "",
+    stderr: "nothing to commit",
+    conflicts: [],
+  };
+  return entry;
+}
+
+test("record() of a failed op stores the raw result without touching repo state", () => {
+  const before = useRepoStore.getState();
+  const firstWebId = useActivityStore.getState().activities.length;
+  useActivityStore.getState().record("/repo/alpha", {
+    plan: failedRunPlan,
+    ok: false,
+    exit: 1,
+    stdout: "",
+    stderr: "nothing to commit",
+    duration_ms: 3,
+    conflicts: [],
+  });
+  const s = useActivityStore.getState();
+  expect(s.activities).toHaveLength(firstWebId + 1);
+  expect(s.activities[0]).toMatchObject({
+    repo: "/repo/alpha",
+    display: 'git commit -m "fix: thing"',
+    ok: false,
+    stdout: "",
+    stderr: "nothing to commit",
+  });
+  // No optimistic repo state: the read model stays exactly what Rust reported.
+  expect(useRepoStore.getState()).toEqual(before);
+});
+
+test("applyFinished of a failed op clears the running flag and keeps the raw failure", () => {
+  const entry = { ...failedCommitEntry(12), display: "git reset --hard HEAD~1" };
+  useActivityStore.getState().applyStarted({ repo: "/repo/alpha", display: "git reset --hard HEAD~1", risk: "Dangerous" });
+  expect(useActivityStore.getState().running).toBe(true);
+
+  useActivityStore.getState().applyFinished(entry);
+
+  const s = useActivityStore.getState();
+  expect(s.running).toBe(false);
+  expect(s.runningDisplay).toBeNull();
+  // An op the web did not record itself (Rust ran it, e.g. `bisect_test`)
+  // still lands in the log with the Rust payload.
+  expect(s.activities).toHaveLength(1);
+  expect(s.activities[0]).toMatchObject({ ok: false, stderr: "nothing to commit" });
+});
+
+test("a failed op is recorded once: op_finished refreshes the web-recorded entry", () => {
+  useActivityStore.getState().record("/repo/alpha", {
+    plan: failedRunPlan,
+    ok: false,
+    exit: 1,
+    stdout: "",
+    stderr: "nothing to commit",
+    duration_ms: 3,
+    conflicts: [],
+  });
+  const webId = useActivityStore.getState().activities[0].id;
+  // `op_finished` for the same op (same repo + display) refreshes, not duplicates.
+  useActivityStore.getState().applyFinished({ ...failedCommitEntry(12), duration_ms: 15 });
+
+  const s = useActivityStore.getState();
+  expect(s.activities).toHaveLength(1);
+  expect(s.activities[0]).toMatchObject({
+    id: webId, // the web id survives …
+    ok: false,
+    duration_ms: 15, // … and the authoritative Rust timing/output replaces it
+  });
+});
+
+test("a failed op's record() routes a conflicted repo to the Conflicts tab", () => {
+  useMainTab.getState().setTab("graph");
+  useActivityStore.getState().record("/repo/alpha", {
+    plan: failedRunPlan,
+    ok: false,
+    exit: 1,
+    stdout: "",
+    stderr: "CONFLICT (content): Merge conflict in f.txt",
+    duration_ms: 3,
+    conflicts: ["f.txt"],
+  });
+  expect(useMainTab.getState().tab).toBe("conflicts");
 });

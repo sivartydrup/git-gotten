@@ -103,7 +103,7 @@ async fn add_worktree_for_existing_branch_checks_it_out_at_the_path() {
     assert_eq!(plan.steps[0].risk, Risk::Mutating);
 
     let result = GitExecutor::new()
-        .run_plan(&repo.id, &repo.path, &plan)
+        .run_plan(repo.queue_key(), &repo.path, &plan)
         .await;
     assert!(result.ok, "stderr: {}", result.stderr);
 
@@ -137,7 +137,7 @@ async fn add_worktree_with_new_branch_creates_it_from_the_committish() {
     assert_eq!(argv[dash_b + 1], "feature");
 
     let result = GitExecutor::new()
-        .run_plan(&repo.id, &repo.path, &plan)
+        .run_plan(repo.queue_key(), &repo.path, &plan)
         .await;
     assert!(result.ok, "stderr: {}", result.stderr);
 
@@ -168,7 +168,7 @@ async fn adding_a_branch_checked_out_in_two_worktrees_is_a_clean_git_error() {
         .plan(&op)
         .expect("the plan compiles; git enforces the rule");
     let result = GitExecutor::new()
-        .run_plan(&repo.id, &repo.path, &plan)
+        .run_plan(repo.queue_key(), &repo.path, &plan)
         .await;
     assert!(!result.ok, "git must refuse the double checkout");
     assert!(
@@ -234,7 +234,7 @@ async fn remove_clean_worktree_is_mutating_and_removes_it() {
     assert_eq!(plan.steps[0].risk, Risk::Mutating);
 
     let result = GitExecutor::new()
-        .run_plan(&repo.id, &repo.path, &plan)
+        .run_plan(repo.queue_key(), &repo.path, &plan)
         .await;
     assert!(result.ok, "stderr: {}", result.stderr);
     assert!(!canonical(&wt).exists(), "the worktree directory is gone");
@@ -283,7 +283,7 @@ async fn force_removing_a_dirty_worktree_is_dangerous_and_removes_it() {
     assert!(plan.steps[0].argv.contains(&"--force".to_string()));
 
     let result = GitExecutor::new()
-        .run_plan(&repo.id, &repo.path, &plan)
+        .run_plan(repo.queue_key(), &repo.path, &plan)
         .await;
     assert!(result.ok, "stderr: {}", result.stderr);
     assert!(!canonical(&wt).exists());

@@ -46,7 +46,7 @@ As of **2026-10-29** (`stage-10`). Stage numbers match [`PLAN.md`](./PLAN.md).
 | 10 | Worktrees: list / add / switch / remove + graph checkout markers | ✅ committed |
 | 11 | Stash, submodules, bisect | ✅ committed |
 | 12 | Multi-repo workspace (groups, dashboard), persistence, theming | ✅ committed |
-| 13 | Hardening: performance + reliability | ⬜ not started |
+| 13 | Hardening: performance + reliability | ✅ committed |
 | 14 | Distribution: packaging, signing, auto-updater | ⬜ not started (unsigned `.msi` builds work) |
 
 **Verification (macOS 25.6, arm64, 2026-10-29):**
@@ -81,6 +81,38 @@ As of **2026-10-29** (`stage-10`). Stage numbers match [`PLAN.md`](./PLAN.md).
   Windows machine available; the config dir uses Tauri's OS-aware
   `app_data_dir()` and plain `std::fs` persistence, covered by the round-trip
   tests above.
+
+**Verification (macOS 25.6, arm64, 2026-11-04):**
+
+- `cargo test --workspace` — 368 passed, in both debug **and** release profiles, no warnings.
+- `pnpm test` — 189 passed (17 files). `pnpm build` — production build passes.
+- Stage-13 performance on a 10 120-commit synthetic repository (`--release`): the app's
+  graph pipeline builds DAG + lane layout cold in 116–121 ms (SPEC §18 budget 300 ms),
+  replays it from the per-repo cache in 3 ms, and rebuilds it in ~90 ms after one commit
+  moves the fingerprint. Layout threshold asserted in both profiles.
+- Canvas culling at 10 000 graph rows: the visible window stays under 100 rows at every
+  pan position and at both zoom bounds, a full `renderGraph` pass issues under 2 000
+  canvas calls and finishes in well under 500 ms — a culling regression fails the test,
+  it does not merely slow down. The subjective 60 fps check was not done by hand.
+- Stage-13 concurrency, against real `git`: 24 concurrent mutating ops (commits, branch
+  and tag creates, stash pushes) on one repository all land with exactly the implied
+  history and zero lock diagnostics; 8 good ops survive 9 colliding neighbours that all
+  fail with non-zero exits; 12 ops fired from a main checkout *and* a linked worktree
+  serialize on one turn (same queue key = the common git dir); ops on two repositories
+  measurably overlap; `run_plans` keeps a compound flow atomic against 12 interleaving
+  `git reset -q` attempts.
+- Stage-13 failure paths, against real `git`: a failing middle step stops the rest of its
+  plan and carries git's own stderr verbatim; an interrupted mid-merge stays a
+  recoverable merge with `git merge --continue` refusing until the conflict is really
+  resolved; a push to a dead remote fails cleanly with no remote-tracking ref written;
+  a commit message full of shell metacharacters (plus a file named `-rf`) never reaches a
+  shell. Friendly git-error text renders *above* the raw command + output, and every
+  panel re-reads live state when an op finishes.
+- Per-repo activity log: bounded 500-entry ring mirrored to one JSON file per repository,
+  restored on restart with monotonic ids, rebuilt from a deliberately corrupted file;
+  `Backend` restart recovers workspace and log.
+- Windows gate: not run — no Windows machine available. The new paths are plain `std::fs`
+  over the OS-aware app-data dir already covered by the persistence round-trip tests.
 
 **Verification (Windows 11, x64, 2026-10-27):**
 
@@ -170,10 +202,31 @@ Stages 09–12 have not been mirrored on Windows yet; the run above predates the
 - Light + Dark + system-follow theming (persisted), applied to the chrome and
   the branch-lane palette on the graph canvas.
 
+**Performance & reliability (stage 13)**
+
+- The commit graph is cached per open repository, keyed on a fingerprint of every ref
+  target, `HEAD` and each worktree's recorded HEAD: browsing, staging and editing
+  replay the cached layout (3 ms), while a commit, a ref move, a checkout or a
+  worktree change rebuilds it — 116 ms for a 10 120-commit repository, inside the
+  300 ms SPEC §18 budget.
+- The canvas draws only the visible window of rows plus a margin at every pan and
+  zoom level, with a bounded draw-call count at 10 000 rows.
+- Ops on a repository serialize against its **common git dir** (so linked worktrees of
+  one object database share a turn); 24 concurrent ref-writing ops on one repo all
+  land with no `index.lock`/ref-lock error. A compound flow (a bisect test and the
+  verdict it decides) holds one turn end to end.
+- A failing step stops the rest of its plan and returns git's own output verbatim; a
+  mid-op interruption leaves a recoverable state (an interrupted merge stays a
+  merge). The web never guesses: every panel re-reads from Rust on `op_finished`, and
+  friendly git messages render *above* the raw command + output, never instead of it.
+- The activity log is per-repository state — a bounded 500-entry ring mirrored to one
+  JSON file per repo, restored on restart, monotonic ids, and rebuilt from scratch if
+  the file is corrupt.
+
 ## Not implemented yet
 
-Performance hardening on very large repositories; Windows/macOS signing, notarization, and
-the auto-updater.
+Windows/macOS signing, notarization, and the auto-updater; the remaining per-repo
+state files (branch colors, last selection).
 
 Linux is deferred (the architecture stays portable).
 

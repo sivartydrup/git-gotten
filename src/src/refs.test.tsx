@@ -57,7 +57,7 @@ vi.mock("./api", () => ({
 
 import { useActivityStore, useRefsStore, useRepoStore } from "./store";
 import { RefsPanel } from "./components/RefsPanel";
-import type { Branch, CommandPlan, Remote, RepoMeta, Status, Tag } from "./types";
+import type { Branch, CommandPlan, LogEntry, Remote, RepoMeta, Status, Tag } from "./types";
 
 const REPO = "/repo/alpha";
 
@@ -431,12 +431,23 @@ test("a finished op reloads the graph and the ref lists", async () => {
   await flush();
   // App subscribed to the finished-op event; the mock captured the callback.
   expect(onOpFinished).toHaveBeenCalled();
-  const cb = onOpFinished.mock.calls[0][0] as (p: { repo: string; conflicts: string[] }) => void;
+  const cb = onOpFinished.mock.calls[0][0] as (p: LogEntry) => void;
 
   loadBranches.mockClear();
   loadGraph.mockClear();
+  // Rust sends the whole recorded entry, so the fixture does too.
   await act(async () => {
-    cb({ repo: REPO, conflicts: [] });
+    cb({
+      id: 1,
+      repo: REPO,
+      display: "git merge --no-ff side",
+      ok: true,
+      duration_ms: 5,
+      ts: 1,
+      stdout: "Merge made by the 'ort' strategy.",
+      stderr: "",
+      conflicts: [],
+    });
   });
   await flush();
 
@@ -454,4 +465,54 @@ test("the Branches tab is a main tab of the shell", async () => {
   fireEvent.click(tab);
   await flush();
   expect(document.body.textContent).toContain("Create");
+});
+
+// ── Safe failure (SPEC §18): a failed ref op keeps the pre-op list ──────────
+
+test("a failed branch rename never renames the row locally (SPEC §18)", async () => {
+  render(<App />);
+  await flush();
+  // Two nav tabs share the "Branches" label; the main content tab is the last.
+  const tabs = screen.getAllByRole("tab", { name: "Branches" });
+  fireEvent.click(tabs[tabs.length - 1]!);
+  await flush();
+
+  const sideRow = screen
+    .getAllByRole("listitem")
+    .find((li) => li.textContent?.includes("side") && !li.textContent?.includes("origin/side"))!;
+  fireEvent.click(within(sideRow).getByRole("button", { name: "Rename" }));
+  await flush();
+  const dialog = screen.getByRole("dialog", { name: "Rename branch" });
+  fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "side2" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Rename" }));
+  await flush();
+  expect(planOp).toHaveBeenLastCalledWith(REPO, {
+    kind: "branch_rename",
+    name: "side",
+    new_name: "side2",
+  });
+
+  runOp.mockResolvedValueOnce({
+    plan: plan("git branch -m side side2"),
+    ok: false,
+    exit: 128,
+    stdout: "",
+    stderr: "fatal: 'side2' already exists",
+    duration_ms: 5,
+    conflicts: [],
+  });
+  await act(async () => {
+    await useActivityStore.getState().confirmPreview();
+  });
+
+  // No local rename: the list is Rust's, so the branch is still `side`.
+  expect(useRefsStore.getState().branches.map((b) => b.name)).toEqual(
+    branches.map((b) => b.name),
+  );
+  expect(screen.getByText("side")).toBeTruthy();
+  expect(screen.queryByText("side2")).toBeNull();
+  expect(useActivityStore.getState().activities[0]).toMatchObject({
+    ok: false,
+    stderr: "fatal: 'side2' already exists",
+  });
 });

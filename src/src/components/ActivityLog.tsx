@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useActivityStore } from "../store";
 import type { LogEntry } from "../types";
+import { friendlyGitError } from "../errors";
 
 function timeLabel(ts: number): string {
   const date = new Date(ts);
@@ -13,7 +14,9 @@ function timeLabel(ts: number): string {
 function LogRow({ entry }: { entry: LogEntry }) {
   const [expanded, setExpanded] = useState(false);
   const hasOutput = entry.stdout.length > 0 || entry.stderr.length > 0;
-
+  // SPEC §18: the plain-language reading of the failure, above the raw output
+  // (which stays one click away — the transparency contract).
+  const hint = entry.ok ? null : friendlyGitError(`${entry.stderr}\n${entry.stdout}`);
   return (
     <li className={`log-row ${entry.ok ? "ok" : "fail"}`}>
       <span className="log-time" title={new Date(entry.ts).toLocaleString()}>
@@ -37,6 +40,11 @@ function LogRow({ entry }: { entry: LogEntry }) {
         </span>
       )}
       <span className="log-duration">{entry.duration_ms} ms</span>
+      {hint && (
+        <p className="log-hint" title={entry.display}>
+          {hint}
+        </p>
+      )}
       {expanded && hasOutput && (
         <pre className="log-output">
           {entry.stdout && <div>{entry.stdout}</div>}

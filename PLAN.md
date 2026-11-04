@@ -583,9 +583,17 @@ git push -u origin main
 **Commit & push:** `git add -A && git commit -m "stage-13: perf + reliability hardening" && git push origin main`
 
 **Acceptance criteria:**
-- [ ] 10k-commit repo is fluid (layout < 300ms, smooth pan/zoom).
-- [ ] Concurrent ops never corrupt state; failures are clean and recoverable.
-- [ ] Corrupt caches rebuild; no crash path found.
+- [x] 10k-commit repo is fluid (layout < 300ms, smooth pan/zoom). — 10 120-commit
+  fixture: cold DAG + layout 116–121 ms (`--release`), cached replay 3 ms, rebuild after
+  one commit ~90 ms; canvas culling asserted at 10 000 rows (< 100 visible rows,
+  < 2 000 canvas calls, < 500 ms per pass). The subjective 60 fps check (§572: manual)
+  was not done by hand.
+- [x] Concurrent ops never corrupt state; failures are clean and recoverable. —
+  `crates/gitcore/tests/concurrency.rs` (7 tests) and `failure.rs` (4), all on the
+  planner → executor → real `git` path.
+- [x] Corrupt caches rebuild; no crash path found. — a malformed per-repo activity-log
+  file is rebuilt on load, corrupt `app.json` recovers (stage-12 tests), and the graph
+  cache is pure derived data rebuilt when its fingerprint moves.
 
 ---
 

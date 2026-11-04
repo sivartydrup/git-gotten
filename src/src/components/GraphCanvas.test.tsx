@@ -658,3 +658,131 @@ test("renderGraph: theme colors drive lanes, dots, and text", () => {
   expect(dark.texts.find((t) => t.text === "tip")!.style).toBe(DARK_GRAPH_COLORS.fg);
   expect(dark.fillStyles).toContain(paletteColor(g.lines[0].color));
 });
+
+// ── Virtualization evidence at 10 000 rows (SPEC §10.1) ─────────────────────
+
+/** A viewport's window width: how many rows `visibleRowRange` hands the renderer. */
+const width = (r: [number, number]) => r[1] - r[0] + 1;
+
+test("visibleRowRange: a 10 000-row history keeps a small window at a typical viewport", () => {
+  // 900x500 canvas at scale 1: rows 0..21 (±5 margin), whatever the history size.
+  const window = visibleRowRange(10_000, { scale: 1, ox: 0, oy: 0 }, 500);
+  expect(window).toEqual([0, 21]);
+  expect(width(window)).toBeLessThan(100);
+  // The window does not care whether there are 100 or 10 000 commits.
+  expect(width(visibleRowRange(100, { scale: 1, ox: 0, oy: 0 }, 500))).toBe(
+    width(window),
+  );
+});
+
+test("visibleRowRange: the window stays bounded panned across a 10 000-row history", () => {
+  for (const oy of [0, -5_000, -150_000, -299_970]) {
+    const window = visibleRowRange(10_000, { scale: 1, ox: 0, oy }, 500);
+    expect(window[0]).toBeGreaterThanOrEqual(0);
+    expect(window[1]).toBeLessThan(10_000);
+    expect(window[0]).toBeLessThanOrEqual(window[1]);
+    expect(width(window)).toBeLessThan(100);
+  }
+});
+
+test("visibleRowRange: clamps at both ends of a 10 000-row history", () => {
+  // Panned past the bottom of the history: the last row only, never an
+  // inverted range.
+  const bottom = visibleRowRange(10_000, { scale: 1, ox: 0, oy: -1_000_000 }, 500);
+  expect(bottom).toEqual([9_999, 9_999]);
+  // Panned above the top: the first row only.
+  expect(visibleRowRange(10_000, { scale: 1, ox: 0, oy: 1_000_000 }, 500)).toEqual([0, 0]);
+  // Scrolled to the very end with content still on screen: clamped, not over the end.
+  expect(visibleRowRange(10_000, { scale: 1, ox: 0, oy: -299_970 }, 500)[1]).toBe(9_999);
+});
+
+test("visibleRowRange: an off-screen viewport degrades to one row, not an empty range", () => {
+  for (const viewport of [
+    { scale: 1, ox: 0, oy: 1_000_000 },
+    { scale: 1, ox: 0, oy: -1_000_000 },
+    { scale: 0.25, ox: 0, oy: 4_000_000 },
+    { scale: 4, ox: 0, oy: -4_000_000 },
+  ]) {
+    const window = visibleRowRange(10_000, viewport, 500);
+    expect(window[0]).toBe(window[1]);
+    expect(width(window)).toBe(1);
+  }
+});
+
+test("visibleRowRange: zoom bounds keep the window bounded at MIN_SCALE and MAX_SCALE", () => {
+  // MIN_SCALE (0.25) shows the most rows at once — the widest legal window.
+  expect(width(visibleRowRange(10_000, { scale: 0.25, ox: 0, oy: 0 }, 500))).toBeLessThan(100);
+  // MAX_SCALE (4) shows the fewest.
+  expect(visibleRowRange(10_000, { scale: 4, ox: 0, oy: 0 }, 500)).toEqual([0, 8]);
+  // Deep into the history at each bound: still a small, clamped window.
+  expect(width(visibleRowRange(10_000, { scale: 0.25, ox: 0, oy: -120_000 }, 500))).toBeLessThan(100);
+  expect(width(visibleRowRange(10_000, { scale: 4, ox: 0, oy: -120_000 }, 500))).toBeLessThan(100);
+});
+
+test("renderGraph: a 10 000-node graph draws only the window, in bounded time", () => {
+  const g = straightGraph(10_000);
+  const rec = recorder();
+  const started = performance.now();
+  renderGraph(
+    rec,
+    900,
+    500,
+    { scale: 1, ox: 0, oy: 0 },
+    { graph: g, selected: null, hovered: null, query: "" },
+    1,
+  );
+  const elapsed = performance.now() - started;
+  // One row costs 2 text draws (subject + author/date) plus a dot arc — so the
+  // text count doubles as the per-row draw count.
+  const perRowDraws = rec.texts.length;
+  expect(perRowDraws).toBeLessThan(100);
+  expect(rec.arcs).toBeLessThan(100);
+  // A culling regression (drawing all 10 000 rows) fails here, not merely slows down.
+  expect(perRowDraws).toBeLessThan(10_000 / 5);
+  expect(elapsed).toBeLessThan(500);
+});
+
+test("renderGraph: panned to the bottom of a 10 000-node graph it still draws a window", () => {
+  const g = straightGraph(10_000);
+  const rec = recorder();
+  const started = performance.now();
+  renderGraph(
+    rec,
+    900,
+    500,
+    { scale: 1, ox: 0, oy: -299_970 }, // last row sits at the top of the canvas
+    { graph: g, selected: null, hovered: null, query: "" },
+    1,
+  );
+  const perRowDraws = rec.texts.length;
+  expect(perRowDraws).toBeLessThan(100);
+  expect(perRowDraws).toBeLessThan(10_000 / 5);
+  // The rows it did draw are the tail of the history.
+  expect(rec.texts.some((t) => t.text === "subject 9999")).toBe(true);
+  expect(rec.texts.some((t) => t.text === "subject 0")).toBe(false);
+  expect(performance.now() - started).toBeLessThan(500);
+});
+
+test("renderGraph: zoomed to MAX_SCALE on a 10 000-node graph it draws a smaller window", () => {
+  const g = straightGraph(10_000);
+  const wide = recorder();
+  renderGraph(
+    wide,
+    900,
+    500,
+    { scale: 1, ox: 0, oy: 0 },
+    { graph: g, selected: null, hovered: null, query: "" },
+    1,
+  );
+  const zoomed = recorder();
+  renderGraph(
+    zoomed,
+    900,
+    500,
+    { scale: 4, ox: 0, oy: 0 },
+    { graph: g, selected: null, hovered: null, query: "" },
+    1,
+  );
+  expect(zoomed.texts.length).toBeLessThan(wide.texts.length);
+  expect(zoomed.texts.length).toBeLessThan(100);
+});

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useActivityStore } from "../store";
+import { friendlyGitError } from "../errors";
 import type { CommandPlan, Risk } from "../types";
 
 const RISK_ORDER: Risk[] = ["ReadOnly", "Mutating", "Dangerous"];
@@ -46,6 +47,7 @@ export function PreviewDialog() {
   const typeToConfirm = plan.preview?.requires_type_to_confirm ?? risk === "Dangerous";
   const confirmed = !typeToConfirm || confirmText === "confirm";
   const disabled = running || busy || !confirmed;
+  const errorHint = error ? friendlyGitError(error) : null;
 
   return (
     <div
@@ -115,7 +117,12 @@ export function PreviewDialog() {
           </label>
         )}
 
-        {error && <p className="error">{error}</p>}
+        {error && (
+          <p className="error">
+            {errorHint && <span className="error-hint">{errorHint}</span>}
+            <code className="error-raw">{error}</code>
+          </p>
+        )}
 
         <div className="dialog-actions">
           <button

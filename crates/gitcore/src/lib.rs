@@ -40,6 +40,10 @@ mod stash;
 mod submodule;
 
 pub use conflict::InProgressOp;
+/// The planner's display formatter, so a caller (or a test) can derive a display
+/// from the exact argv it runs — the transparency contract (SPEC §8) has one
+/// quoting rule, not two.
+pub use plan::format_argv;
 pub use exec::{GitExecutor, OpQueue};
 /// Shared read-model types, re-exported so `gitcore::Status` etc. read naturally.
 pub use git_gotten_protocol::{
@@ -50,6 +54,7 @@ pub use git_gotten_protocol::{
 };
 pub use show::{numstat, patch};
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -228,7 +233,28 @@ pub struct Repo {
     pub id: RepoId,
     /// Canonical absolute path of the worktree root.
     pub path: PathBuf,
+    /// The executor's serialization key: the repository's **common** git dir.
+    ///
+    /// Every linked worktree of one object database shares `.git/refs`, the object
+    /// store and (for the main worktree) the index, so they must serialize against
+    /// each other — keying the queue by the worktree path would let two worktrees
+    /// of the same repo race on `index.lock` / ref locks (SPEC §18).
+    queue_key: String,
     inner: gix::Repository,
+
+    /// SPEC §10.1 graph cache: `(fingerprint, graph)`, where the fingerprint is
+    /// [`Repo::graph_fingerprint`]. Kept across [`Repo::refresh`] on purpose — a
+    /// re-opened `gix` handle reads current refs, and the fingerprint decides whether
+    /// the cached layout is still the answer.
+    graph_cache: RefCell<Option<(String, Graph)>>,
+}
+
+/// Canonical absolute form of a git-dir path, as the queue key.
+fn canonical_key(dir: &Path) -> String {
+    dir.canonicalize()
+        .unwrap_or_else(|_| dir.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
 }
 
 impl Repo {
@@ -256,10 +282,13 @@ impl Repo {
             .map_err(|_| GitError::NotARepository {
                 path: workdir.to_path_buf(),
             })?;
+        let queue_key = canonical_key(inner.common_dir());
         Ok(Repo {
             id: path.to_string_lossy().into_owned(),
             path,
+            queue_key,
             inner,
+            graph_cache: RefCell::new(None),
         })
     }
 
@@ -274,8 +303,17 @@ impl Repo {
         let fresh = Self::open(&self.path)?;
         self.id = fresh.id;
         self.path = fresh.path;
+        self.queue_key = fresh.queue_key;
         self.inner = fresh.inner;
         Ok(())
+    }
+
+    /// The executor's serialization key for this repository (see [`Self::queue_key`]).
+    ///
+    /// Pass it to [`GitExecutor::run_plan`] instead of [`Self::id`]; `id` stays the
+    /// *workspace* identity (the worktree path the user opened).
+    pub fn queue_key(&self) -> &str {
+        &self.queue_key
     }
 
     /// The workspace-nav summary for this repository (folds [`Self::status`]).
@@ -428,9 +466,63 @@ impl Repo {
     /// The laid-out commit graph of this repository (IPC `load_graph`, SPEC §10.1):
     /// every commit reachable from the refs (+ HEAD), with lanes, lines, and edges.
     ///
-    /// A repository with no commits is [`GitError::Graph`]. The web renders the
-    /// result on a canvas; the layout itself lives in the `graph` crate.
+    /// SPEC §10.1 requires the DAG + layout to be cached per repository and invalidated
+    /// when the graph could have changed, so this memoizes the result against
+    /// [`Self::graph_fingerprint`]: browsing, staging or editing files replays the
+    /// cached layout instead of re-walking 10k commits, while a commit, a checkout, a
+    /// ref move or a worktree add/remove misses the cache and recomputes.
+    ///
+    /// A repository with no commits is [`GitError::Graph`]. The web renders the result
+    /// on a canvas; the layout itself lives in the `graph` crate.
     pub fn graph(&self) -> Result<Graph, GitError> {
+        let fingerprint = self.graph_fingerprint()?;
+        if let Some((cached, graph)) = self.graph_cache.borrow().as_ref() {
+            if *cached == fingerprint {
+                return Ok(graph.clone());
+            }
+        }
+        let graph = self.compute_graph()?;
+        *self.graph_cache.borrow_mut() = Some((fingerprint, graph.clone()));
+        Ok(graph)
+    }
+
+    /// Everything the laid-out graph depends on (SPEC §10.1): every ref target
+    /// (annotated tags peeled), `HEAD`, and each linked worktree's recorded HEAD.
+    ///
+    /// Worktrees come from `.git/worktrees/<name>/HEAD` rather than `git worktree list`
+    /// because the cache is checked on *every* `load_graph`, and a subprocess there
+    /// would cost more than the saving. A detached worktree HEAD and an added or
+    /// removed worktree both move checkout markers without moving a ref, which is why
+    /// they belong in the key.
+    fn graph_fingerprint(&self) -> Result<String, GitError> {
+        let mut parts: Vec<String> = graph::collect_ref_labels(&self.inner)
+            .map_err(GitError::Graph)?
+            .iter()
+            .map(|(oid, labels)| {
+                let names: Vec<&str> = labels.iter().map(|label| label.name.as_str()).collect();
+                format!("ref {oid} {}", names.join(","))
+            })
+            .collect();
+        if let Some(oid) = self.inner.head().ok().and_then(|head| head.id()) {
+            parts.push(format!("head {}", oid.detach()));
+        }
+        let linked = self.inner.common_dir().join("worktrees");
+        if let Ok(entries) = std::fs::read_dir(&linked) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let head = std::fs::read_to_string(entry.path().join("HEAD")).unwrap_or_default();
+                parts.push(format!(
+                    "wt {} {}",
+                    entry.file_name().to_string_lossy(),
+                    head.trim()
+                ));
+            }
+        }
+        parts.sort();
+        Ok(parts.join("\n"))
+    }
+
+    /// Rebuild the DAG, the lanes and the worktree markers from scratch.
+    fn compute_graph(&self) -> Result<Graph, GitError> {
         let dag = graph::build_dag(&self.inner).map_err(GitError::Graph)?;
         let mut layout = graph::LaneLayout;
         let mut out = layout.compute(&dag).map_err(GitError::Graph)?;
@@ -1550,7 +1642,7 @@ mod tests {
             .unwrap();
 
         let executor = GitExecutor::new();
-        let result = executor.run_plan(&repo.id, &repo.path, &plan).await;
+        let result = executor.run_plan(repo.queue_key(), &repo.path, &plan).await;
         assert!(result.ok, "stderr: {}", result.stderr);
         assert_eq!(fx.git(&["rev-parse", "--abbrev-ref", "HEAD"]), "side");
         assert_eq!(fx.git(&["rev-parse", "side"]), c1);
@@ -1571,7 +1663,7 @@ mod tests {
             .unwrap();
 
         let executor = GitExecutor::new();
-        let result = executor.run_plan(&repo.id, &repo.path, &plan).await;
+        let result = executor.run_plan(repo.queue_key(), &repo.path, &plan).await;
         assert!(result.ok, "stderr: {}", result.stderr);
         assert_eq!(fx.git(&["rev-parse", "main"]), c1);
         // The worktree change survives, unstaged.
@@ -1600,7 +1692,7 @@ mod tests {
             .unwrap();
 
         let executor = GitExecutor::new();
-        let result = executor.run_plan(&repo.id, &repo.path, &plan).await;
+        let result = executor.run_plan(repo.queue_key(), &repo.path, &plan).await;
         assert!(result.ok, "stderr: {}", result.stderr);
         assert_eq!(fx.git(&["rev-parse", "main"]), c1);
         assert_eq!(fx.git(&["status", "--porcelain"]), "");
@@ -1627,7 +1719,7 @@ mod tests {
             .unwrap();
 
         let executor = GitExecutor::new();
-        let result = executor.run_plan(&repo.id, &repo.path, &plan).await;
+        let result = executor.run_plan(repo.queue_key(), &repo.path, &plan).await;
         assert!(result.ok, "stderr: {}", result.stderr);
         assert_ne!(
             fx.git(&["rev-parse", "HEAD"]),

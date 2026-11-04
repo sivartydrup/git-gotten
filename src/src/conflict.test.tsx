@@ -11,10 +11,14 @@ const {
   loadStatus,
   loadConflict,
   onStatusChanged,
+  onOpFinished,
   statusCb,
   resetStatusCb,
+  finishedCb,
+  resetFinishedCb,
 } = vi.hoisted(() => {
   let cb: ((p: unknown) => void) | null = null;
+  let fcb: ((p: unknown) => void) | null = null;
   return {
     planOp: vi.fn().mockResolvedValue(null),
     runOp: vi.fn().mockResolvedValue(null),
@@ -24,9 +28,17 @@ const {
       cb = c;
       return Promise.resolve(null);
     }),
+    onOpFinished: vi.fn((c: (p: unknown) => void) => {
+      fcb = c;
+      return Promise.resolve(null);
+    }),
     statusCb: () => cb,
     resetStatusCb: () => {
       cb = null;
+    },
+    finishedCb: () => fcb,
+    resetFinishedCb: () => {
+      fcb = null;
     },
   };
 });
@@ -50,7 +62,7 @@ vi.mock("./api", () => ({
   runOp,
   loadLog: vi.fn().mockResolvedValue(null),
   onOpStarted: vi.fn().mockResolvedValue(null),
-  onOpFinished: vi.fn().mockResolvedValue(null),
+  onOpFinished,
   loadGraph: vi.fn().mockResolvedValue(null),
   loadCommit: vi.fn().mockResolvedValue(null),
   loadDiff: vi.fn().mockResolvedValue(null),
@@ -204,7 +216,9 @@ function seed(status: Status): void {
   loadStatus.mockReset().mockResolvedValue(status);
   loadConflict.mockReset().mockResolvedValue(null);
   onStatusChanged.mockClear();
+  onOpFinished.mockClear();
   resetStatusCb();
+  resetFinishedCb();
 }
 
 beforeEach(() => {
@@ -373,4 +387,63 @@ test("a status update without the shown file clears the selection", async () => 
   await flush();
   expect(useConflictStore.getState().file).toBeNull();
   expect(useConflictStore.getState().files).toEqual(["g.txt"]);
+});
+
+// ── Safe failure (SPEC §18): a failed resolve keeps the pre-op choices ──────
+
+test("a failed resolve keeps the per-region choices and re-reads the 3-way view", async () => {
+  seed(conflictedStatus(["f.txt"]));
+  loadConflict.mockResolvedValue(conflictFile("f.txt"));
+  render(<App />);
+  await flush();
+  await openConflictedFile();
+
+  fireEvent.click(screen.getByRole("button", { name: "Their" }));
+  await flush();
+  fireEvent.click(screen.getByRole("button", { name: "Resolve file" }));
+  await flush();
+  expect(useConflictStore.getState().choices).toEqual(["AcceptTheirs"]);
+
+  runOp.mockResolvedValueOnce({
+    plan: plan("git add f.txt"),
+    ok: false,
+    exit: 128,
+    stdout: "",
+    stderr: "f.txt: needs merge",
+    duration_ms: 6,
+    conflicts: ["f.txt"],
+  });
+  await act(async () => {
+    await useActivityStore.getState().confirmPreview();
+  });
+
+  // The file is still unmerged in Rust's view, so the selection and the
+  // user's per-region choices survive: nothing was resolved locally.
+  expect(useConflictStore.getState().file).toBe("f.txt");
+  expect(useConflictStore.getState().conflict).toEqual(conflictFile("f.txt"));
+  expect(useConflictStore.getState().choices).toEqual(["AcceptTheirs"]);
+  expect(useConflictStore.getState().files).toEqual(["f.txt"]);
+  // `op_finished` re-reads the 3-way view from Rust rather than guessing it.
+  const before = loadConflict.mock.calls.length;
+  await act(async () => {
+    finishedCb()?.({
+      id: 5,
+      repo: REPO,
+      display: "git add f.txt",
+      ok: false,
+      duration_ms: 6,
+      ts: 9,
+      stdout: "",
+      stderr: "f.txt: needs merge",
+      conflicts: ["f.txt"],
+    });
+  });
+  expect(loadConflict.mock.calls.length).toBe(before + 1);
+  expect(useConflictStore.getState().conflict).toEqual(conflictFile("f.txt"));
+  // The failure lands in the activity log with the raw git output.
+  expect(useActivityStore.getState().activities[0]).toMatchObject({
+    display: "git add f.txt",
+    ok: false,
+    stderr: "f.txt: needs merge",
+  });
 });

@@ -1,5 +1,6 @@
 import { beforeEach, expect, test, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import App from "./App";
 
 // `./api` is mocked wholesale; per-test behavior is configured on the mocks.
 const { planOp, runOp, loadDiff, loadStatus } = vi.hoisted(() => ({
@@ -401,3 +402,132 @@ test("a conventional-commit type chip rewrites the message prefix", () => {
     "refactor: first",
   );
 });
+
+// ── Safe failure (SPEC §18): a failed op keeps the pre-op UI state ──────────
+
+const failedCommitPlan = {
+  display: 'git commit -m "fix: the thing"',
+  steps: [
+    {
+      argv: ["git", "commit", "-m", "fix: the thing"],
+      summary: "commit the staged changes",
+      risk: "Mutating",
+      effect: null,
+      input: null,
+    },
+  ],
+  preview: null,
+};
+
+test("a failed commit keeps the draft message and re-reads the diff from Rust", async () => {
+  seedRepo();
+  // App registers the op_finished listener; capture it to fire it like Rust does.
+  const onOpFinished = (await import("./api")).onOpFinished as ReturnType<typeof vi.fn>;
+  const loadDiffCalls = () => loadDiff.mock.calls.length;
+
+  render(<App />);
+  await flush();
+  fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+  await flush();
+
+  await act(async () => {
+    useStagingStore.getState().selectFile("src/a.ts");
+  });
+  await flush();
+
+  const input = screen.getByPlaceholderText(/commit message/i) as HTMLTextAreaElement;
+  fireEvent.change(input, { target: { value: "fix: the thing" } });
+  planOp.mockResolvedValueOnce(failedCommitPlan);
+  fireEvent.click(screen.getByRole("button", { name: "Commit" }));
+  await flush();
+
+  runOp.mockResolvedValueOnce({
+    plan: failedCommitPlan,
+    ok: false,
+    exit: 1,
+    stdout: "",
+    stderr: "nothing to commit",
+    duration_ms: 3,
+    conflicts: [],
+  });
+  await act(async () => {
+    await useActivityStore.getState().confirmPreview();
+  });
+
+  // SPEC §18: the pre-op snapshot survives — the draft message is intact.
+  expect((screen.getByPlaceholderText(/commit message/i) as HTMLTextAreaElement).value).toBe(
+    "fix: the thing",
+  );
+  expect(useStagingStore.getState().file).toBe("src/a.ts");
+  expect(useActivityStore.getState().activities[0]).toMatchObject({
+    display: 'git commit -m "fix: the thing"',
+    ok: false,
+    stderr: "nothing to commit",
+  });
+
+  // The Rust `op_finished` re-read (not a local guess) refreshes the diff.
+  loadDiff.mockResolvedValue(diff);
+  const before = loadDiffCalls();
+  await act(async () => {
+    (onOpFinished.mock.calls[0]?.[0] as (p: unknown) => void)?.({
+      id: 3,
+      repo: "/repo/alpha",
+      display: 'git commit -m "fix: the thing"',
+      ok: false,
+      duration_ms: 3,
+      ts: 5,
+      stdout: "",
+      stderr: "nothing to commit",
+      conflicts: [],
+    });
+  });
+  expect(loadDiffCalls()).toBe(before + 1);
+  expect(useStagingStore.getState().diff).toBe(diff);
+});
+
+test("a failed hunk-stage keeps the ticked hunks and leaves staging to Rust", async () => {
+  seedRepo();
+  loadDiff.mockResolvedValue(diff);
+  await act(async () => {
+    useStagingStore.getState().selectFile("src/a.ts");
+  });
+  await flush();
+  planOp.mockResolvedValueOnce({
+    display: "git apply --cached",
+    steps: [
+      {
+        argv: ["git", "apply", "--cached"],
+        summary: "stage the selected hunks",
+        risk: "Mutating",
+        effect: null,
+        input: null,
+      },
+    ],
+    preview: { headline: "Stage 1 of 2 hunks", lines: ["src/a.ts", "@@ -10,2 +10,2 @@"], requires_type_to_confirm: false },
+  });
+  render(<FileDiff />);
+  fireEvent.click(screen.getAllByRole("checkbox")[0]); // hunk index 1
+  fireEvent.click(screen.getByRole("button", { name: /stage 1 selected/i }));
+  await flush();
+
+  runOp.mockResolvedValueOnce({
+    plan: planOp.mock.results[0].value as never,
+    ok: false,
+    exit: 1,
+    stdout: "",
+    stderr: "patch failed: src/a.ts:10",
+    duration_ms: 2,
+    conflicts: [],
+  });
+  await act(async () => {
+    await useActivityStore.getState().confirmPreview();
+  });
+
+  // The ticked hunk is the user's selection, not repo state: it stays ticked
+  // so the retry is one click away; the index itself is never touched locally.
+  expect((screen.getAllByRole("checkbox")[0] as HTMLInputElement).checked).toBe(true);
+  // The hunk states come from Rust (`diff.hunks[].staged`), unchanged.
+  expect(useStagingStore.getState().diff).toBe(diff);
+  expect(diff.hunks[1].staged).toBe(false);
+});
+

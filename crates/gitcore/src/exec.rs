@@ -112,13 +112,22 @@ impl OpQueue {
 
     /// Run `op` serialized against every other op on `repo`.
     ///
-    /// `repo` is the canonical worktree root (the repository id), so two checkouts
-    /// of the same repository (worktrees) serialize against each other only when
-    /// the user treats them as one repo — matching the registry's identity.
+    /// `repo` is the serialization key — [`Repo::queue_key`](crate::Repo::queue_key),
+    /// the repository's **common** git dir — so every linked worktree of one object
+    /// database shares a turn instead of racing on shared refs (SPEC §18).
     pub async fn run<R, F: Future<Output = R>>(&self, repo: &str, op: F) -> R {
         let turn = self.turn(repo).await;
         let _held = turn.lock().await;
         op.await
+    }
+
+    /// Run *several* plans as one critical section: the queue turn is held for the
+    /// whole `flow`, so no other op on this repository can slip between its git
+    /// commands. A compound flow (a bisect `test` immediately followed by its
+    /// `verdict`, or a `pull` that must read the merge state it produced) must use
+    /// this; two separate `run` calls would leave a ref/index race between them.
+    pub async fn run_many<R, F: Future<Output = R>>(&self, repo: &str, flow: F) -> R {
+        self.run(repo, flow).await
     }
 
     /// The serialization slot for `repo`, created on first use.
@@ -130,6 +139,24 @@ impl OpQueue {
         let turn = Arc::new(AsyncMutex::new(()));
         locks.insert(repo.to_string(), turn.clone());
         turn
+    }
+}
+
+/// A repository's **held** queue turn: plans run through it without re-acquiring the
+/// queue lock (which would deadlock, and would defeat the point).
+///
+/// Built by [`GitExecutor::run_flow`]; the turn is released when the flow's future
+/// completes.
+pub struct FlowTurn<'a> {
+    executor: &'a GitExecutor,
+    cwd: &'a Path,
+}
+
+impl FlowTurn<'_> {
+    /// Run `plan` on this repository while its turn is held. Identical to
+    /// [`GitExecutor::run_plan`], minus the queue acquisition.
+    pub async fn run(&self, plan: &CommandPlan) -> OpResult {
+        self.executor.exec_plan(self.cwd, plan.clone()).await
     }
 }
 
@@ -179,6 +206,54 @@ impl GitExecutor {
     /// the result, not as an `Err`.
     pub async fn run_plan(&self, id: &str, cwd: &Path, plan: &CommandPlan) -> OpResult {
         self.queue.run(id, self.exec_plan(cwd, plan.clone())).await
+    }
+
+    /// Run `plans` in order on `id` inside **one** queue turn, returning one result
+    /// per plan (in order).
+    ///
+    /// `run_plan` per plan would release the turn between them, which is exactly
+    /// the interleaving window SPEC §18 forbids. Each plan's steps still stop at
+    /// their own first failure; the *whole* batch is serialized against every other
+    /// op on the repo, and every result is byte-identical to what the same plan
+    /// would produce through [`Self::run_plan`] (transparency invariant, SPEC §18).
+    pub async fn run_plans(
+        &self,
+        id: &str,
+        cwd: &Path,
+        plans: impl IntoIterator<Item = CommandPlan>,
+    ) -> Vec<OpResult> {
+        let plans: Vec<CommandPlan> = plans.into_iter().collect();
+        self.queue
+            .run_many(id, async {
+                let mut results = Vec::with_capacity(plans.len());
+                for plan in &plans {
+                    results.push(self.exec_plan(cwd, plan.clone()).await);
+                }
+                results
+            })
+            .await
+    }
+
+    /// Run a **flow** on `id` inside one queue turn: a closure that runs plans one
+    /// after another and may decide each next plan from the previous result.
+    ///
+    /// [`Self::run_plans`] needs every plan up front; some flows cannot produce
+    /// them that way — bisect compiles `git bisect good|bad` only after the test
+    /// command's exit code exists — and releasing the turn between those steps is
+    /// the interleaving SPEC §18 forbids (a concurrent op could move HEAD out from
+    /// under the verdict). Every plan still runs exactly as through [`Self::run_plan`].
+    pub async fn run_flow<'a, R, F>(
+        &'a self,
+        id: &str,
+        cwd: &'a Path,
+        flow: impl FnOnce(FlowTurn<'a>) -> F,
+    ) -> R
+    where
+        F: Future<Output = R>,
+    {
+        self.queue
+            .run_many(id, flow(FlowTurn { executor: self, cwd }))
+            .await
     }
 
     async fn exec_plan(&self, cwd: &Path, plan: CommandPlan) -> OpResult {

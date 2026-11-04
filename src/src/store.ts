@@ -344,16 +344,27 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
     // lands first wins, and the other is a no-op or a refresh of the newest
     // entry for that repo (keep the web-assigned id, take the authoritative
     // timing + output from the Rust record).
-    set((s) => ({
-      running: false,
-      runningDisplay: null,
-      runningRisk: null,
-      activities: s.activities.map((a) =>
+    set((s) => {
+      const activities = s.activities.map((a) =>
         a.repo === entry.repo && a.display === entry.display
           ? { ...a, ok: entry.ok, duration_ms: entry.duration_ms, ts: entry.ts, stdout: entry.stdout, stderr: entry.stderr, conflicts: entry.conflicts }
           : a,
-      ),
-    }));
+      );
+      // Rust's record is the only copy of an op the web never ran through
+      // `confirmPreview`/`record()` — `bisect_test` (BisectPanel.tsx:43) calls
+      // the command directly, so without this its op vanished from the log.
+      const recorded = activities.some(
+        (a) => a.repo === entry.repo && a.display === entry.display,
+      );
+      return {
+        running: false,
+        runningDisplay: null,
+        runningRisk: null,
+        activities: recorded
+          ? activities
+          : [entry, ...activities].slice(0, ACTIVITY_CAP),
+      };
+    });
     if (entry.conflicts.length > 0) {
       useMainTab.getState().setTab("conflicts");
     }

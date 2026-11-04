@@ -205,6 +205,40 @@ impl Fixture {
         self.git(&["add", rel]);
     }
 
+    /// Feed a `git fast-import` stream into this repository.
+    ///
+    /// Bulk history for the Stage 13 performance gates: thousands of commits in
+    /// ONE git process, where [`Fixture::commit_file`] needs three spawns each.
+    /// fast-import moves refs only, so the caller must sync the index + work
+    /// tree afterwards (`git reset --hard`).
+    pub fn fast_import(&self, script: &str) {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = Command::new("git")
+            .args(["fast-import", "--quiet"])
+            .current_dir(&self.path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn git fast-import");
+        child
+            .stdin
+            .take()
+            .expect("fast-import stdin")
+            .write_all(script.as_bytes())
+            .expect("failed to write the fast-import stream");
+        let out = child.wait_with_output().expect("fast-import wait");
+        if !out.status.success() {
+            panic!(
+                "git fast-import failed (exit {:?}) in {:?}\nstderr: {}",
+                out.status.code(),
+                self.path,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+
     /// The canonical absolute path as a `&str` (use it as a `RepoId`).
     pub fn id(&self) -> &str {
         self.path.to_str().expect("fixture path is valid UTF-8")
@@ -330,6 +364,72 @@ pub fn rebase_conflict_fixture() -> Fixture {
     fx.commit_file("f.txt", "main\n", "c-main");
     let (code, _, _) = fx.git_run(&["rebase", "side"]);
     assert_ne!(code, 0, "rebase was expected to conflict");
+    fx
+}
+
+/// A 10k+ commit repository for the Stage 13 performance gates: 440 groups of
+/// 14 `main` commits, an 8-commit branch cut from `main`, and a merge of that
+/// branch back into `main` — 10 120 commits, ~5 700 of them reachable through a
+/// merge, written through a single `git fast-import` process.
+pub fn big_history_fixture() -> Fixture {
+    const GROUPS: usize = 440;
+    let fx = Fixture::new("ten-k-history");
+    let mut script = String::new();
+    let mut ts: u64 = 1_700_000_000;
+    // git-fast-import grammar: commit / author? / committer / data (message) /
+    // from? / merge* / filemodify.
+    let commit = |script: &mut String,
+                  ts: &mut u64,
+                  branch: &str,
+                  from: Option<&str>,
+                  merge: Option<&str>,
+                  subject: &str| {
+        *ts += 1;
+        script.push_str(&format!(
+            "commit {branch}\n\
+             author Test User <test@example.com> {ts} +0000\n\
+             committer Test User <test@example.com> {ts} +0000\n\
+             data <<END\n{subject}\nEND\n"
+        ));
+        if let Some(from) = from {
+            script.push_str("from ");
+            script.push_str(from);
+            script.push('\n');
+        }
+        if let Some(merge) = merge {
+            script.push_str("merge ");
+            script.push_str(merge);
+            script.push('\n');
+        }
+        script.push_str(&format!("M 644 inline f.txt\ndata <<END\n{subject}\nEND\n"));
+    };
+    for g in 0..GROUPS {
+        for k in 0..14 {
+            commit(&mut script, &mut ts, "refs/heads/main", None, None, &format!("trunk {g}-{k}"));
+        }
+        let branch = format!("refs/heads/b{g}");
+        for k in 0..8 {
+            commit(
+                &mut script,
+                &mut ts,
+                &branch,
+                (k == 0).then_some("refs/heads/main"),
+                None,
+                &format!("b{g}-{k}"),
+            );
+        }
+        commit(
+            &mut script,
+            &mut ts,
+            "refs/heads/main",
+            None,
+            Some(&branch),
+            &format!("merge b{g}"),
+        );
+    }
+    fx.fast_import(&script);
+    // fast-import never touches the index or the work tree.
+    fx.git(&["reset", "--hard", "main"]);
     fx
 }
 

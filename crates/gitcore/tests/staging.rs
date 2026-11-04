@@ -34,7 +34,7 @@ fn two_hunk_fixture(label: &str) -> testutil::Fixture {
 async fn run(repo: &Repo, fx: &testutil::Fixture, op: Op) -> gitcore::OpResult {
     let plan = repo.plan(&op).expect("plan must compile");
     let result = GitExecutor::new()
-        .run_plan(&repo.id, &repo.path, &plan)
+        .run_plan(repo.queue_key(), &repo.path, &plan)
         .await;
     assert!(result.ok, "op must succeed, stderr: {}", result.stderr);
     let _ = fx; // fixtures are the assertion vehicle; kept for call-site symmetry

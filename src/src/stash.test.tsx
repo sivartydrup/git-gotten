@@ -58,7 +58,7 @@ vi.mock("./api", () => ({
 
 import { useActivityStore, useMainTab, useRepoStore, useStashesStore } from "./store";
 import { StashPanel } from "./components/StashPanel";
-import type { CommandPlan, RepoMeta, Stash, Status } from "./types";
+import type { CommandPlan, LogEntry, OpResult, RepoMeta, Stash, Status } from "./types";
 
 const REPO = "/repo/alpha";
 
@@ -236,4 +236,83 @@ test("App loads stashes for the active repo and mounts the Stash tab", async () 
   await flush();
   expect(loadStashes).toHaveBeenCalledWith(REPO);
   expect(screen.getByRole("tab", { name: "Stash" })).toBeTruthy();
+});
+
+// ── Safe failure (SPEC §18): a failed op leaves the pre-op state ────────────
+
+/** Capture the `op_finished` listener App registers (mirrors sync.test.tsx). */
+const finishedCb = () =>
+  onOpFinished.mock.calls[0]?.[0] as ((p: LogEntry) => void) | undefined;
+
+function failedResult(display: string, stderr: string): OpResult {
+  return {
+    plan: plan(display),
+    ok: false,
+    exit: 1,
+    stdout: "",
+    stderr,
+    duration_ms: 4,
+    conflicts: [],
+  };
+}
+
+test("a failed stash drop keeps the stash list until the Rust re-read (SPEC §18)", async () => {
+  render(<App />);
+  await flush();
+  expect(screen.getByText("wip: parser")).toBeTruthy();
+
+  fireEvent.click(within(document.querySelectorAll("ul.refs-list > li")[1] as HTMLElement).getByRole("button", { name: "Drop" }));
+  await flush();
+  expect(useActivityStore.getState().preview?.op).toEqual({ kind: "stash_drop", id: 1 });
+
+  // Rust ran it and git refused: `OpResult.ok === false` is data, not an error.
+  const result = failedResult("git stash drop 'stash@{1}'", "not a valid reference: 'stash@{1}'");
+  runOp.mockResolvedValueOnce(result);
+  await act(async () => {
+    await useActivityStore.getState().confirmPreview();
+  });
+
+  // Nothing was removed locally: the list is still the pre-op snapshot.
+  expect(useStashesStore.getState().stashes).toEqual(stashes);
+  expect(screen.getByText("wip: parser")).toBeTruthy();
+  expect(screen.getByText("before rebase")).toBeTruthy();
+  // The failure is recorded (raw Rust output, not swallowed) and the dialog closed.
+  expect(useActivityStore.getState().activities[0]).toMatchObject({
+    display: "git stash drop 'stash@{1}'",
+    ok: false,
+    stderr: "not a valid reference: 'stash@{1}'",
+  });
+  expect(useActivityStore.getState().preview).toBeNull();
+
+  // `op_finished` then re-reads the authoritative list from Rust.
+  const before = loadStashes.mock.calls.length;
+  await act(async () => {
+    finishedCb()?.({
+      id: 7,
+      repo: REPO,
+      display: "git stash drop 'stash@{1}'",
+      ok: false,
+      duration_ms: 4,
+      ts: 5,
+      stdout: "",
+      stderr: "not a valid reference: 'stash@{1}'",
+      conflicts: [],
+    });
+  });
+  expect(loadStashes.mock.calls.length).toBe(before + 1);
+  expect(useStashesStore.getState().stashes).toEqual(stashes);
+});
+
+test("a rejected run_op leaves the stash list untouched and records nothing", async () => {
+  render(<App />);
+  await flush();
+  fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
+  await flush();
+  runOp.mockRejectedValueOnce(new Error("repository is not open: /repo/alpha"));
+  await act(async () => {
+    await useActivityStore.getState().confirmPreview();
+  });
+  expect(useStashesStore.getState().stashes).toEqual(stashes);
+  expect(useActivityStore.getState().activities).toHaveLength(0);
+  expect(useActivityStore.getState().error).toBe("repository is not open: /repo/alpha");
 });

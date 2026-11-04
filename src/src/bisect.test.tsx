@@ -311,3 +311,38 @@ test("App loads bisect for the active repo and mounts the Bisect tab", async () 
   expect(loadBisect).toHaveBeenCalledWith(REPO);
   expect(screen.getByRole("tab", { name: "Bisect" })).toBeTruthy();
 });
+
+// ── Safe failure (SPEC §18): a failed verdict leaves the bisect state alone ──
+
+test("a failed bisect verdict keeps the pre-op good/bad sets (no local verdict)", async () => {
+  seed(ACTIVE);
+  render(<BisectPanel />);
+  await flush();
+
+  fireEvent.click(screen.getByRole("button", { name: "Good" }));
+  await flush();
+  expect(planOp).toHaveBeenLastCalledWith(REPO, { kind: "bisect_verdict", verdict: "Good" });
+
+  runOp.mockResolvedValueOnce({
+    plan: plan("git bisect good"),
+    ok: false,
+    exit: 128,
+    stdout: "",
+    stderr: "error: Your local changes would be overwritten",
+    duration_ms: 7,
+    conflicts: [],
+  });
+  await act(async () => {
+    await useActivityStore.getState().confirmPreview();
+  });
+
+  // The verdict never gets applied client-side: only Rust's bisect state moves
+  // it, and Rust refused this one, so the panel still shows the pre-op sets.
+  expect(useBisectStore.getState().bisect).toEqual(ACTIVE);
+  expect(screen.getByText("3 candidates left")).toBeTruthy();
+  expect(useActivityStore.getState().activities[0]).toMatchObject({
+    display: "git bisect good",
+    ok: false,
+    stderr: "error: Your local changes would be overwritten",
+  });
+});
