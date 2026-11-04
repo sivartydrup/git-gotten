@@ -31,6 +31,10 @@ No signed release has been published. Existing local builds still pin the old pu
 key and must be reinstalled after rotation. The key transferred through the guest-readable
 share must be considered exposed and rotated before release.
 
+Already unwound on the macOS side (2026-11-04): the `C:\Users\Public\` copies were deleted
+and the private key was moved to `~/.tauri/gitgotten.key.retired-20261104`, to be deleted
+once the rotated pubkey is committed. Do not look for it on the share.
+
 **Option A — generate the key on this PC (recommended).** The release machine keeps its
 private key locally, password-protected:
 
