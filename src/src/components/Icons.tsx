@@ -44,7 +44,8 @@ export type IconName =
   | "dashboard"
   | "command"
   | "filter"
-  | "sparkle";
+  | "sparkle"
+  | "browse";
 
 const PATHS: Record<IconName, JSX.Element> = {
   graph: (
@@ -238,6 +239,12 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <path d="M12 4.5 13.6 9 18 10.6 13.6 12.2 12 16.7 10.4 12.2 6 10.6 10.4 9Z" />
       <path d="M18 16.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8Z" />
+    </>
+  ),
+  browse: (
+    <>
+      <path d="M4 8.5h6.5l1.5 2H20v9H4Z" />
+      <path d="M12 17v-5M9.8 14.2 12 12l2.2 2.2" />
     </>
   ),
 };

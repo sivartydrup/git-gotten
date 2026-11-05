@@ -26,6 +26,7 @@ gitcore = { workspace = true }
 notify = { workspace = true }
 tauri-plugin-updater = { workspace = true }
 tauri-plugin-process = { workspace = true }
+tauri-plugin-dialog = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

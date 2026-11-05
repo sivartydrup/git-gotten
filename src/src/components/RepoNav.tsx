@@ -10,6 +10,18 @@ import {
 } from "../store";
 import { ROOT_GROUP_ID, type ChildNode, type RepoMeta } from "../types";
 import { Icon } from "./Icons";
+import { isTauri } from "@tauri-apps/api/core";
+import { pickRepositoryFolder } from "../api";
+
+/** The folder that contains `path` — the picker's starting directory. */
+function parentDir(path: string | undefined): string | undefined {
+  if (!path) {
+    return undefined;
+  }
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return cut > 0 ? trimmed.slice(0, cut) : undefined;
+}
 
 /**
  * Left navigation (SPEC §7): the workspace group tree — nested groups, pinned
@@ -74,6 +86,25 @@ export function RepoNav() {
     const next = path;
     setPath("");
     await open(next);
+  }
+
+  const canBrowse = isTauri();
+
+  /**
+   * Fill the open field from the OS folder picker (SPEC §7's add-repo affordance).
+   * The chosen path lands in the field instead of opening straight away: the user
+   * sees the exact path about to be opened and can still edit or cancel it.
+   */
+  async function browse() {
+    const active = repos.find((m) => m.id === activeId)?.path;
+    const picked = await pickRepositoryFolder(parentDir(active));
+    if (!picked) {
+      return; // cancelled, or no native dialog available
+    }
+    setPath(picked);
+    if (error) {
+      clearError();
+    }
   }
 
   function dropOn(targetParent: string, index: number) {
@@ -226,6 +257,18 @@ export function RepoNav() {
             if (error) clearError();
           }}
         />
+        {canBrowse && (
+          <button
+            className="icon-btn browse-btn"
+            type="button"
+            aria-label="Browse for a repository folder"
+            title="Browse for a repository folder"
+            disabled={opening}
+            onClick={() => void browse()}
+          >
+            <Icon name="browse" size={14} />
+          </button>
+        )}
         <button className="open-btn" type="submit" disabled={opening || !path.trim()}>
           {opening ? "Opening…" : "Open"}
         </button>

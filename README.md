@@ -6,7 +6,7 @@
 <p align="center">
   <a href="https://github.com/sivartydrup/git-gotten/actions/workflows/ci.yml">
     <img src="https://github.com/sivartydrup/git-gotten/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/tests-388%20Rust%20%C2%B7%20214%20web-2f81b7" alt="tests">
+  <img src="https://img.shields.io/badge/tests-399%20Rust%20%C2%B7%20287%20web-2f81b7" alt="tests">
   <img src="https://img.shields.io/badge/platform-macOS%2012%2B%20%C2%B7%20Windows%2010%2B-lightgrey" alt="platforms">
   <img src="https://img.shields.io/badge/version-0.1.0-lightgrey" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license">
@@ -72,8 +72,8 @@ stage fixtures (`cargo test -p git-gotten-app --test docs_fixtures -- --ignored`
 
 **Stages 0–15 built** (stage numbering matches [`PLAN.md`](./PLAN.md)); what remains is
 signing / notarization / release infrastructure, not features. Measured on macOS 25.6 arm64,
-2026-11-06: `cargo test --workspace` **399 passed** (1 ignored), `pnpm test` **282 passed**
-(23 files), `pnpm build` and `pnpm tauri:build` both clean (`.app` + `.dmg`). Full dated
+2026-11-06: `cargo test --workspace` **399 passed** (1 ignored), `pnpm test` **287 passed**
+(24 files), `pnpm build` and `pnpm tauri:build` both clean (`.app` + `.dmg`). Full dated
 per-platform records: [`STATUS.md`](./STATUS.md).
 
 | Stage | Area | State |
@@ -99,7 +99,8 @@ per-platform records: [`STATUS.md`](./STATUS.md).
 
 **Repository & status**
 
-- Open local repositories by path; repository registry with nested-path matching.
+- Open local repositories by path — typed, or chosen in the OS folder picker — with a
+  repository registry that matches nested paths.
 - Live status: branch, detached state, ahead/behind, staged/unstaged/untracked/conflicted
   changes, in-progress merge/rebase/cherry-pick state; file-watcher driven refresh
   (debounced via `notify`).
@@ -354,8 +355,8 @@ what a signed release needs.
 ### Tests
 
 ```bash
-cargo test                  # Rust: 388 tests (unit + integration + real-git fixtures)
-pnpm test                   # Web: 214 tests (Vitest + Testing Library)
+cargo test                  # Rust: 399 tests (unit + integration + real-git fixtures)
+pnpm test                   # Web: 287 tests (Vitest + Testing Library)
 pnpm build                  # tsc + Vite production build
 ```
 

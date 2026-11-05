@@ -1314,6 +1314,9 @@ pub fn run() {
         // dev-time `--config` override, not a code path.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // The native folder picker behind the nav's "Browse" button: the plugin's own
+        // `open` command, granted to the main window only through `dialog:default`.
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             build_info,
             open_repo,

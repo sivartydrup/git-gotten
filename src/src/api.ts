@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { check as checkUpdater, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import type {
   BisectState,
@@ -57,6 +58,23 @@ export async function openRepo(path: string): Promise<RepoMeta | null> {
     return null;
   }
   return await invoke<RepoMeta>("open_repo", { path });
+}
+
+/**
+ * Ask the OS for a directory through Tauri's native folder picker (the nav's Browse
+ * button). `null` means the user cancelled — or that no native dialog is available
+ * because this bundle is running in a plain browser.
+ */
+export async function pickRepositoryFolder(defaultPath?: string): Promise<string | null> {
+  if (!isTauri()) {
+    return null;
+  }
+  const picked = await openDialog({
+    directory: true,
+    title: "Choose a repository folder",
+    defaultPath,
+  });
+  return typeof picked === "string" ? picked : null;
 }
 
 /**

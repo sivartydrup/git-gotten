@@ -116,6 +116,23 @@ machine on that date; the README carries the summary. Newest entries last.
 - The docs fixture generator now also dumps `load_commit_stats`, so the screenshot harness renders
   the diffstat column with real Rust numbers instead of falling back to an unhandled command.
 
+## macOS 25.6, arm64 — 2026-11-06 (repository folder picker)
+
+- The nav's open affordance gained `tauri-plugin-dialog`'s native folder picker: **Browse** fills
+  the path field — starting the dialog in the active repository's parent folder — and the user still
+  confirms with Open, so the exact path about to be opened stays visible and editable. Cancelling
+  leaves the field and any open error exactly as they were; outside Tauri the button is absent and a
+  typed path is the only route. `dialog:default` on the main window is the only new permission.
+- `pnpm test` — 287 passed (24 files), five of them new in `src/src/folder-picker.test.tsx`;
+  `tsc --noEmit` clean; `cargo test --workspace` — 399 passed (1 ignored) with the plugin registered.
+- Headless pass on the production bundle at 1720×1000 and 900×560: the Browse button measures 28×29
+  px (icon-only, which is why the typed field keeps 138 px at 1720 and the full 83 px in the 96 px
+  rail), zero console errors, and `plugin:dialog|open` reaching the harness shim instead of raising
+  an unhandled command. `graph.webp`, `staging.webp`, `palette.webp`, `dashboard.webp`,
+  `update.webp`, `workspace.webp` and `app-dark.webp` under `docs/assets/` were re-shot from that
+  bundle at their previous pixel sizes; the panel crops (`branches`, `worktrees`, `bisect`, `stash`,
+  `conflict`, `preview`, `danger`, `hero`) show no nav and were left alone.
+
 ## Windows 11, x64 — 2026-10-27
 
 - `cargo test --workspace` — 267 passed.

@@ -45,6 +45,7 @@ parking_lot = { version = "0.12" }
 notify = { version = "8" }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+tauri-plugin-dialog = "2"
 semver = "1"
 # Small, fast release binary (Tauri-recommended size tuning). Applied to the whole
 # workspace; only the `app` crate ships a binary, so this mainly affects that build.

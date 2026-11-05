@@ -147,7 +147,8 @@ panels are resizable with persisted sizes.
 - **Search/filter** — filter repo list by name/path.
 
 ### Behaviors
-- **Add repo:** open from an existing path, or **clone** (clone UI → §11 basics).
+- **Add repo:** open from an existing path — typed, or chosen with the OS folder picker —
+  or **clone** (clone UI → §11 basics).
 - **Remove from list:** unlinks the repo from the workspace only (never touches the on-disk
   repo). "Forget" vs. "remove worktree" are distinct actions.
 - **Select repo** → switches the main area + top bar to that repo's active worktree.
