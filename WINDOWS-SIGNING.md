@@ -90,23 +90,36 @@ target\release\bundle\msi\GitGotten_<version>_x64_en-US.msi.sig        # updater
 `--config` accepts a **file path** or a JSON string; a `dotted.key=value` argument is not accepted by the installed CLI.
 `pnpm tauri signer sign <file>` signs an existing artifact by hand if needed.
 
-## 3. Fill in the manifest
+## 3. Fill in the manifest, then publish
 
 `updater/latest.json` at the repo root is the exact file published as
-`…/releases/latest/download/latest.json`. Its `signature` fields are placeholders
-(`REPLACE-WITH-tauri-signer-sign-OUTPUT` — the fixture test only checks the shape).
+`…/releases/latest/download/latest.json`. Never copy a signature into it by hand:
+`pnpm release:manifest` fills every target whose signed artifact is present under
+`target/release/bundle`, reading each `.sig` file directly.
 
-For each platform entry:
+```bash
+pnpm tauri:build --config '{"bundle":{"createUpdaterArtifacts":true}}'   # signing env set
+pnpm release:manifest            # fills the targets built here, reports the rest
+pnpm release:manifest --check    # exits 1 while any target still holds a placeholder
+```
 
-- `url` → the published artifact for that os-arch:
-  `windows-x86_64` → the `.msi`, `darwin-aarch64` → `GitGotten_<version>_aarch64.app.tar.gz`.
-- `signature` → the **entire contents** of that artifact's `.sig` file (already base64 armor).
-- `version` → the version you just built, `notes` → the release notes the app will show.
+Each run fills what that machine built and leaves the others, so the manifest is assembled by
+building once per platform **with the same key** (this key). Publishing is allowed only after
+`--check` passes: a leftover placeholder signature means every client rejects that update.
 
-Then bump versions **together** — `Cargo.toml [workspace.package] version` and
-`crates/app/tauri.conf.json → version` — and keep `updater/latest.json` describing the
-newest published release. Run `cargo test` before committing: the guards listed above fail
-if the three drift apart.
+Upload each artifact under the exact asset name its `url` ends with — the updater artifact is
+built as `GitGotten.app.tar.gz` but must be uploaded as
+`GitGotten_<version>_<arch>.app.tar.gz` — then:
+
+```bash
+gh release create v<version> --latest --notes-file NOTES.md \
+  GitGotten_<version>_aarch64.app.tar.gz GitGotten_<version>_x64.app.tar.gz \
+  GitGotten_<version>_x64_en-US.msi updater/latest.json
+```
+
+Versions move together — `Cargo.toml [workspace.package] version`,
+`crates/app/tauri.conf.json → version` and the manifest: `cargo test` fails if they drift, and
+`release:manifest` refuses to run on a mismatch. Run `cargo test` before committing.
 
 ## 4. Prove the Install path (the part no test can cover)
 

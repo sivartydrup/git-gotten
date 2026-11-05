@@ -272,6 +272,12 @@ notarization / release infrastructure, not features. Stage numbers match [`PLAN.
 - The activity log is per-repository state — a bounded 500-entry ring mirrored to one
   JSON file per repo, restored on restart, monotonic ids, and rebuilt from scratch if
   the file is corrupt.
+- Every repository keeps its own state file (`<hashed id>.state.json`, next to `app.json`): the
+  branch→color assignments — a branch keeps the color it was first given, so the graph does not
+  re-shuffle when a new branch appears — and the commit you last opened. Reopening a repository
+  redraws the graph with the stored colors and reopens the inspect drawer on the stored commit;
+  if a rebase or reset rewrote that commit away, the drawer opens on the stored branch's tip.
+  A corrupt state file is rebuilt from the repository, never a crash.
 
 **Distribution & auto-update (stage 14)**
 
@@ -291,12 +297,13 @@ notarization / release infrastructure, not features. Stage numbers match [`PLAN.
   release notes with Install / Dismiss; Install downloads, verifies the signature, installs
   and relaunches.
 
-- Every repository keeps its own state file (`<hashed id>.state.json`, next to `app.json`): the
-  branch→color assignments — a branch keeps the color it was first given, so the graph does not
-  re-shuffle when a new branch appears — and the commit you last opened. Reopening a repository
-  redraws the graph with the stored colors and reopens the inspect drawer on the stored commit;
-  if a rebase or reset rewrote that commit away, the drawer opens on the stored branch's tip.
-  A corrupt state file is rebuilt from the repository, never a crash.
+- A release is built with `pnpm tauri:build --config '{"bundle":{"createUpdaterArtifacts":true}}'`
+  while `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` are set (plus the
+  `APPLE_*` Developer ID + notarization variables once they exist), and `pnpm release:manifest`
+  writes the real signatures into `updater/latest.json` straight from the built `.sig` files —
+  `--check` exits non-zero while any platform still holds a placeholder, so a half manifest cannot
+  be published. The full sequence lives in `WINDOWS-SIGNING.md`.
+
 
 ## Not implemented yet
 

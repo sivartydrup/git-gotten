@@ -7,7 +7,8 @@
     "tauri:build": "tauri build --config crates/app/tauri.conf.json",
     "dev": "pnpm --dir src dev",
     "build": "pnpm --dir src build",
-    "test": "pnpm --dir src test"
+    "test": "pnpm --dir src test",
+    "release:manifest": "node scripts/release-manifest.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
