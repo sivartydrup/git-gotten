@@ -606,8 +606,12 @@ git push -u origin main
 - [x] 10k-commit repo is fluid (layout < 300ms, smooth pan/zoom). — 10 120-commit
   fixture: cold DAG + layout 116–121 ms (`--release`), cached replay 3 ms, rebuild after
   one commit ~90 ms; canvas culling asserted at 10 000 rows (< 100 visible rows,
-  < 2 000 canvas calls, < 500 ms per pass). The subjective 60 fps check (§572: manual)
-  was not done by hand.
+  < 2 000 canvas calls, < 500 ms per pass). Pan/zoom smoothness is now **measured**, not only
+  asserted: the production bundle rendering a real 10 002-commit graph (headless Chromium,
+  2026-11-05) drew the graph 34 ms after the repo was activated, and across three pan drags plus
+  three zoom steps sampled 61 animation frames at median 16.7 ms and p95 16.7 ms — 60 fps, with
+  one frame over 20 ms (worst 25 ms). What remains un-done by hand is the subjective look, and
+  the WKWebView (in-app) renderer was not re-measured.
 - [x] Concurrent ops never corrupt state; failures are clean and recoverable. —
   `crates/gitcore/tests/concurrency.rs` (7 tests) and `failure.rs` (4), all on the
   planner → executor → real `git` path.
