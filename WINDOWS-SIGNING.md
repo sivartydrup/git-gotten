@@ -25,59 +25,57 @@ pnpm install
 pnpm --dir src install
 ```
 
-## 1. Choose a key — rotate (recommended) or move
+## 1. The release key — rotated on macOS (2026-11-05)
 
-No signed release has been published. Existing local builds still pin the old public
-key and must be reinstalled after rotation. The key transferred through the guest-readable
-share must be considered exposed and rotated before release.
+One key signs every release artifact. The pubkey pinned at `crates/app/tauri.conf.json →
+plugins.updater.pubkey` is the only one the app accepts, and it is now the **rotated** key: the
+pair that crossed the guest share is retired and unpinned, so every build made before 2026-11-05
+(the macOS `.dmg`, the Windows test MSIs) must be replaced by a build made after it.
 
-Already unwound on the macOS side (2026-11-04): the `C:\Users\Public\` copies were deleted
-and the private key was moved to `~/.tauri/gitgotten.key.retired-20261104`, to be deleted
-once the rotated pubkey is committed. Do not look for it on the share.
+On this Mac (`~/.tauri/`, all `0600` except the public half):
 
-**Option A — generate the key on this PC (recommended).** The release machine keeps its
-private key locally, password-protected:
+| File | What it is |
+|---|---|
+| `gitgotten-rotated.key` | the private key, password-protected — never committed, never copied onto a share |
+| `gitgotten-rotated.key.password` | its password — move it into a password manager, then delete the file |
+| `gitgotten-rotated.key.pub` | the public key; its contents are exactly what `tauri.conf.json` pins |
+| `gitgotten.key.retired-20261104*` | the exposed pair, kept only until nothing still needs it — delete when you decide |
 
-```powershell
-mkdir "$env:USERPROFILE\.tauri" -Force
-pnpm exec tauri signer generate -w "$env:USERPROFILE\.tauri\gitgotten-rotated.key"
+Generated with `pnpm exec tauri signer generate -w ~/.tauri/gitgotten-rotated.key --password
+"$(cat ~/.tauri/gitgotten-rotated.key.password)" --ci --force` — the password comes from a `0600`
+file, so it never reaches chat or shell history. Piping the password to the prompt instead does
+**not** work: the prompt reads `/dev/tty`, the key silently gets no password, and `tauri build`
+then fails with *"incorrect updater private key password"*.
+
+Signing needs both variables in the shell that runs the build:
+
+```bash
+export TAURI_SIGNING_PRIVATE_KEY="$HOME/.tauri/gitgotten-rotated.key"   # key text or path
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$(cat "$HOME/.tauri/gitgotten-rotated.key.password")"
+pnpm tauri:build --config '{"bundle":{"createUpdaterArtifacts":true}}'
 ```
 
-Choose a password when prompted. `-p` requires a password argument; avoid passing secrets
-on the command line, where process listings or shell history can expose them. The command
-prints the **public key** — a single base64 line. Copy that line into
-`crates/app/tauri.conf.json → plugins.updater.pubkey` (replacing the current value), then:
+`createUpdaterArtifacts` deliberately stays out of the committed config: with no private key in
+the environment `tauri build` fails outright, so a committed `true` would break unsigned dev builds.
 
-```powershell
-cargo test -p git-gotten-app --test updater   # config + manifest tests must stay green
-git add -A
-git commit -m "stage-14: rotate updater keypair to the release machine"
-git push origin main
-```
+**The Windows PC must use this same key** — the MSI can only be built there. The SMB mount
+`//GUEST@192.168.0.104/Users` is guest and read-only, and it is how the previous key leaked: move
+the private key and its password out-of-band (USB stick or password manager), never through a
+share, and place them in `%USERPROFILE%\.tauri\`. If you would rather generate a fresh key on the
+PC, re-pin its pubkey in `tauri.conf.json` and rebuild *every* artifact — a bundle only ever
+accepts signatures from the key it was built against.
 
-Never `git add` the private key: it lives in `%USERPROFILE%\.tauri\`, outside the repo.
-If macOS builds were already made with the old pubkey, they must be rebuilt after rotation
-— the pubkey is baked into every bundle, and an old bundle rejects a new key's signatures.
-
-**Option B — reuse the existing macOS key.** Only if a *writable* path to the PC exists
-(the current SMB mount `//GUEST@192.168.0.104/Users` is guest, read-only). Copy
-`~/.tauri/gitgotten.key` (Mac) to `%USERPROFILE%\.tauri\gitgotten.key`, then set an empty
-password — the key has none:
-
-```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY="$env:USERPROFILE\.tauri\gitgotten.key"
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
-```
-
-If the key is later stored with a password, put that password in
-`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` instead. `.env` files are not read by the CLI — real
-environment variables only, in the same shell that runs the build.
+macOS artifacts were rebuilt against this key on 2026-11-05 (`bundle/macos/GitGotten.app.tar.gz` +
+`.sig`, `bundle/dmg/GitGotten_0.1.0_aarch64.dmg`, 7.67 / 3.97 / 4.13 MiB). The signature was checked
+outside tauri with `minisign-verify`: the pubkey pinned in `tauri.conf.json` accepts it, the retired
+key rejects it (*"created with a different key"*), and a one-byte-tampered copy of the artifact is
+rejected too. Unsigned `pnpm tauri:build` (no key in the environment) still works.
 
 ## 2. Build signed updater artifacts
 
 ```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY="$env:USERPROFILE\.tauri\gitgotten.key"
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD="<password or empty string>"
+$env:TAURI_SIGNING_PRIVATE_KEY="$env:USERPROFILE\.tauri\gitgotten-rotated.key"   # copied out-of-band
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD="<the password from gitgotten-rotated.key.password>"
 [System.IO.File]::WriteAllText("$env:TEMP\gitgotten-signed.json", '{"bundle":{"createUpdaterArtifacts":true}}', [System.Text.UTF8Encoding]::new($false))
 pnpm tauri:build --config "$env:TEMP\gitgotten-signed.json"
 ```

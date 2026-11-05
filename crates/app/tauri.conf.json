@@ -40,7 +40,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg3RDU5MzNCOUJCMzE0MTcKUldRWEZMT2JPNVBWaDZ6ZSszMlphdE0ySE4rMmh0anBLWjRyWEVVZTlBZ2I1ZFo2S3o0ZlBZRU8K",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFDNkQ3QUFGNEMzMDQ5QkIKUldTN1NUQk1yM3B0SEpXWEh3WmVJRUw4bEdERDZTd2lpZ3VYNVQxbkNRNjlKRE05VTZGREJPSEwK",
       "endpoints": [
         "https://github.com/sivartydrup/git-gotten/releases/latest/download/latest.json"
       ]

@@ -303,9 +303,10 @@ notarization / release infrastructure, not features. Stage numbers match [`PLAN.
 macOS code signing + notarization, Windows Authenticode signing, and publishing the first signed
 release (which is what makes the update feed live) — all gated on certificates and CI that do not exist
 yet; the updater itself is implemented and verified end to end (macOS: launch-time feed check plus the
-on-screen prompt; Windows: a signed 0.1.0 → 0.1.1 install inside the installed MSI). The pinned updater
-key still needs rotating (`WINDOWS-SIGNING.md` §1); `releases/latest/download/latest.json` 404s
-until a release exists.
+on-screen prompt; Windows: a signed 0.1.0 → 0.1.1 install inside the installed MSI). The updater key
+was rotated on 2026-11-05 and the macOS artifacts rebuilt against it (`WINDOWS-SIGNING.md` §1), so
+builds made before that date must be reinstalled; `releases/latest/download/latest.json` 404s until
+a release exists.
 
 Linux is deferred (the architecture stays portable).
 
