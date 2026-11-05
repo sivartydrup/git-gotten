@@ -327,9 +327,9 @@ test("renderGraph: an empty graph clears and draws nothing", () => {
   expect(rec.arcs).toBe(0);
 });
 
-test("renderGraph: leftmost-lane labels are clamped inside the canvas", () => {
-  // A lane-0 dot sits at x=18; its ref pills and the HEAD label extend left
-  // and must never cross the canvas's left edge.
+test("renderGraph: the HEAD marker stays inside the canvas", () => {
+  // A lane-0 dot sits at x=18; its HEAD label extends left and must never cross the canvas's
+  // left edge.
   const g = threeNodeGraph();
   const rec = recorder();
   renderGraph(
@@ -345,6 +345,38 @@ test("renderGraph: leftmost-lane labels are clamped inside the canvas", () => {
   }
   const head = rec.texts.find((t) => t.text === "HEAD");
   expect(head?.x, "HEAD label x").toBeGreaterThanOrEqual(2);
+});
+
+test("renderGraph: ref pills follow the subject and never cover it", () => {
+  // The defect this guards: long ref names used to be clamped against the left edge, where they
+  // were painted straight over the commit message.
+  const g = straightGraph(2);
+  const message = "recalibrate the guidance loop before the burn window opens";
+  g.nodes[1].subject = message;
+  g.nodes[1].refs = [
+    { name: "feature/telemetry-batching", kind: "Branch", color: 0 },
+    { name: "release/1.3", kind: "Branch", color: 1 },
+  ];
+  const rec = recorder();
+  renderGraph(
+    rec,
+    420,
+    300,
+    identity,
+    { graph: g, selected: null, hovered: null, query: "" },
+    1,
+  );
+  const subject = rec.texts.find((t) => t.text.startsWith("recalibrate"));
+  expect(subject, "subject text").toBeTruthy();
+  expect(subject!.text.length, "the subject makes room for its pills").toBeLessThan(message.length);
+  const pills = rec.rects.filter((r) => r.h === 12);
+  expect(pills.length).toBe(2);
+  const subjectEnd = subject!.x + subject!.text.length * 6.2;
+  for (const pill of pills) {
+    expect(pill.x, `pill at ${pill.x}`).toBeGreaterThanOrEqual(subjectEnd);
+    expect(pill.x + pill.w, "pill stays on canvas").toBeLessThanOrEqual(420 - 8);
+  }
+  expect(rec.texts.some((t) => t.text === "feature/telemetry-batching")).toBe(true);
 });
 
 test("renderGraph: worktree checkouts get outlined marker pills, branches stay filled", () => {

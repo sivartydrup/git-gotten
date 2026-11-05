@@ -59,6 +59,14 @@ export function textX(lanes: number): number {
   return PAD + lanes * LANE_W + TEXT_X_OFFSET;
 }
 
+/** A row's ref pills and the width each label needs (approximate monospace advance). */
+function refPills(node: Graph["nodes"][number]) {
+  return node.refs.slice(0, MAX_REF_PILLS).map((ref) => ({
+    ref,
+    width: Math.max(14, ref.name.length * 5.6 + 8),
+  }));
+}
+
 /** World y of a row's center. */
 export function rowY(row: number): number {
   return PAD + row * ROW_H + ROW_H / 2;
@@ -263,8 +271,11 @@ export function renderGraph(
     }
   }
 
-  // Truncation budget for the per-row text (approximate char width).
-  const maxChars = Math.max(8, Math.floor((worldW - tx - 8) / 6.2));
+  // Truncation budget for the per-row text (approximate char width). A row shares its line with
+  // ref pills, so their band is reserved before the subject is truncated: a long branch name can
+  // never be drawn on top of a commit message. `20` is the gap to the pills plus the right margin.
+  const textBudget = (reservedPx: number) =>
+    Math.max(8, Math.floor((worldW - tx - 20 - reservedPx) / 6.2));
 
   const [first, last] = visibleRowRange(graph.nodes.length, viewport, height);
 
@@ -329,40 +340,16 @@ export function renderGraph(
       ctx.stroke();
     }
 
-    // Ref pills, stacked left of the dot (colored by their line's palette
-    // index). Worktree checkouts (SPEC §10.7) get an *outlined* pill — the
-    // same placement/color rules, visibly distinct from filled ref pills.
-    const shown = node.refs.slice(0, MAX_REF_PILLS);
-    for (let i = 0; i < shown.length; i++) {
-      const ref = shown[i];
-      const pillW = Math.max(14, ref.name.length * 5.2 + 8);
-      let px2 = x - DOT_R - 8 - (i % 2) * (pillW + 4);
-      if (px2 - pillW < MIN_X) {
-        // Leftmost lanes sit near the canvas edge: slide the pill right so
-        // the label is never clipped (the dot is drawn on top of it).
-        // Assign (not add) so the clamp is exact, not float-drifted.
-        px2 = MIN_X + pillW;
-      }
-      const py2 = y + (i < 2 ? -1 : 1) * (6 + Math.floor(i / 2) * 12);
-      const color = paletteColor(ref.color, C.palette);
-      if (ref.kind === "Worktree") {
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1;
-        ctx.strokeRect(px2 - pillW, py2 - 6, pillW, 12);
-        ctx.fillStyle = color;
-      } else {
-        ctx.fillStyle = color;
-        ctx.fillRect(px2 - pillW, py2 - 6, pillW, 12);
-        ctx.fillStyle = "#ffffff";
-      }
-      ctx.font = "9px ui-monospace, monospace";
-      ctx.fillText(ref.name, px2 - pillW + 4, py2 + 3);
-    }
-    if (node.refs.length > MAX_REF_PILLS) {
-      ctx.fillStyle = C.muted;
-      ctx.font = "9px ui-monospace, monospace";
-      ctx.fillText(`+${node.refs.length - MAX_REF_PILLS}`, Math.max(MIN_X, x - DOT_R - 34), y + 18);
-    }
+    // The row's label budget: ref pills are drawn inline after the subject (below), so the
+    // width they need is reserved here instead of letting them overlap the message.
+    const pills = refPills(node);
+    const overflow = node.refs.length > MAX_REF_PILLS ? 5 : 0;
+    const pillBand = Math.min(
+      pills.reduce((total, pill) => total + pill.width + 6, 0) + overflow * 26,
+      240,
+    );
+    const maxChars = textBudget(pillBand);
+    const subject = truncate(node.subject, maxChars);
 
     // The commit dot, in the color of the line it sits on.
     const ownLine = node.lines
@@ -426,7 +413,7 @@ export function renderGraph(
     // The text block: subject + author · date.
     ctx.fillStyle = C.fg;
     ctx.font = "12px -apple-system, 'Segoe UI', sans-serif";
-    ctx.fillText(truncate(node.subject, maxChars), tx, y - 4);
+    ctx.fillText(subject, tx, y - 4);
     ctx.fillStyle = C.muted;
     ctx.font = "11px -apple-system, 'Segoe UI', sans-serif";
     ctx.fillText(
@@ -434,6 +421,37 @@ export function renderGraph(
       tx,
       y + 11,
     );
+
+    // Ref pills inline, right after the subject - the space they need was reserved when the
+    // subject was truncated, and nothing is ever drawn past the right edge of the canvas.
+    let pillX = tx + subject.length * 6.2 + 12;
+    let drawn = 0;
+    for (const { ref, width } of pills) {
+      if (pillX + width > worldW - 8) {
+        break;
+      }
+      const color = paletteColor(ref.color, C.palette);
+      if (ref.kind === "Worktree") {
+        // Worktree checkouts (SPEC §10.7) read as outlined, not filled.
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(pillX, y - 15, width, 12);
+        ctx.fillStyle = color;
+      } else {
+        ctx.fillStyle = color;
+        ctx.fillRect(pillX, y - 15, width, 12);
+        ctx.fillStyle = "#ffffff";
+      }
+      ctx.font = "9px ui-monospace, monospace";
+      ctx.fillText(ref.name, pillX + 4, y - 6);
+      pillX += width + 6;
+      drawn += 1;
+    }
+    if (node.refs.length > drawn && pillX + 26 <= worldW - 8) {
+      ctx.fillStyle = C.muted;
+      ctx.font = "9px ui-monospace, monospace";
+      ctx.fillText(`+${node.refs.length - drawn}`, pillX, y - 6);
+    }
   }
   ctx.globalAlpha = 1;
 }
