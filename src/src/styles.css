@@ -835,7 +835,11 @@ code {
 }
 
 .graph-canvas {
-  flex: 1;
+  /* A canvas with only `width` set takes the bitmap's aspect-derived height, which is taller
+     than the slot below the toolbar: it then bleeds over the commit panel and stretches the
+     drawing. `flex-basis: 0` + `min-height: 0` keep the box exactly the slot flex gives it. */
+  flex: 1 1 0;
+  min-height: 0;
   width: 100%;
   display: block;
   cursor: grab;

@@ -130,6 +130,7 @@ function sampleTree(): Workspace {
     ],
     pinned: ["/r/alpha"],
     recents: ["/r/beta"],
+    last_open: null,
   };
 }
 
@@ -196,6 +197,39 @@ test("load hydrates the tree and the repo store from workspace_repos", async () 
   expect(useWorkspaceStore.getState().tree.groups).toHaveLength(3);
   expect(useRepoStore.getState().repos.map((r) => r.id)).toEqual(["/r/alpha"]);
   expect(useRepoStore.getState().status["/r/alpha"]).toBeTruthy();
+});
+
+function pair(id: string) {
+  return {
+    meta: { id, name: id.split("/").pop()!, path: id, branch: "main", ahead: 0, behind: 0, dirty_count: 0 },
+    status: {
+      branch: "main", detached_head: null, head: "h", ahead: 0, behind: 0, upstream: null,
+      changes: [], in_merge: false, in_rebase: false, in_cherry_pick: false,
+      last_commit: { hash: "h", subject: "c", author_time: 1 },
+    },
+  };
+}
+
+test("load reopens the last-open repo so a restart lands back on it (SPEC §11)", async () => {
+  fake.tree = { ...sampleTree(), last_open: "/r/alpha" };
+  fake.pairs = [pair("/r/beta"), pair("/r/alpha")];
+  await useWorkspaceStore.getState().load();
+  expect(useRepoStore.getState().activeId).toBe("/r/alpha");
+});
+
+test("load never steals a repo the user already activated", async () => {
+  fake.tree = { ...sampleTree(), last_open: "/r/alpha" };
+  fake.pairs = [pair("/r/beta"), pair("/r/alpha")];
+  useRepoStore.setState({ activeId: "/r/beta" });
+  await useWorkspaceStore.getState().load();
+  expect(useRepoStore.getState().activeId).toBe("/r/beta");
+});
+
+test("load ignores a last-open repo that is no longer in the workspace", async () => {
+  fake.tree = { ...sampleTree(), last_open: "/r/gone" };
+  fake.pairs = [pair("/r/alpha")];
+  await useWorkspaceStore.getState().load();
+  expect(useRepoStore.getState().activeId).toBeNull();
 });
 
 test("removeRepo unlinks the repo from the tree and the repo list", async () => {

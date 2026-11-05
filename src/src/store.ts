@@ -1099,6 +1099,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
         status: { ...s.status, ...Object.fromEntries(pairs.map((p) => [p.meta.id, p.status])) },
       }));
     }
+    // SPEC §11: `app.json` remembers the last-open repo, so a startup reopens it - which is
+    // what pulls the graph and the restored selection (SPEC §16) back into view. Never
+    // steals a repo the user has already activated in this session.
+    const lastOpen = tree?.last_open;
+    if (lastOpen && useRepoStore.getState().activeId === null) {
+      if (pairs?.some((p) => p.meta.id === lastOpen)) {
+        useRepoStore.getState().select(lastOpen);
+      }
+    }
   },
   addGroup: async (name, parent) => {
     const next = await groupAdd(name, parent);

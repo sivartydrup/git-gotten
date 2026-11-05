@@ -474,8 +474,8 @@ test("GraphCanvas attaches the size observer when the canvas mounts after the fi
   await flush();
   expect(document.querySelector("canvas.graph-canvas")).toBeTruthy();
   expect(
-    FakeResizeObserver.instances.some((o) => o.observed?.tagName === "SECTION"),
-    "a size observer on the graph container",
+    FakeResizeObserver.instances.some((o) => o.observed?.tagName === "CANVAS"),
+    "a size observer on the canvas itself: sizing from the section made the bitmap taller than the canvas box",
   ).toBe(true);
 });
 

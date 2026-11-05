@@ -1,11 +1,11 @@
 {
   "version": "0.1.0",
   "notes": "GitGotten 0.1.0",
-  "pub_date": "2026-11-05T02:06:33Z",
+  "pub_date": "2026-11-05T03:59:54Z",
   "platforms": {
     "darwin-aarch64": {
       "url": "https://github.com/sivartydrup/git-gotten/releases/download/v0.1.0/GitGotten_0.1.0_aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTN1NUQk1yM3B0SE8xb3c2dEdmK1pPWlFXRlBILzF1TUFoNGV2TFpiSCtCeXVVb0dZREhVUlFqZ1pHU0NqYzBjZ05oZmhwTUxEc0JNaUFoUUlYUkhwcjh4VlRLSnJTOEFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzODQzNTIxCWZpbGU6R2l0R290dGVuLmFwcC50YXIuZ3oJdmVyc2lvbjowLjEuMApWOXdCVTBxd2JsdEJsOStpUEM3WlFHTkZaR3FFeExFS2w0WUo4a2h3ZlZSRWlSL3A2ZENSVHVxSm9kTkVjTG1XNytkZVk3blBYWVhvVEh5eWFvaFRDQT09Cg=="
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVTN1NUQk1yM3B0SEdrT1ZSSmkxZWY3eTlFc0R0WFNQQWw4WFp4OG5kUXF5eWRYQUF5ZmF6WDJ1ZmthN2txdjQ5U2N6QWFBTVcveTN2SmJHT2N2Sy84bDNnUGpMSzQ1a2dnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzODUxMTY3CWZpbGU6R2l0R290dGVuLmFwcC50YXIuZ3oJdmVyc2lvbjowLjEuMAp1akVFNHloOGExdVZ3SnRnZ2pFa2VUbkxkQzlGVndPcm5wMjZvVWtiSVJKaEVyUHArclA0N0h2R3YwYkhCU0FUcDB0bjNOeW9vNE1kTXh3NEczOHRBZz09Cg=="
     },
     "darwin-x86_64": {
       "url": "https://github.com/sivartydrup/git-gotten/releases/download/v0.1.0/GitGotten_0.1.0_x64.app.tar.gz",

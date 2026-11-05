@@ -483,7 +483,6 @@ export function GraphCanvas() {
   const theme = useThemeStore((s) => s.resolved);
   const { requestPreview, running } = useActivityStore();
 
-  const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const viewportRef = useRef<Viewport>({ scale: 1, ox: 0, oy: 0 });
   const dirtyRef = useRef(true);
@@ -514,21 +513,24 @@ export function GraphCanvas() {
 
   // Size tracking (device pixels) via ResizeObserver.
   useEffect(() => {
-    const container = containerRef.current;
     const canvas = canvasRef.current;
     // jsdom has no ResizeObserver; skip sizing in non-browser test envs.
-    if (!container || !canvas || typeof ResizeObserver === "undefined") {
+    if (!canvas || typeof ResizeObserver === "undefined") {
       return;
     }
+    // Size the bitmap to the canvas' own box - the slot the flex layout gives it, not the
+    // section's height. Measuring the section made the bitmap taller than the canvas, which
+    // stretched the drawing over the toolbar and mapped pointer coordinates (measured against
+    // the canvas box) onto the wrong rows.
     const ro = new ResizeObserver(() => {
-      const rect = container.getBoundingClientRect();
+      const rect = canvas.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
       sizeRef.current = { width: rect.width, height: rect.height };
       canvas.width = Math.max(1, Math.round(rect.width * dpr));
       canvas.height = Math.max(1, Math.round(rect.height * dpr));
       dirtyRef.current = true;
     });
-    ro.observe(container);
+    ro.observe(canvas);
     return () => ro.disconnect();
   }, [hasCanvas]);
 
@@ -742,7 +744,7 @@ export function GraphCanvas() {
   }
 
   return (
-    <section className="graph" ref={containerRef}>
+    <section className="graph">
       <div className="graph-toolbar">
         <button
           type="button"

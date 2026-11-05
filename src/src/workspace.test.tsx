@@ -112,6 +112,7 @@ function seed(): void {
     ],
     pinned: ["/r/alpha"],
     recents: ["/r/beta"],
+    last_open: null,
   };
   useRepoStore.setState(() => ({
     repos: [

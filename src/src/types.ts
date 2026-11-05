@@ -123,6 +123,8 @@ export interface Workspace {
   pinned: RepoId[];
   /** Unpinned repos ordered by last activity, newest first. */
   recents: RepoId[];
+  /** The repo the user was last looking at; reopened at startup (SPEC §11). */
+  last_open: RepoId | null;
 }
 
 /** One workspace repo as reported at startup: stored summary + live status. */
@@ -137,6 +139,7 @@ export function emptyWorkspace(): Workspace {
     groups: [{ id: ROOT_GROUP_ID, name: "Workspace", children: [] }],
     pinned: [],
     recents: [],
+    last_open: null,
   };
 }
 

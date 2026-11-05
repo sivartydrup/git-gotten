@@ -1178,6 +1178,9 @@ pub struct Workspace {
     pub pinned: Vec<RepoId>,
     /// Unpinned repos ordered by last activity (SPEC §7), newest first.
     pub recents: Vec<RepoId>,
+    /// The repo the user was last looking at; the web reopens it at startup (SPEC §11).
+    #[serde(default)]
+    pub last_open: Option<RepoId>,
 }
 
 /// One workspace repo as reported by `workspace_repos` (startup hydration for
@@ -1205,6 +1208,7 @@ impl Workspace {
             }],
             pinned: Vec::new(),
             recents: Vec::new(),
+            last_open: None,
         }
     }
 
@@ -2184,6 +2188,7 @@ mod tests {
             ],
             pinned: vec!["/r/a".into()],
             recents: vec!["/r/b".into(), "/r/a".into()],
+            last_open: Some("/r/b".into()),
         };
         let json = serde_json::to_string(&ws).unwrap();
         assert!(json.contains(r#""kind":"repo""#));
@@ -2191,6 +2196,14 @@ mod tests {
         let back: Workspace = serde_json::from_str(&json).unwrap();
         assert_eq!(back, ws);
         assert_eq!(back.validate(), Ok(()));
+    }
+
+    #[test]
+    fn an_older_app_json_without_last_open_still_loads() {
+        let json = r#"{"groups":[{"id":"root","name":"Workspace","children":[{"kind":"repo","id":"/r/a"}]}],"pinned":[],"recents":["/r/a"]}"#;
+        let ws: Workspace = serde_json::from_str(json).unwrap();
+        assert_eq!(ws.last_open, None);
+        assert_eq!(ws.validate(), Ok(()));
     }
 
     #[test]

@@ -278,6 +278,8 @@ notarization / release infrastructure, not features. Stage numbers match [`PLAN.
   redraws the graph with the stored colors and reopens the inspect drawer on the stored commit;
   if a rebase or reset rewrote that commit away, the drawer opens on the stored branch's tip.
   A corrupt state file is rebuilt from the repository, never a crash.
+- `app.json` also records which repository you were last in, so a startup reopens it - graph, stored
+  colors and the commit drawer included - and it never overrides a repo you have already switched to.
 
 **Distribution & auto-update (stage 14)**
 

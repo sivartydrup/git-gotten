@@ -286,9 +286,14 @@ impl Backend {
         })
     }
 
-    /// Record activity for the recents ordering (SPEC §7).
+    /// Record activity for the recents ordering (SPEC §7) and remember the repo as the
+    /// last one the user opened, so a restart can reopen it (SPEC §11).
     pub fn repo_touch(&self, id: &str) -> Workspace {
-        self.workspace.lock().touch(id);
+        {
+            let mut ws = self.workspace.lock();
+            ws.touch(id);
+            ws.last_open = Some(id.to_string());
+        }
         self.persist();
         self.workspace()
     }
@@ -298,6 +303,9 @@ impl Backend {
     pub fn remove_repo_from_workspace(&self, id: &str) -> Result<Workspace, AppError> {
         let ws = self.mutate(|ws| {
             ws.remove_repo(id);
+            if ws.last_open.as_deref() == Some(id) {
+                ws.last_open = None;
+            }
             Ok(())
         })?;
         if let Some(repo) = self.registry.remove(id) {
@@ -2368,6 +2376,7 @@ mod tests {
             }],
             pinned: Vec::new(),
             recents: Vec::new(),
+            last_open: None,
         };
         std::fs::write(dir.join("app.json"), serde_json::to_string(&ws).unwrap()).unwrap();
         let (backend, _rx) = Backend::new();
@@ -2376,6 +2385,30 @@ mod tests {
         assert_eq!(backend.load_status(fx.id()).unwrap().branch.as_deref(), Some("main"));
         assert!(backend.load_status("/gitgotten/nope").is_err());
         assert!(backend.workspace().has_repo("/gitgotten/nope"));
+    }
+
+    #[test]
+    fn last_open_survives_a_restart_and_clears_when_the_repo_is_removed() {
+        let fx = testutil::Fixture::new("ws-lastopen");
+        fx.commit_file("a.txt", "x\n", "c1");
+        let dir = store_dir("lastopen");
+        let (backend, _rx) = Backend::new();
+        backend.set_store(dir.join("app.json"));
+        let id = backend.open(fx.id()).unwrap().id;
+        assert_eq!(backend.workspace().last_open, None); // opening alone does not claim it
+
+        backend.repo_touch(&id);
+        assert_eq!(backend.workspace().last_open.as_deref(), Some(id.as_str()));
+
+        let (restarted, _rx2) = Backend::new();
+        restarted.set_store(dir.join("app.json"));
+        assert_eq!(restarted.workspace().last_open.as_deref(), Some(id.as_str())); // SPEC §11
+
+        restarted.remove_repo_from_workspace(&id).unwrap();
+        assert_eq!(restarted.workspace().last_open, None);
+        let (again, _rx3) = Backend::new();
+        again.set_store(dir.join("app.json"));
+        assert_eq!(again.workspace().last_open, None);
     }
 
     #[test]

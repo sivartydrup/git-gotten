@@ -683,7 +683,7 @@ git push -u origin main
 
 **Run tests:** `cargo test --workspace` · `pnpm test`.
 
-**Verify (macOS):** restart the app with a repo open → the graph keeps every branch's color and the inspect drawer reopens on the last commit; create a branch → only the new branch gets a new color.
+**Verify (macOS):** restart the app → it reopens the repository you were last in, the graph keeps every branch's color and the inspect drawer reopens on the last commit; create a branch → only the new branch gets a new color.
 
 **Commit & push:** `git add -A && git commit -m "stage-15: per-repo state (branch colors + last selection)" && git push origin main`
 
@@ -691,7 +691,8 @@ git push -u origin main
 - [x] Branch colors are stable across restarts and when new branches appear. — `crates/app/tests/repo_state.rs::branch_colors_survive_a_layout_change_and_a_restart` (existing refs keep their index, the new branch gets an unused one, a fresh backend re-renders identical colors).
 - [x] The last selection is restored, with a branch-tip fallback. — `repo_state.rs::the_last_selection_survives_a_restart` (backend), `lib.rs::selection_commands_round_trip_over_ipc` (the `{ repo, selection }` payload through the real command dispatcher, typed reply, unknown repo errors), and `src/src/store.test.ts` for commit-present / branch-tip / nothing-restored and that clearing the drawer stores an empty selection.
 - [x] Corrupt per-repo state is rebuilt, never a crash. — `repo_state.rs::a_corrupt_state_file_is_rebuilt_not_fatal`; `state_is_per_repository` keeps one repo's state out of another's.
-- [x] `cargo test --workspace` + `pnpm test` green (2026-11-04): all Rust test binaries 0 failures, 210 web tests. The app boots with the shared `app_context()` (`pnpm tauri dev` → window renders the shell); the on-screen reopen was not clicked through by hand — the terminal has no accessibility permission to drive the window.
+- [x] `cargo test --workspace` + `pnpm test` green (2026-11-05): all Rust test binaries 0 failures, 213 web tests. The app boots with the shared `app_context()` (`pnpm tauri dev` → window renders the shell), and the on-screen reopen is verified two ways: the production bundle driven in headless Chromium over the real Rust payloads (repo activated from `app.json` with no click, drawer reopened on the stored commit, and a click 9 px above the canvas' bottom edge selected the row drawn there), and a native `.app` launch that came up on the last-open repo with its graph and drawer already restored. Driving the native window with the mouse still needs the accessibility grant.
+- [x] `app.json` remembers the last-open repo (SPEC §11) and startup reopens it — `crates/app/src/lib.rs::last_open_survives_a_restart_and_clears_when_the_repo_is_removed`, `src/src/workspace.test.ts` (reopens it / never steals a repo the user activated / ignores a vanished repo). Found during the on-screen look: the graph canvas sized its bitmap from the **section** (toolbar included) instead of its own box, so the bitmap was taller than the canvas — the drawing bled over the commit panel and pointer coordinates mapped to the wrong rows near the bottom. `GraphCanvas.tsx` now measures the canvas box and `.graph-canvas` is pinned to its flex slot; on the 10 002-commit repo the canvas box measured 679 × 280.5 CSS px against a 849 × 351 bitmap at dpr 1.25, canvas bottom == commit-panel top.
 ---
 
 ## Appendix A — Per-stage checklist template (copy per stage)
