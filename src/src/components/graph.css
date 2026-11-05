@@ -1,0 +1,143 @@
+/* Graph chrome (SPEC §10.1, §12): the zoom controls, the lane legend, the minimap
+   and the hover card. Layout of `.graph`, `.graph-toolbar` and `.graph-canvas`
+   lives in styles.css; nothing here re-declares it. */
+
+.graph-zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.graph-zoom-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0 var(--space-1);
+  background: var(--surface);
+  color: var(--fg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-1);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+
+.graph-zoom-btn:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  color: var(--fg);
+}
+
+.graph-zoom-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-soft);
+  border-color: var(--accent);
+}
+
+.graph-zoom-btn:active:not(:disabled) {
+  background: var(--surface-3);
+}
+
+.graph-zoom-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.graph-zoom-readout {
+  min-width: 46px;
+  text-align: right;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  /* Read as a value, not a control: it sits between the zoom buttons. */
+  padding: 0 var(--space-1);
+}
+
+.graph-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.graph-legend-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 132px;
+  padding: 2px var(--space-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--fg-soft);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.graph-legend-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  flex: none;
+}
+
+.graph-legend-more {
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+}
+
+/* The overview strip: pinned to the canvas' right edge, under the toolbar. */
+.graph-minimap {
+  position: absolute;
+  top: calc(var(--space-7) + var(--space-2));
+  right: var(--space-2);
+  width: 46px;
+  height: calc(100% - var(--space-7) - var(--space-4));
+  min-height: 60px;
+  z-index: var(--z-sticky);
+  background: var(--bg-tint);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-1);
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+  touch-action: none;
+  animation: gg-fade-in var(--dur-2) var(--ease);
+}
+
+/* The hover card (SPEC §12): a raised surface with the enriched commit line. */
+.graph-tooltip {
+  border-radius: var(--radius-2);
+  box-shadow: var(--shadow-2);
+  animation: gg-drop-in var(--dur-1) var(--ease);
+}
+
+.graph-tooltip .stat-add {
+  color: var(--success);
+  font-family: var(--font-mono);
+}
+
+.graph-tooltip .stat-del {
+  color: var(--error);
+  font-family: var(--font-mono);
+}
+
+/* Screen-reader announcement of the keyboard-selected commit. */
+.graph-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

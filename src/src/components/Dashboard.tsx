@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useRepoStore, useViewStore } from "../store";
 import { formatDate, type RepoMeta, type Status } from "../types";
+import { Icon } from "./Icons";
 
 type SortKey = "name" | "branch" | "state" | "sync" | "dirty" | "commit";
 
@@ -79,7 +80,7 @@ export function Dashboard() {
           onChange={(e) => setFilter(e.target.value)}
         />
         <button className="icon-btn" aria-label="Close dashboard" onClick={() => setDashboard(false)}>
-          ✕
+          <Icon name="close" size={14} />
         </button>
       </header>
       {rows.length === 0 ? (

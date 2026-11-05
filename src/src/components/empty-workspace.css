@@ -1,0 +1,64 @@
+/* First-run empty state. Tokens only; WebKit floor macOS 12. */
+
+.empty-workspace {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-7);
+  max-width: 520px;
+  margin: auto;
+  text-align: center;
+  color: var(--fg-soft);
+  animation: gg-fade-in var(--dur-3) var(--ease);
+}
+
+.empty-workspace-icon {
+  color: var(--accent);
+}
+
+.empty-workspace h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+  color: var(--fg);
+}
+
+.empty-workspace p {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.empty-workspace code {
+  font-family: var(--font-mono);
+  color: var(--fg-soft);
+}
+
+.empty-workspace-keys {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  font-size: var(--text-2xs);
+  color: var(--muted);
+}
+
+.empty-workspace-keys li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.empty-workspace-keys kbd {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--fg-soft);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-1);
+  padding: 0 4px;
+  min-height: 18px;
+}

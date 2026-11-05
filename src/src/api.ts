@@ -8,6 +8,7 @@ import type {
   BuildInfo,
   CommandPlan,
   CommitDetail,
+  CommitStat,
   ConflictFile,
   FileDiff,
   Graph,
@@ -107,6 +108,22 @@ export async function loadDiff(
     return null;
   }
   return await invoke<FileDiff>("load_diff", { repo, path });
+}
+
+/**
+ * Lines changed for a bounded set of commits (Rust `load_commit_stats`
+ * command, the graph's diff weighting and `+N/−N` column). Requests are capped
+ * server-side at 200 hashes; commits the repository no longer has are simply
+ * absent from the result. Returns `[]` outside Tauri.
+ */
+export async function loadCommitStats(
+  repo: RepoId,
+  hashes: string[],
+): Promise<CommitStat[]> {
+  if (!isTauri()) {
+    return [];
+  }
+  return await invoke<CommitStat[]>("load_commit_stats", { repo, hashes });
 }
 
 /**

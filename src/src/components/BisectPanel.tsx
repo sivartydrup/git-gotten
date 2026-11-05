@@ -7,6 +7,7 @@ import {
   useRepoStore,
 } from "../store";
 import type { Op } from "../types";
+import { Icon } from "./Icons";
 
 /**
  * Bisect tab (SPEC §10.9). Inactive: pick a known-good and a known-bad ref
@@ -68,7 +69,9 @@ export function BisectPanel() {
     return (
       <div className="refs-panel">
         <div className="refs-head">
-          <h3>Bisect</h3>
+          <h3>
+            <Icon name="bisect" size={14} /> Bisect
+          </h3>
         </div>
         {loading ? (
           <div className="refs-state">Loading…</div>
@@ -122,7 +125,9 @@ export function BisectPanel() {
   return (
     <div className="refs-panel">
       <div className="refs-head">
-        <h3>Bisect</h3>
+        <h3>
+          <Icon name="bisect" size={14} /> Bisect
+        </h3>
         <button
           type="button"
           className="btn row-btn"

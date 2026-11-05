@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useActivityStore, useRefsStore, useRepoStore } from "../store";
+import { useDialog } from "./useDialog";
 import type { Branch, Op, Remote, Tag } from "../types";
 
 export type RefsTab = "branches" | "remotes" | "tags";
@@ -169,11 +170,20 @@ function RenameBranchDialog({
   running: boolean;
 }) {
   const [name, setName] = useState(branch.name);
+  const dialogRef = useDialog(true, onClose, {
+    blocked: () => useActivityStore.getState().running,
+  });
   return (
     <div className="dialog-overlay" role="presentation" onMouseDown={(e) => {
       if (e.target === e.currentTarget && !running) onClose();
     }}>
-      <div className="dialog" role="dialog" aria-modal="true" aria-label="Rename branch">
+      <div
+        className="dialog"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Rename branch"
+      >
         <div className="dialog-head">
           <h2>Rename branch</h2>
         </div>
@@ -181,7 +191,6 @@ function RenameBranchDialog({
           className="dialog-input"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          autoFocus
         />
         <div className="dialog-actions">
           <button type="button" className="btn" disabled={running} onClick={onClose}>
@@ -213,11 +222,20 @@ function CreateBranchDialog({
   running: boolean;
 }) {
   const [name, setName] = useState("");
+  const dialogRef = useDialog(true, onClose, {
+    blocked: () => useActivityStore.getState().running,
+  });
   return (
     <div className="dialog-overlay" role="presentation" onMouseDown={(e) => {
       if (e.target === e.currentTarget && !running) onClose();
     }}>
-      <div className="dialog" role="dialog" aria-modal="true" aria-label="Create branch">
+      <div
+        className="dialog"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Create branch"
+      >
         <div className="dialog-head">
           <h2>Create branch</h2>
         </div>
@@ -229,7 +247,6 @@ function CreateBranchDialog({
           placeholder="branch name"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          autoFocus
         />
         <div className="dialog-actions">
           <button type="button" className="btn" disabled={running} onClick={onClose}>
@@ -318,11 +335,20 @@ function AddRemoteDialog({
 }) {
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
+  const dialogRef = useDialog(true, onClose, {
+    blocked: () => useActivityStore.getState().running,
+  });
   return (
     <div className="dialog-overlay" role="presentation" onMouseDown={(e) => {
       if (e.target === e.currentTarget && !running) onClose();
     }}>
-      <div className="dialog" role="dialog" aria-modal="true" aria-label="Add remote">
+      <div
+        className="dialog"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Add remote"
+      >
         <div className="dialog-head">
           <h2>Add remote</h2>
         </div>
@@ -331,7 +357,6 @@ function AddRemoteDialog({
           placeholder="name (e.g. upstream)"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          autoFocus
         />
         <input
           className="dialog-input"
@@ -440,11 +465,20 @@ function CreateTagDialog({
   const [name, setName] = useState("");
   const [annotated, setAnnotated] = useState(false);
   const [message, setMessage] = useState("");
+  const dialogRef = useDialog(true, onClose, {
+    blocked: () => useActivityStore.getState().running,
+  });
   return (
     <div className="dialog-overlay" role="presentation" onMouseDown={(e) => {
       if (e.target === e.currentTarget && !running) onClose();
     }}>
-      <div className="dialog" role="dialog" aria-modal="true" aria-label="Create tag">
+      <div
+        className="dialog"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Create tag"
+      >
         <div className="dialog-head">
           <h2>Create tag</h2>
         </div>
@@ -456,7 +490,6 @@ function CreateTagDialog({
           placeholder="tag name (e.g. v1.0)"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          autoFocus
         />
         <label className="dialog-check">
           <input

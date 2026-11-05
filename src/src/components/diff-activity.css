@@ -1,0 +1,178 @@
+/* Stage 15: word-level diff highlighting, per-file diffstats, copy affordances,
+   activity-log filter chips. Tokens only — no hex, no px radius a token covers. */
+
+/* ── Word-level highlighting inside a changed line ────────────────────────── */
+.diff-line .wadd,
+.diff-line .wdel {
+  border-radius: var(--radius-1);
+}
+
+.diff-line .wadd {
+  background: var(--success-tint);
+  color: var(--success-ink);
+  /* Heavier than the line tint so the actual edit is the loud part. */
+  box-shadow: 0 0 0 1px var(--success-ink);
+}
+
+.diff-line .wdel {
+  background: var(--error-tint);
+  color: var(--error-ink);
+  box-shadow: 0 0 0 1px var(--error-ink);
+}
+
+/* ── Per-file diffstat (derived from the delivered hunks) ─────────────────── */
+.diffstat {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--muted);
+}
+
+.diffstat-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.diffstat-count .add {
+  color: var(--success-ink);
+}
+
+.diffstat-count .del {
+  color: var(--error-ink);
+}
+
+/* Five equal segments: filled from the left by the added/removed ratio. */
+.diffstat-bar {
+  display: inline-flex;
+  gap: 2px;
+  width: 34px;
+}
+
+.diffstat-seg {
+  flex: 1;
+  height: var(--space-1);
+  border-radius: var(--radius-1);
+  background: var(--border-strong);
+}
+
+.diffstat-seg.add {
+  background: var(--success-ink);
+}
+
+.diffstat-seg.del {
+  background: var(--error-ink);
+}
+
+/* ── Copy affordances ────────────────────────────────────────────────────── */
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0 var(--space-2);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2);
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+
+.copy-btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+  color: var(--fg);
+}
+
+.copy-btn.copied {
+  color: var(--success-ink);
+  border-color: var(--success-ink);
+}
+
+/* ── Activity-log filter chips + risk signalling ─────────────────────────── */
+.log-filters {
+  display: inline-flex;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.log-chip {
+  min-height: 26px;
+  padding: 0 var(--space-3);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--muted);
+  font-size: var(--text-2xs);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+
+.log-chip:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+  color: var(--fg);
+}
+
+.log-chip[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+.log-chip.risk-failed[aria-pressed="true"],
+.log-chip.risk-dangerous[aria-pressed="true"] {
+  background: var(--error-tint);
+  border-color: var(--error);
+  color: var(--error-ink);
+}
+
+.log-chip.risk-mutating[aria-pressed="true"] {
+  background: var(--warning-tint);
+  border-color: var(--warning);
+  color: var(--warning-ink);
+}
+
+.log-row.risk-mutating {
+  border-left: 2px solid var(--warning-tint);
+}
+
+.log-row.risk-dangerous {
+  border-left: 2px solid var(--warning);
+}
+
+.log-row.risk-dangerous.fail {
+  border-left-color: var(--error);
+}
+
+.log-copy {
+  flex: none;
+  min-width: 26px;
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-2);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+
+.log-copy:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+  color: var(--fg);
+}
+
+.log-copy.copied {
+  color: var(--success-ink);
+}

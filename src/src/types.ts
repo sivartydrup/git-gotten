@@ -665,22 +665,35 @@ export const BRANCH_PALETTE_LIGHT: readonly string[] = [
   "#2d7060", // 19 sea green
 ];
 
+/** Lines a commit adds/removes against its first parent (Rust `CommitStat`). */
+export interface CommitStat {
+  hash: string;
+  insertions: number;
+  deletions: number;
+}
+
 /** Everything `renderGraph` paints with, resolved for the active theme. */
 export interface GraphColors {
   fg: string;
   muted: string;
   accent: string;
   error: string;
+  /** Added-line ink (used by the diffstat column). */
+  success: string;
+  /** Ink that stays legible on top of a `success`-filled chip. */
+  successInk: string;
   /** The lane palette for the active theme (`color` indices wrap over it). */
   palette: readonly string[];
 }
 
 /** The dark default — also the fallback for canvas tests that pass no theme. */
 export const DARK_GRAPH_COLORS: GraphColors = {
-  fg: "#e6e8ee",
-  muted: "#8b90a0",
-  accent: "#6ea8fe",
-  error: "#e05252",
+  fg: "#e9ecf4",
+  muted: "#939db2",
+  accent: "#6aa8ff",
+  error: "#f4746f",
+  success: "#6fe0a5",
+  successInk: "#0b1f12",
   palette: BRANCH_PALETTE,
 };
 
@@ -694,10 +707,12 @@ export function resolveGraphColors(): GraphColors {
   const token = (name: string, fallback: string) =>
     cs.getPropertyValue(name).trim() || fallback;
   return {
-    fg: token("--fg", "#1c2027"),
-    muted: token("--muted", "#6b7280"),
-    accent: token("--accent", "#2f6fd0"),
-    error: token("--error", "#c0392b"),
+    fg: token("--fg", "#151a22"),
+    muted: token("--muted", "#5b6472"),
+    accent: token("--accent", "#1f5fc9"),
+    error: token("--error", "#b3271d"),
+    success: token("--success", "#2e7d4f"),
+    successInk: token("--success-on", "#ffffff"),
     palette: BRANCH_PALETTE_LIGHT,
   };
 }
@@ -714,4 +729,23 @@ export function formatDate(unixSeconds: number): string {
   const hh = String(d.getHours()).padStart(2, "0");
   const mm = String(d.getMinutes()).padStart(2, "0");
   return `${months[d.getMonth()]} ${d.getDate()} ${hh}:${mm}`;
+}
+
+/**
+ * Unix seconds → the shortest label that still tells you when:
+ * "just now", "14m", "3h", "5d", "2w", then "Nov 5" (same year) or "Nov 5 2025".
+ */
+export function relativeTime(unixSeconds: number, now: number = Date.now()): string {
+  const delta = Math.max(0, Math.floor((now - unixSeconds * 1000) / 1000));
+  if (delta < 45) return "just now";
+  if (delta < 3600) return `${Math.round(delta / 60)}m`;
+  if (delta < 86400) return `${Math.round(delta / 3600)}h`;
+  if (delta < 86400 * 7) return `${Math.round(delta / 86400)}d`;
+  if (delta < 86400 * 30) return `${Math.round(delta / 86400 / 7)}w`;
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const when = new Date(unixSeconds * 1000);
+  const sameYear = when.getFullYear() === new Date(now).getFullYear();
+  return sameYear
+    ? `${months[when.getMonth()]} ${when.getDate()}`
+    : `${months[when.getMonth()]} ${when.getDate()} ${when.getFullYear()}`;
 }

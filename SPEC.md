@@ -250,7 +250,13 @@ commits have ≥2 parents and render as merge joins.
 - **Zoom** (wheel/pinch) and **pan** (drag); "follow HEAD" and "reset view" controls.
 - Node = commit; label = subject (truncated) + author + relative date. Hover → tooltip
   (hash, author, date). Current branch's tip and HEAD emphasized; detached HEAD flagged.
-- **Minimap** (optional, later) for orientation in large histories.
+  **Minimap** for orientation in large histories.
+- Each row carries the commit's **diffstat** (`+n −n`): lines added and removed against its
+  **first parent** only. No rename detection — a rename reports its full deletion plus its full
+  addition. A file that is binary on either side (a NUL byte in the first 8000 bytes of either
+  blob) and a gitlink contribute `0`/`0`, exactly where git prints `-`; a mode-only change
+  contributes `0`/`0`; a merge is counted against its first parent, so it shows numbers where
+  `git show` shows nothing. Commit dots grow with that total on a bounded log ramp.
 
 **Interaction:**
 - **Click** node → select → **inspect drawer** (full message, author, date, stat, diffs,

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { useActivityStore, useGraphStore, useRepoStore } from "../store";
 import type { Op, RefLabel } from "../types";
+import { Icon } from "./Icons";
 
 /** Format unix seconds as a readable local timestamp. */
 function fmt(unixSeconds: number): string {
@@ -64,11 +65,12 @@ export function InspectDrawer() {
     body = (
       <>
         <header className="drawer-head">
+          <Icon name="commit" size={14} />
           <code className="drawer-hash" title={detail.hash}>
             {detail.hash.slice(0, 12)}
           </code>
-          <button type="button" className="btn" onClick={closeDetail}>
-            Close
+          <button type="button" className="btn" aria-label="Close" onClick={closeDetail}>
+            <Icon name="close" size={13} /> <span className="btn-label">Close</span>
           </button>
         </header>
         <h2 className="drawer-subject">{detail.subject}</h2>

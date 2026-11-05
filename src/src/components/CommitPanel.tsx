@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { planOp } from "../api";
-import { useActivityStore, useRepoStore } from "../store";
-import type { Author, Op, RepoId } from "../types";
+import { EMPTY_DRAFT, useActivityStore, useCommitDraftStore, useRepoStore } from "../store";
+import type { Op, RepoId } from "../types";
 
 /**
  * Inline command hint (SPEC §9 "inline hints"): the exact git command an action
@@ -69,30 +69,22 @@ export function CommitPanel() {
   const hasStaged = activeStatus?.changes.some((c) => c.staged) ?? false;
 
   // ── commit ────────────────────────────────────────────────────────────────
-  const [message, setMessage] = useState("");
-  const [amend, setAmend] = useState(false);
-  const [editAuthor, setEditAuthor] = useState(false);
-  const [authorName, setAuthorName] = useState("");
-  const [authorEmail, setAuthorEmail] = useState("");
-  const [coAuthors, setCoAuthors] = useState<string[]>([]);
-  const [coAuthorDraft, setCoAuthorDraft] = useState("");
+  const repoKey = activeId ?? "";
+  const draft = useCommitDraftStore((s) => s.drafts[repoKey] ?? EMPTY_DRAFT);
+  const patchDraft = useCommitDraftStore((s) => s.patch);
+  const { message, amend, editAuthor, authorName, authorEmail, coAuthors, coAuthorDraft } =
+    draft;
+  const setMessage = (next: string) => patchDraft(repoKey, { message: next });
+  const setAmend = (next: boolean) => patchDraft(repoKey, { amend: next });
+  const setEditAuthor = (next: boolean) => patchDraft(repoKey, { editAuthor: next });
+  const setAuthorName = (next: string) => patchDraft(repoKey, { authorName: next });
+  const setAuthorEmail = (next: string) => patchDraft(repoKey, { authorEmail: next });
+  const setCoAuthors = (next: string[]) => patchDraft(repoKey, { coAuthors: next });
+  const setCoAuthorDraft = (next: string) => patchDraft(repoKey, { coAuthorDraft: next });
 
-  const author: Author | null =
-    editAuthor && (authorName.trim() || authorEmail.trim())
-      ? { name: authorName.trim(), email: authorEmail.trim() }
-      : null;
-
-  const commitOp: Op | null = message.trim()
-    ? {
-        kind: "commit",
-        message: message.trim(),
-        amend,
-        // Omit the optional fields when unset: the core's `#[serde(default)]`
-        // fills them, and the default op stays a minimal `{kind,message,amend}`.
-        ...(author ? { author } : {}),
-        ...(coAuthors.length > 0 ? { co_authors: coAuthors } : {}),
-      }
-    : null;
+  // The op is built by the shared draft store so the command palette can offer
+  // the very same commit the panel would run.
+  const commitOp = activeId ? useCommitDraftStore.getState().commitOp(activeId) : null;
   const commitHint = usePlanHint(activeId, commitOp);
   // A plain commit needs something staged; an amend rewrites HEAD even if the
   // index is clean (it just re-message / re-records the current tree state).
@@ -133,7 +125,7 @@ export function CommitPanel() {
               key={t}
               type="button"
               className="chip"
-              onClick={() => setMessage((m) => withType(m, t))}
+              onClick={() => setMessage(withType(message, t))}
             >
               {t}:
             </button>
@@ -211,9 +203,7 @@ export function CommitPanel() {
                   type="button"
                   className="chip-x"
                   aria-label={`Remove co-author ${c}`}
-                  onClick={() =>
-                    setCoAuthors((prev) => prev.filter((_, j) => j !== i))
-                  }
+                  onClick={() => setCoAuthors(coAuthors.filter((_, j) => j !== i))}
                 >
                   ×
                 </button>
@@ -268,7 +258,7 @@ export function CommitPanel() {
     if (!name) {
       return;
     }
-    setCoAuthors((prev) => (prev.includes(name) ? prev : [...prev, name]));
+    setCoAuthors(coAuthors.includes(name) ? coAuthors : [...coAuthors, name]);
     setCoAuthorDraft("");
   }
 }

@@ -1,4 +1,5 @@
 import { useActivityStore, useConflictStore, useRepoStore } from "../store";
+import { useDialog } from "./useDialog";
 import type { Status } from "../types";
 
 /**
@@ -14,6 +15,15 @@ export function ConflictBanner() {
   const { activeId, status } = useRepoStore();
   const { files, total } = useConflictStore();
   const { requestPreview, busy, running } = useActivityStore();
+  // Escape aborts the in-progress operation — through the preview flow, like
+  // every other action here — when focus is on the banner and nothing is running.
+  const bannerRef = useDialog(true, () => {
+    if (activeId) {
+      requestPreview(activeId, { kind: "abort_op" });
+    }
+  }, {
+    blocked: () => useActivityStore.getState().running || useActivityStore.getState().busy,
+  });
 
   const activeStatus: Status | null = activeId ? (status[activeId] ?? null) : null;
   if (!activeStatus) {
@@ -39,7 +49,7 @@ export function ConflictBanner() {
   const resolved = Math.max(0, total - unmerged);
 
   return (
-    <div className="conflict-banner" role="status">
+    <div className="conflict-banner" role="status" ref={bannerRef}>
       <span className="conflict-banner-label">
         {label} in progress —{" "}
         {unmerged === 0 ? (

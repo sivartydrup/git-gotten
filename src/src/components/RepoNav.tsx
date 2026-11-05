@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   childrenOf,
   moveNode,
@@ -9,6 +9,7 @@ import {
   useWorkspaceStore,
 } from "../store";
 import { ROOT_GROUP_ID, type ChildNode, type RepoMeta } from "../types";
+import { Icon } from "./Icons";
 
 /**
  * Left navigation (SPEC §7): the workspace group tree — nested groups, pinned
@@ -84,6 +85,24 @@ export function RepoNav() {
     void commitTree(moveNode(tree, node, targetParent, index));
   }
 
+  // Below 980px the nav becomes a narrow rail: names ellipsize and the
+  // secondary labels collapse, but every control keeps its accessible name.
+  const [compact, setCompact] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(max-width: 980px)").matches,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return;
+    }
+    const mq = window.matchMedia("(max-width: 980px)");
+    const onChange = (e: MediaQueryListEvent) => setCompact(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
   function repoRow(m: RepoMeta, parent: string, depth: number) {
     const pinned = tree.pinned.includes(m.id);
     return (
@@ -116,7 +135,7 @@ export function RepoNav() {
           aria-label={pinned ? "Unpin repo" : "Pin repo"}
           onClick={() => void pin(m.id, !pinned)}
         >
-          {pinned ? "★" : "☆"}
+          <Icon name="star" size={13} />
         </button>
         <button
           className="icon-btn"
@@ -125,7 +144,7 @@ export function RepoNav() {
           title="Remove from workspace (the repo stays on disk)"
           onClick={() => void removeRepo(m.id)}
         >
-          ✕
+          <Icon name="close" size={13} />
         </button>
       </div>
     );
@@ -156,7 +175,7 @@ export function RepoNav() {
             aria-label={collapsed[id] ? "Expand group" : "Collapse group"}
             onClick={() => setCollapsed((c) => ({ ...c, [id]: !c[id] }))}
           >
-            {collapsed[id] ? "▸" : "▾"}
+            <Icon name={collapsed[id] ? "chevronRight" : "chevronDown"} size={13} />
           </button>
           {editing === id ? (
             <input
@@ -179,10 +198,10 @@ export function RepoNav() {
             <span className="group-name">{group.name}</span>
           )}
           <button className="icon-btn" data-act="rename-group" aria-label="Rename group" onClick={() => setEditing(id)}>
-            ✎
+            <Icon name="edit" size={13} />
           </button>
           <button className="icon-btn" data-act="delete-group" aria-label="Delete group" onClick={() => void deleteGroup(id)}>
-            ✕
+            <Icon name="trash" size={13} />
           </button>
         </div>
         {!collapsed[id] && kids.map((c) => (c.kind === "group" ? groupBlock(c.id, depth + 1) : repoRow(metaOf.get(c.id)!, id, depth + 1)))}
@@ -196,7 +215,7 @@ export function RepoNav() {
   ];
 
   return (
-    <nav className="repo-nav">
+    <nav className="repo-nav" data-compact={compact ? "true" : undefined}>
       <form className="open-form" onSubmit={(e) => void submit(e)}>
         <input
           className="open-input"
@@ -227,14 +246,14 @@ export function RepoNav() {
           onChange={(e) => setFilter(e.target.value)}
         />
         <button className="icon-btn" aria-label="Add group" onClick={() => void addGroup("New group", null)}>
-          + group
+          <Icon name="plus" size={14} /> <span className="btn-label">group</span>
         </button>
         <button
           className={`icon-btn nav-dashboard${dashboard ? " active" : ""}`}
           aria-label="All Repositories"
           onClick={() => setDashboard(!dashboard)}
         >
-          All Repositories
+          <Icon name="dashboard" size={14} /> <span className="btn-label">All Repositories</span>
         </button>
       </div>
 

@@ -11,6 +11,7 @@ import {
 } from "../store";
 import type { Op } from "../types";
 import { type ThemeMode } from "../store";
+import { Icon } from "./Icons";
 
 /**
  * Top bar (SPEC §7): product brand + build identity, and — when a repository
@@ -72,6 +73,7 @@ export function TopBar() {
         <input
           className="topbar-search"
           placeholder="Filter graph: subject, author, branch…"
+          aria-label="Filter the commit graph"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -112,7 +114,8 @@ export function TopBar() {
                 aria-expanded={wtOpen}
                 onClick={() => setWtOpen((o) => !o)}
               >
-                Worktree: {baseName(activeId)}
+                <Icon name="worktree" size={14} />{" "}
+                <span className="btn-label">Worktree: {baseName(activeId)}</span>
               </button>
               {wtOpen && (
                 <div className="merge-picker" role="menu">
@@ -144,22 +147,28 @@ export function TopBar() {
                       request({ kind: "remote_fetch", remote: fetchRemote!, refspec: null })
                     }
                   >
-                    Fetch
+                    <Icon name="fetch" size={14} /> <span className="btn-label">Fetch</span>
                   </button>
                   <button
                     type="button"
                     disabled={disabled || !hasUpstream}
                     onClick={() => request({ kind: "pull", rebase: false })}
                   >
-                    Pull{activeStatus.behind > 0 ? ` ↓${activeStatus.behind}` : ""}
+                    <Icon name="pull" size={14} />{" "}
+                    <span className="btn-label">
+                      Pull{activeStatus.behind > 0 ? ` ↓${activeStatus.behind}` : ""}
+                    </span>
                   </button>
                   <button
                     type="button"
                     disabled={disabled || !hasUpstream}
                     onClick={() => request({ kind: "pull", rebase: true })}
                   >
-                    Pull (rebase)
-                    {activeStatus.behind > 0 ? ` ↓${activeStatus.behind}` : ""}
+                    <Icon name="pullRebase" size={14} />{" "}
+                    <span className="btn-label">
+                      Pull (rebase)
+                      {activeStatus.behind > 0 ? ` ↓${activeStatus.behind}` : ""}
+                    </span>
                   </button>
                   <button
                     type="button"
@@ -174,7 +183,10 @@ export function TopBar() {
                       })
                     }
                   >
-                    Push{activeStatus.ahead > 0 ? ` ↑${activeStatus.ahead}` : ""}
+                    <Icon name="push" size={14} />{" "}
+                    <span className="btn-label">
+                      Push{activeStatus.ahead > 0 ? ` ↑${activeStatus.ahead}` : ""}
+                    </span>
                   </button>
                 </span>
                 {activeStatus.branch && (
@@ -191,7 +203,7 @@ export function TopBar() {
                         }
                       }}
                     >
-                      Merge
+                      <Icon name="merge" size={14} /> <span className="btn-label">Merge</span>
                     </button>
                     {mergeOpen && (
                       <div className="merge-picker" role="menu">
@@ -216,8 +228,12 @@ export function TopBar() {
                   </span>
                 )}
                 {activeStatus.branch && (
-                  <button type="button" disabled={disabled} onClick={showRebase}>
-                    Rebase…
+                  <button
+                    type="button"
+                    disabled={disabled}
+                    onClick={showRebase}
+                  >
+                    <Icon name="rebase" size={14} /> <span className="btn-label">Rebase…</span>
                   </button>
                 )}
               </span>

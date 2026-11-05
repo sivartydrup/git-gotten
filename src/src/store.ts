@@ -8,6 +8,7 @@ import {
   installUpdate,
   loadBranches,
   loadCommit,
+  loadCommitStats,
   loadConflict,
   loadDiff,
   loadGraph,
@@ -39,11 +40,13 @@ import {
   type Workspace,
 } from "./types";
 import type {
+  Author,
   BisectState,
   Branch,
   BuildInfo,
   CommandPlan,
   CommitDetail,
+  CommitStat,
   ConflictFile,
   FileDiff,
   Graph,
@@ -421,6 +424,12 @@ interface GraphState {
   detailLoading: boolean;
   /** Last `loadCommit` failure. */
   detailError: string | null;
+  /** Commit line counts for the graph's diff weighting, keyed by commit oid. */
+  commitStats: Record<string, CommitStat> | null;
+  /** The repository `commitStats` belongs to; a repo switch drops the cache. */
+  statsRepo: RepoId | null;
+  /** Fetch the line counts of `hashes` that are not cached yet (capped, deduplicated). */
+  requestCommitStats: (repo: RepoId, hashes: string[]) => Promise<void>;
   /** Load the graph of `repo`, restoring the selection stored for it (SPEC §10.1, §16). */
   load: (repo: RepoId) => Promise<void>;
   /** Select a node (and open the inspect drawer for it), or clear the selection. The
@@ -465,6 +474,8 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   detail: null,
   detailLoading: false,
   detailError: null,
+  commitStats: null,
+  statsRepo: null,
 
   load: async (repo) => {
     set({
@@ -473,6 +484,8 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       selected: null,
       detail: null,
       detailError: null,
+      commitStats: null,
+      statsRepo: null,
     });
     try {
       const [graph, selection] = await Promise.all([
@@ -495,6 +508,46 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         loading: false,
         error: e instanceof Error ? e.message : String(e),
       });
+    }
+  },
+
+  requestCommitStats: async (repo, hashes) => {
+    // shortcut: cache is per-repo and never evicted; a repo switch replaces it.
+    const sameRepo = get().statsRepo === repo;
+    const cached = sameRepo ? get().commitStats ?? {} : {};
+    const fresh = hashes.filter((hash) => !(hash in cached));
+    if (fresh.length === 0) {
+      if (!sameRepo) {
+        set({ commitStats: cached, statsRepo: repo });
+      }
+      return;
+    }
+    if (!sameRepo) {
+      set({ commitStats: cached, statsRepo: repo });
+    }
+    // The Rust command caps at 200 hashes per call; batch so a wide viewport
+    // costs the fewest round-trips.
+    for (let offset = 0; offset < fresh.length; offset += 200) {
+      const batch = fresh.slice(offset, offset + 200);
+      try {
+        const stats = await loadCommitStats(repo, batch);
+        if (get().statsRepo !== repo) {
+          return; // the cache now belongs to another repository
+        }
+        const next = { ...get().commitStats };
+        // Hashes the repository no longer has are absent from the result; record
+        // them as zero so the viewport does not refetch them on the next pan.
+        for (const hash of batch) {
+          next[hash] = stats.find((stat) => stat.hash === hash) ?? {
+            hash,
+            insertions: 0,
+            deletions: 0,
+          };
+        }
+        set({ commitStats: next });
+      } catch {
+        return; // stats are decoration: a failure leaves the rows unweighted
+      }
     }
   },
 
@@ -1263,4 +1316,72 @@ export const useUpdaterStore = create<UpdaterState>((set, get) => ({
   },
 
   dismiss: () => set({ available: false, dismissed: true }),
+}));
+
+/** The `commit` variant of `Op` — what a draft message describes. */
+type CommitOp = Extract<Op, { kind: "commit" }>;
+
+/** One repository's commit draft (SPEC §10.2). */
+export interface CommitDraft {
+  message: string;
+  amend: boolean;
+  editAuthor: boolean;
+  authorName: string;
+  authorEmail: string;
+  coAuthors: string[];
+  coAuthorDraft: string;
+}
+
+export const EMPTY_DRAFT: CommitDraft = {
+  message: "",
+  amend: false,
+  editAuthor: false,
+  authorName: "",
+  authorEmail: "",
+  coAuthors: [],
+  coAuthorDraft: "",
+};
+
+/**
+ * Commit drafts live in the store, one per repository, not inside the commit
+ * panel: the command palette must offer *the same* commit the panel would run
+ * (message, amend flag, author override, co-authors), and switching repository
+ * must never carry a half-written message into another repo.
+ */
+interface CommitDraftState {
+  drafts: Record<RepoId, CommitDraft>;
+  /** Stable while unchanged, so subscribers re-render only when it changes. */
+  draft: (repo: RepoId) => CommitDraft;
+  patch: (repo: RepoId, changes: Partial<CommitDraft>) => void;
+  /** The exact `commit` op this repo's draft describes, or `null` with no message. */
+  commitOp: (repo: RepoId) => CommitOp | null;
+}
+
+export const useCommitDraftStore = create<CommitDraftState>((set, get) => ({
+  drafts: {},
+  draft: (repo) => get().drafts[repo] ?? EMPTY_DRAFT,
+  patch: (repo, changes) =>
+    set((s) => ({
+      drafts: { ...s.drafts, [repo]: { ...(s.drafts[repo] ?? EMPTY_DRAFT), ...changes } },
+    })),
+  commitOp: (repo) => {
+    const d = get().draft(repo);
+    const message = d.message.trim();
+    if (!message) {
+      return null;
+    }
+    const author: Author | null =
+      d.editAuthor && (d.authorName.trim() || d.authorEmail.trim())
+        ? { name: d.authorName.trim(), email: d.authorEmail.trim() }
+        : null;
+    // Omit the optional fields when unset: the core's `#[serde(default)]` fills
+    // them, so the default op stays a minimal `{kind, message, amend}`.
+    return {
+      kind: "commit",
+      message,
+      amend: d.amend,
+      ...(author ? { author } : {}),
+      ...(d.coAuthors.length > 0 ? { co_authors: d.coAuthors } : {}),
+    };
+  },
 }));

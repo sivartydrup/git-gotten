@@ -88,6 +88,34 @@ machine on that date; the README carries the summary. Newest entries last.
 - Not verified at that time: the Install path end to end (download → signature check →
   install → relaunch) needs a real signed artifact. Windows MSI verification is below.
 
+## macOS 25.6, arm64 — 2026-11-06 (stage 15)
+
+- `cargo test --workspace` — 399 passed (1 ignored), including 9 new tests in
+  `crates/gitcore/tests/commit_stats.rs`. `pnpm test` — 282 passed (23 files); `tsc --noEmit`
+  clean. `pnpm build` — TypeScript + Vite production build passes.
+- The per-commit diffstat is pinned against the real `git` CLI: `git show -M --numstat` is the
+  expected value for every fixture commit except the rename, which is the documented divergence
+  (this read does no rename detection, so the rename reports 4 added / 2 removed where git reports
+  0/0 for the moved file). A merge counts against its first parent — 5 added / 0 removed for the
+  fixture, where `git show` prints nothing at all. A file whose blob carries a NUL in its first
+  8000 bytes contributes 0/0, as git's `-` columns do; a mode-only commit contributes 0/0; 260
+  requested hashes are truncated to the 200 cap, keeping request order; the memo answers a repeat
+  request without re-diffing and is refilled by a new commit.
+- `pnpm tauri:build` with no signing environment: exit 0, `GitGotten.app` (7.73 MiB) and
+  `GitGotten_0.1.0_aarch64.dmg` (3.98 MiB) under `target/release/bundle`.
+- Headless visual pass on the production bundle driven against the stage fixtures
+  (`cargo test -p git-gotten-app --test docs_fixtures -- --ignored`) at 1720×1000, 1440×900 and
+  900×560: graph canvas 467 / 349 / 107 px tall with the `.graph` floor holding 140 px at short
+  viewports, the repository rail collapsing to 96 px, the inspect drawer becoming an overlay below
+  1120 px, and no console errors. `docs/assets/graph.webp`, `staging.webp`, `palette.webp` and
+  `app-dark.webp` were re-shot from that bundle.
+- That pass found a lane-legend bug: in a repository where `main` has diverged from `origin/main`,
+  both chips read `origin/main`, because a lane took the name of the first *named* line routed
+  through it. A lane now takes the name of the line whose first segment is drawn in it
+  (`graphLegend: a lane takes the name of the line at home there, not of a visitor`).
+- The docs fixture generator now also dumps `load_commit_stats`, so the screenshot harness renders
+  the diffstat column with real Rust numbers instead of falling back to an unhandled command.
+
 ## Windows 11, x64 — 2026-10-27
 
 - `cargo test --workspace` — 267 passed.

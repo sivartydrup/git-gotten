@@ -22,6 +22,9 @@
 //! Stage 10 adds the worktree read ([`Repo::worktrees`]) and the per-worktree
 //! checkout markers it pins onto [`Repo::graph`] (SPEC §10.7); the add/remove
 //! planners live in [`plan`].
+//! Stage 15 adds the per-commit diffstat read ([`Repo::commit_stats`], the graph's
+//! inline +/- numbers): totals against each commit's **first parent**, cached per
+//! commit oid and dropped whenever a commit is created.
 //! Stage 11 adds the stash / submodule / bisect reads ([`Repo::stashes`],
 //! [`Repo::submodules`], [`Repo::bisect_state`]), the submodule badge on
 //! [`FileChange`], and the planners in [`plan`] (SPEC §10.6, §10.8, §10.9).
@@ -31,6 +34,7 @@
 //! real git binary, serialized per repo by [`OpQueue`]).
 
 mod bisect;
+mod commit_stats;
 mod conflict;
 mod diff;
 mod exec;
@@ -48,14 +52,15 @@ pub use exec::{GitExecutor, OpQueue};
 /// Shared read-model types, re-exported so `gitcore::Status` etc. read naturally.
 pub use git_gotten_protocol::{
     Author, BisectState, BisectVerdict, Branch, ChangeKind, CommandPlan, CommitDetail,
-    ConflictFile, FileChange, FileDiff, FileStat, GitStep, Graph, Hunk, LastCommit, Op,
+    ConflictFile, CommitStat, FileChange, FileDiff, FileStat, GitStep, Graph, Hunk, LastCommit,
+    Op,
     OpResult, Preview, RebaseCommit, RefLabel, Remote, RepoId, RepoMeta, Risk, Stash, Status,
     Submodule, Tag, Worktree,
 };
 pub use show::{numstat, patch};
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -247,7 +252,21 @@ pub struct Repo {
     /// re-opened `gix` handle reads current refs, and the fingerprint decides whether
     /// the cached layout is still the answer.
     graph_cache: RefCell<Option<(String, Graph)>>,
+
+    /// Stage 15 per-commit diffstat cache (SPEC §10.1's caching rule, applied to the
+    /// `load_commit_stats` read): commit oid → totals. It is dropped whole whenever a
+    /// commit is created, which [`Repo::commit_stats`] detects from the HEAD target —
+    /// commits are the only thing that makes a commit's own diffstat stop being the
+    /// answer, and a hash an app never asked for can never evict an entry.
+    commit_stats: RefCell<HashMap<ObjectId, CommitStat>>,
+    /// The HEAD target the [`Repo::commit_stats`] memo was built under; see there.
+    head_at_cache: RefCell<Option<ObjectId>>,
 }
+
+/// How many hashes [`Repo::commit_stats`] will diff in one call; a longer request is
+/// truncated to this. One graph viewport is far below it, and it bounds the cost of a
+/// single IPC round-trip (SPEC §10.1).
+pub const COMMIT_STATS_MAX_HASHES: usize = 200;
 
 /// Canonical absolute form of a git-dir path, as the queue key.
 fn canonical_key(dir: &Path) -> String {
@@ -289,6 +308,8 @@ impl Repo {
             queue_key,
             inner,
             graph_cache: RefCell::new(None),
+            commit_stats: RefCell::new(HashMap::new()),
+            head_at_cache: RefCell::new(None),
         })
     }
 
@@ -584,6 +605,79 @@ impl Repo {
             }
         }
         Ok(out)
+    }
+
+    /// Lines each commit adds and removes (IPC `load_commit_stats`, the graph's
+    /// inline diffstat): the totals of the commit's tree against its **first parent**
+    /// — a root commit against the empty tree, a merge commit against its first
+    /// parent only (unlike [`Self::commit_detail`], which reports no diff for a merge).
+    /// Binary or otherwise undiffable files contribute `0`/`0`.
+    ///
+    /// Contract the web relies on (SPEC §10.1): `hashes` is capped at
+    /// [`COMMIT_STATS_MAX_HASHES`] — longer requests are truncated, not rejected —
+    /// results come back **in request order**, and a hash the repository does not have
+    /// is simply absent rather than an error (a graph row can outlive its commit).
+    ///
+    /// Memoized per commit oid, so the debounced viewport requests the graph sends are
+    /// paid for once per commit (SPEC §10.1's caching rule); the memo is dropped when a
+    /// new commit appears, since that is the only event that invalidates a diffstat.
+    ///
+    /// `hashes` are hex commit ids; a request may name any commit in the repository, not
+    /// only the visible window.
+    pub fn commit_stats(&self, hashes: &[&str]) -> Vec<CommitStat> {
+        let hashes = if hashes.len() > COMMIT_STATS_MAX_HASHES {
+            &hashes[..COMMIT_STATS_MAX_HASHES]
+        } else {
+            hashes
+        };
+        // A commit is created only by an op that moves a ref; watching HEAD's target
+        // catches it without a subprocess on every read (same reasoning as the
+        // worktree markers in [`Self::graph_fingerprint`]).
+        let head = self.inner.head().ok().and_then(|h| h.id().map(|id| id.detach()));
+        if self.head_at_cache.borrow().as_ref() != head.as_ref() {
+            self.commit_stats.borrow_mut().clear();
+            *self.head_at_cache.borrow_mut() = head;
+        }
+
+        let mut cache = self.commit_stats.borrow_mut();
+        let mut out = Vec::with_capacity(hashes.len());
+        for hash in hashes {
+            let Ok(oid) = hash.trim().parse::<ObjectId>() else {
+                continue; // malformed or unknown: absent, per the contract
+            };
+            let stat = match cache.get(&oid) {
+                Some(stat) => stat.clone(),
+                None => {
+                    let Ok(commit) = self.inner.find_commit(oid) else {
+                        continue;
+                    };
+                    // First parent; a root commit (or a shallow clone whose parent
+                    // object is absent) diffs against the empty tree. The parent id is a
+                    // *commit*, so it has to be resolved to its tree — treating it as a
+                    // tree object yields nothing and silently diffs against the empty tree.
+                    let parent_tree = commit
+                        .parent_ids()
+                        .next()
+                        .map(|id| id.detach())
+                        .and_then(|id| self.inner.find_commit(id).ok())
+                        .and_then(|parent| parent.tree().ok());
+                    let stats = commit_stats::tree_stats(
+                        &self.inner,
+                        parent_tree.as_ref(),
+                        commit.tree().ok().as_ref(),
+                    );
+                    let stat = CommitStat {
+                        hash: oid.to_hex().to_string(),
+                        insertions: stats.insertions,
+                        deletions: stats.deletions,
+                    };
+                    cache.insert(oid, stat.clone());
+                    stat
+                }
+            };
+            out.push(stat);
+        }
+        out
     }
 
     /// Full details of one commit (IPC `load_commit`, the inspect drawer, SPEC §10.1):

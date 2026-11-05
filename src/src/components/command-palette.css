@@ -1,0 +1,215 @@
+/* Command palette (SPEC §9, stage 15). Tokens only; WebKit floor macOS 12 —
+   no color-mix(), :is(), :where(). */
+
+.palette-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-palette);
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 12vh 16px 16px;
+}
+
+.palette {
+  width: 100%;
+  max-width: 640px;
+  max-height: 62vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-3);
+  box-shadow: var(--shadow-3);
+  color: var(--fg);
+  animation: gg-rise-in var(--dur-2) var(--ease);
+}
+
+/* Filter row: a 28px control, per the app's control scale. */
+.palette-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 28px;
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.palette-input {
+  flex: 1;
+  min-height: 28px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-1);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  padding: 0 var(--space-2);
+}
+
+.palette-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--ring-soft);
+}
+
+.palette-count {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--muted);
+}
+
+.palette-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-1) 0 var(--space-2);
+  overflow-y: auto;
+}
+
+.palette-group {
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  font-size: var(--text-2xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.palette-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 28px;
+  padding: var(--space-1) var(--space-3);
+  background: none;
+  border: none;
+  border-left: 2px solid transparent;
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.palette-row:hover {
+  background: var(--row-hover);
+}
+
+.palette-row.active {
+  background: var(--row-selected);
+  border-left-color: var(--accent);
+}
+
+.palette-row:focus-visible {
+  outline: none;
+  background: var(--row-hover);
+  box-shadow: var(--ring-soft);
+}
+
+.palette-row svg {
+  color: var(--muted);
+  flex: none;
+}
+
+.palette-row.active svg {
+  color: var(--accent);
+}
+
+.palette-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The exact Rust-compiled command, right-aligned. */
+.palette-cmd,
+.palette-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--fg-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.palette-meta {
+  color: var(--muted);
+}
+
+/* Risk badges reuse the preview dialog's `.badge.risk-*` classes. */
+.palette-row .badge.risk {
+  flex: none;
+  margin-left: var(--space-2);
+}
+
+.palette-empty {
+  padding: var(--space-5) var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.palette-empty code {
+  font-family: var(--font-mono);
+  color: var(--fg-soft);
+}
+
+.palette-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: var(--text-2xs);
+  color: var(--muted);
+}
+
+.palette-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.palette-hint kbd {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--fg-soft);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-1);
+  padding: 0 4px;
+  min-height: 18px;
+}
+
+/* The visually-hidden op announcement in App.tsx (aria-live, never visual). */
+.gg-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 700px) {
+  .palette {
+    max-height: 72vh;
+  }
+
+  .palette-cmd {
+    display: none;
+  }
+}

@@ -53,6 +53,8 @@
 //! Stage 12 adds the workspace shapes (SPEC §7, §11): [`Workspace`], [`Group`],
 //! [`ChildNode`], the `Status.last_commit` field ([`LastCommit`]), and the startup
 //! `workspace_repos` payload [`WorkspaceRepo`].
+//! Stage 15 adds the graph's per-commit diffstat read (IPC `load_commit_stats`):
+//! [`CommitStat`].
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -988,6 +990,24 @@ pub struct FileStat {
     pub deletions: u32,
     /// `true` when either side is a binary file (no text counts).
     pub binary: bool,
+}
+
+/// Total lines a commit adds and removes **against its first parent** (IPC
+/// `load_commit_stats`, the graph's inline diffstat).
+///
+/// Deliberately separate from [`FileStat`]: `git show` reports no diff for a merge
+/// commit (see [`CommitDetail`]), so a merge's stat is empty there — while the graph
+/// needs a number for every row. A merge is therefore counted against its first
+/// parent only, a root commit against the empty tree, and binary/undiffable files
+/// contribute `0`/`0`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct CommitStat {
+    /// The commit this stat belongs to, as a hex string — the caller's key.
+    pub hash: String,
+    /// Lines added against the first parent.
+    pub insertions: i64,
+    /// Lines removed against the first parent.
+    pub deletions: i64,
 }
 
 /// One hunk of a unified diff (SPEC §10.2): a single `@@`-delimited block of
@@ -2133,6 +2153,27 @@ mod tests {
         assert!(json.contains(r#""is_head":true"#));
         let back: CommitDetail = serde_json::from_str(&json).unwrap();
         assert_eq!(back, d);
+    }
+
+    #[test]
+    fn commit_stat_round_trips_through_serde() {
+        let c = CommitStat {
+            hash: "a".repeat(40),
+            insertions: 12,
+            deletions: 3,
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        assert_eq!(
+            json,
+            r#"{"hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","insertions":12,"deletions":3}"#
+        );
+        let back: CommitStat = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn commit_stat_is_a_ts_type() {
+        _assert_ts::<CommitStat>();
     }
 
     #[test]

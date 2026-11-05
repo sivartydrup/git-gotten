@@ -247,6 +247,23 @@ async fn dump_docs_fixtures() {
     }
     write_map(out, "load_commit", &commits);
 
+    // Stage 15's inline diffstat column (SPEC §10.1): exactly the request the graph makes.
+    let mut stats = Map::new();
+    for id in &repos {
+        let hashes: Vec<String> = backend
+            .load_graph(id)
+            .expect("graph")
+            .nodes
+            .iter()
+            .map(|node| node.hash.clone())
+            .collect();
+        stats.insert(
+            id.clone(),
+            json(backend.load_commit_stats(id, &hashes).expect("commit stats")),
+        );
+    }
+    write_map(out, "load_commit_stats", &stats);
+
     let mut diffs = Map::new();
     for path in ["src/planner.rs", "src/telemetry.rs", "notes/scratch.md", "notes/checklist.md", "f.txt"] {
         let value = match backend.load_diff(&orbit_id, path) {

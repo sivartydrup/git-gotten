@@ -1,26 +1,102 @@
+/* Design tokens. Dark is the default ground; `[data-theme="light"]` re-maps the same roles.
+   Named colour roles are stable, so component rules never hard-code a hex. */
 :root {
-  --bg: #0f1115;
-  --fg: #e6e8ee;
-  --muted: #8b90a0;
-  --accent: #6ea8fe;
-  --success: #7ee0a0;
-  --warning: #e0b07e;
-  --error: #e05252;
-  --border: #23262e;
-  --surface: #171a21;
+  --bg: #0b0e14;
+  --bg-tint: #0e1219;
+  --surface: #141925;
+  --surface-2: #1a2130;
+  --surface-3: #232c3d;
+  --border: #262e3d;
+  --border-strong: #3b4658;
+  --fg: #e9ecf4;
+  --fg-soft: #c5cdda;
+  --muted: #939db2;
+  --accent: #6aa8ff;
+  --accent-strong: #4a86ea;
+  --accent-ink: #071120;
+  --accent-soft: rgba(106, 168, 255, 0.14);
+  --accent-ring: rgba(106, 168, 255, 0.6);
+  --success: #6fe0a5;
+  --success-ink: #46b880;
+  --success-on: #0b1f12;
+  --success-tint: rgba(111, 224, 165, 0.14);
+  --warning: #eab27c;
+  --warning-ink: #cf8f4f;
+  --warning-tint: rgba(234, 178, 124, 0.14);
+  --error: #f4746f;
+  --error-ink: #d9564f;
+  --error-tint: rgba(244, 116, 111, 0.16);
+  --row-hover: rgba(255, 255, 255, 0.05);
+  --row-selected: rgba(106, 168, 255, 0.16);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 6px 18px rgba(0, 0, 0, 0.42);
+  --shadow-3: 0 18px 48px rgba(0, 0, 0, 0.5);
+  --ring-soft: 0 0 0 3px var(--accent-soft);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --text-2xs: 11px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-lg: 15px;
+  --text-xl: 18px;
+
+  --space-1: 4px;
+  --space-2: 6px;
+  --space-3: 8px;
+  --space-4: 10px;
+  --space-5: 12px;
+  --space-6: 16px;
+  --space-7: 20px;
+  --radius-1: 4px;
+  --radius-2: 6px;
+  --radius-3: 10px;
+  --radius-pill: 999px;
+  --dur-1: 110ms;
+  --dur-2: 180ms;
+  --dur-3: 280ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+
+  --z-sticky: 20;
+  --z-overlay: 40;
+  --z-dialog: 60;
+  --z-palette: 70;
 }
 
-/* Light theme (SPEC §12): same color roles, dark ink on a light ground. */
+/* Light theme (SPEC §12): the same colour roles, dark ink on a light ground.
+   Ink-ish variants (`-ink`) are for 11-13 px text and filled-control text. */
 :root[data-theme="light"] {
-  --bg: #f6f7f9;
-  --fg: #1c2027;
-  --muted: #6b7280;
-  --accent: #2f6fd0;
-  --success: #1f9d55;
-  --warning: #b26a1f;
-  --error: #c0392b;
-  --border: #d9dde3;
+  --bg: #f7f8fb;
+  --bg-tint: #eef1f7;
   --surface: #ffffff;
+  --surface-2: #f2f4f8;
+  --surface-3: #e7ebf3;
+  --border: #dfe4ec;
+  --border-strong: #c1c9d7;
+  --fg: #151a22;
+  --fg-soft: #33404f;
+  --muted: #5b6472;
+  --accent: #1f5fc9;
+  --accent-strong: #14499f;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(31, 95, 201, 0.12);
+  --accent-ring: rgba(31, 95, 201, 0.55);
+  --success: #17793f;
+  --success-ink: #17793f;
+  --success-on: #ffffff;
+  --success-tint: rgba(23, 121, 63, 0.12);
+  --warning: #9a5a12;
+  --warning-ink: #9a5a12;
+  --warning-tint: rgba(154, 90, 18, 0.12);
+  --error: #b3271d;
+  --error-ink: #b3271d;
+  --error-tint: rgba(179, 39, 29, 0.12);
+  --row-hover: rgba(21, 31, 45, 0.055);
+  --row-selected: rgba(31, 95, 201, 0.13);
+  --shadow-1: 0 1px 2px rgba(21, 31, 45, 0.1);
+  --shadow-2: 0 6px 18px rgba(21, 31, 45, 0.14);
+  --shadow-3: 0 18px 48px rgba(21, 31, 45, 0.18);
 }
 
 * {
@@ -808,6 +884,7 @@ code {
 .graph-toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
@@ -1958,4 +2035,312 @@ code {
 
 .update-prompt-error {
   color: var(--error);
+}
+
+/* ══ Stage 15: design system layer ══════════════════════════════════════════════
+   Everything above stays the base; this layer adds the pieces the UI was missing:
+   a token-driven type scale, focus visibility, motion (with a reduced-motion cut),
+   hover coverage, hit-target minimums, elevation, and breakpoints down to the app's
+   900x560 minimum window. Selectors deliberately mirror the originals so overrides
+   read as updates to a rule, not as a second cascade.
+   WebKit floor: macOS 12 (Safari 15) — no `color-mix()`, no `:is()`, no `:where()`. */
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  background: var(--bg);
+  color: var(--fg);
+}
+
+code, pre, .mono, .log-cmd, .topbar-branch, .drawer-hash {
+  font-family: var(--font-mono);
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+/* Focus must be visible on every interactive surface, not the 1 px UA ring. */
+button:focus-visible,
+[role="button"]:focus-visible,
+[role="tab"]:focus-visible,
+[role="menuitem"]:focus-visible,
+a:focus-visible,
+summary:focus-visible,
+canvas:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--ring-soft);
+}
+
+/* Motion: short, one easing curve, applied to state changes rather than decoration. */
+@keyframes gg-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes gg-rise-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes gg-drop-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes gg-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+.btn, .icon-btn, .open-btn, .tab, .chip, .repo-item, .repo-link, .change,
+.log-row, .group-head, .sync-controls button, .merge-control > button,
+.merge-picker button, .graph-context-item, .dashboard-table tbody tr,
+.topbar-search, .open-input, .commit-message {
+  transition: background-color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+}
+
+button:not(:disabled):active,
+.sync-controls button:not(:disabled):active,
+.icon-btn:not(:disabled):active {
+  transform: translateY(1px);
+}
+
+.dialog { animation: gg-rise-in var(--dur-2) var(--ease); box-shadow: var(--shadow-3); }
+.update-prompt { animation: gg-drop-in var(--dur-2) var(--ease); }
+.conflict-banner { animation: gg-drop-in var(--dur-2) var(--ease); }
+.merge-picker, .graph-context-menu { animation: gg-drop-in var(--dur-1) var(--ease); box-shadow: var(--shadow-2); }
+.main-content { animation: gg-fade-in var(--dur-1) var(--ease); }
+.log-running { animation: gg-pulse 1.4s var(--ease) infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Hover coverage for every control the base layer left bare, plus WCAG 2.2 target sizes. */
+.btn:hover:not(:disabled),
+.icon-btn:hover:not(:disabled),
+.open-btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+}
+.tab:hover { color: var(--fg); background: var(--row-hover); }
+.repo-item:hover, .repo-link:hover, .change:hover, .log-row:hover { background: var(--row-hover); }
+.sync-controls button:hover:not(:disabled), .merge-control > button:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--accent);
+}
+.graph-context-item:hover:not(:disabled) { background: var(--accent); color: var(--accent-ink); }
+
+/* Every control clears a 28px target; only the compact nav rail drops to 26px. */
+.btn, .open-btn, .chip, .tab { min-height: 28px; }
+.icon-btn { min-width: 28px; min-height: 28px; }
+.sync-controls button, .merge-control > button { min-height: 28px; padding: 4px 10px; font-size: var(--text-xs); }
+.group-caret { min-width: 24px; min-height: 24px; }
+.repo-link { min-height: 30px; }
+
+/* Chrome identity: a tinted top bar, a wordmark, a tab with a real active state. */
+.topbar {
+  align-items: center;
+  gap: var(--space-4);
+  padding: 10px var(--space-6);
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-1);
+}
+.brand {
+  font-size: var(--text-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.brand::before {
+  content: "";
+  display: inline-block;
+  width: 4px;
+  height: 15px;
+  margin-right: var(--space-2);
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--accent), var(--success));
+  transform: translateY(2px);
+}
+.version { font-family: var(--font-mono); font-size: var(--text-xs); }
+.main-tabs { overflow-x: auto; scrollbar-width: thin; }
+.tab {
+  padding: 5px 14px;
+  font-size: var(--text-sm);
+  border-color: transparent;
+  border-radius: var(--radius-2) var(--radius-2) 0 0;
+}
+.tab.active {
+  color: var(--fg);
+  background: var(--surface);
+  border-color: var(--border);
+  border-bottom-color: var(--surface);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.main-content { background: var(--surface); }
+.btn.primary {
+  background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+  border-color: transparent;
+  color: var(--accent-ink);
+  font-weight: 600;
+  box-shadow: var(--shadow-1);
+}
+.btn.primary:hover:not(:disabled) { filter: brightness(1.07); }
+.btn.danger { border-color: var(--error-ink); color: var(--fg); background: var(--error-tint); }
+.open-btn {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.repo-item.active { border-left: 2px solid var(--accent); }
+.activity { height: clamp(96px, 18vh, 180px); }
+.log-row.ok { border-left: 2px solid var(--success-tint); }
+.log-row.fail { border-left: 2px solid var(--error); background: var(--error-tint); }
+.diff-line.add { background: var(--success-tint); }
+.diff-line.del { background: var(--error-tint); }
+.ahead, .log-row.ok .log-status { color: var(--success-ink); }
+.behind { color: var(--warning-ink); }
+.topbar-sync .ahead { color: var(--success-ink); }
+.topbar-sync .behind { color: var(--warning-ink); }
+
+/* Responsive: nothing that used to be visible may disappear. The graph keeps a floor,
+   the drawer becomes a sheet, tabs scroll instead of forcing width, the log compacts. */
+.workspace { position: relative; }
+.main { min-width: 0; }
+.graph { min-height: 180px; }
+
+@media (max-width: 1280px) {
+  .repo-nav { width: 224px; }
+  .topbar-search { width: 200px; }
+  .drawer { width: 306px; }
+}
+
+@media (max-width: 1120px) {
+  .topbar { gap: var(--space-3); padding: 8px var(--space-4); }
+  .version { display: none; }
+  .topbar-search { width: 152px; }
+  .repo-nav { width: 200px; }
+  .drawer {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(340px, 86%);
+    z-index: var(--z-overlay);
+    border-left: 1px solid var(--border);
+    box-shadow: var(--shadow-3);
+  }
+}
+
+@media (max-width: 900px) {
+  .repo-nav { width: 190px; padding: var(--space-3); }
+  .topbar-search { width: 130px; }
+  .sync-controls { flex-wrap: wrap; }
+}
+
+@media (max-height: 700px) {
+  .activity { height: clamp(72px, 14vh, 120px); }
+  .commit-message { min-height: 40px; }
+  .graph-toolbar { padding: 4px var(--space-3); }
+}
+
+@media (max-height: 620px) {
+  .activity { height: 64px; overflow: hidden; }
+  .graph { min-height: 140px; }
+}
+
+/* Icon alignment in chrome controls, and the narrow-rail nav below 980px.
+   Control labels stay in the accessible name (`aria-label` on every icon-only
+   button); `.btn-label` is visually hidden rather than removed. */
+button svg,
+.tab svg,
+.open-btn svg,
+.repo-link svg {
+  vertical-align: -2px;
+}
+
+.repo-item .icon-btn,
+.group-head .icon-btn,
+.nav-actions .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+}
+
+.repo-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1000px) {
+  .btn-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+  .nav-actions .icon-btn {
+    min-width: 28px;
+  }
+}
+
+@media (max-width: 980px) {
+  .repo-nav[data-compact="true"] {
+    width: 96px;
+    padding: var(--space-2);
+    gap: var(--space-2);
+  }
+  .repo-nav[data-compact="true"] .open-form {
+    flex-direction: column;
+  }
+  .repo-nav[data-compact="true"] .open-input {
+    font-size: var(--text-2xs);
+    padding: 4px 6px;
+  }
+  .repo-nav[data-compact="true"] .nav-search {
+    width: 100%;
+  }
+  .repo-nav[data-compact="true"] .nav-actions {
+    flex-wrap: wrap;
+  }
+  .repo-nav[data-compact="true"] .repo-name,
+  .repo-nav[data-compact="true"] .group-name {
+    max-width: 44px;
+  }
+  .repo-nav[data-compact="true"] .repo-branch {
+    display: none;
+  }
+  .repo-nav[data-compact="true"] .repo-item {
+    gap: var(--space-1);
+  }
+  .repo-nav[data-compact="true"] .repo-item .icon-btn {
+    min-width: 26px;
+    min-height: 26px;
+  }
+}
+
+.refs-head h3 svg,
+.dialog-head h2 svg,
+.dashboard-head h2 svg {
+  vertical-align: -2px;
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useActivityStore, useRebaseStore, useRepoStore } from "../store";
+import { useDialog } from "./useDialog";
 import type { RebaseAction, RebaseEdit } from "../types";
 
 const ACTIONS: RebaseAction[] = ["Pick", "Reword", "Squash", "Fixup", "Edit", "Drop"];
@@ -23,6 +24,9 @@ export function RebaseDialog() {
   const [target, setTarget] = useState("");
   const [edits, setEdits] = useState<RebaseEdit[]>([]);
   const dragFrom = useRef(-1);
+  const dialogRef = useDialog(open, reset, {
+    blocked: () => useActivityStore.getState().running,
+  });
 
   // A fresh dialog rebases onto the current branch's upstream and lists its
   // range right away; a manual target loads on Enter.
@@ -86,7 +90,13 @@ export function RebaseDialog() {
         if (e.target === e.currentTarget && !running) reset();
       }}
     >
-      <div className="dialog" role="dialog" aria-modal="true" aria-label="Rebase">
+      <div
+        className="dialog"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Rebase"
+      >
         <div className="dialog-head">
           <h2>Interactive rebase</h2>
         </div>
@@ -187,6 +197,7 @@ export function RebaseDialog() {
           <button
             type="button"
             className="btn primary"
+            data-dialog-primary
             disabled={disabled}
             onClick={submit}
           >

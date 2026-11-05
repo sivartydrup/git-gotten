@@ -52,6 +52,8 @@ stage fixtures (`cargo test -p git-gotten-app --test docs_fixtures -- --ignored`
 | <img src="docs/assets/dashboard.webp" width="440" alt="dashboard table of repositories"> | <img src="docs/assets/worktrees.webp" width="440" alt="worktree tree panel"> |
 | `git bisect run` panel | Update prompt from the release manifest |
 | <img src="docs/assets/bisect.webp" width="440" alt="bisect panel with log"> | <img src="docs/assets/update.webp" width="440" alt="update available prompt with release notes"> |
+| ⌘K palette: the row shows the exact command it will run | |
+| <img src="docs/assets/palette.webp" width="440" alt="command palette with the exact planned command"> | |
 
 <details>
 <summary>More screens: whole window, commit preview, type-to-confirm, stash, workspace nav</summary>
@@ -68,11 +70,11 @@ stage fixtures (`cargo test -p git-gotten-app --test docs_fixtures -- --ignored`
 
 ## Status
 
-**Stages 0–14 built** (stage numbering matches [`PLAN.md`](./PLAN.md)); what remains is
+**Stages 0–15 built** (stage numbering matches [`PLAN.md`](./PLAN.md)); what remains is
 signing / notarization / release infrastructure, not features. Measured on macOS 25.6 arm64,
-2026-11-05: `cargo test --workspace` **388 passed** (1 ignored), `pnpm test` **214 passed**
-(18 files), `pnpm build` and `tauri build` both clean. Full dated per-platform records:
-[`STATUS.md`](./STATUS.md).
+2026-11-06: `cargo test --workspace` **399 passed** (1 ignored), `pnpm test` **282 passed**
+(23 files), `pnpm build` and `pnpm tauri:build` both clean (`.app` + `.dmg`). Full dated
+per-platform records: [`STATUS.md`](./STATUS.md).
 
 | Stage | Area | State |
 |---|---|---|
@@ -91,6 +93,7 @@ signing / notarization / release infrastructure, not features. Measured on macOS
 | 12 | Multi-repo workspace (groups, dashboard), persistence, theming | ✅ committed |
 | 13 | Hardening: performance + reliability | ✅ committed |
 | 14 | Distribution: packaging, signing, auto-updater | ✅ committed (signing/notarization infra missing) |
+| 15 | Interface: tokens, responsive layout, icons, graph reading + diff detail, palette, keyboard/a11y | ✅ committed |
 
 ## Features implemented today
 
@@ -219,6 +222,33 @@ signing / notarization / release infrastructure, not features. Measured on macOS
   writes the real signatures into `updater/latest.json` straight from the built `.sig` files —
   `--check` exits non-zero while any platform still holds a placeholder, so a half manifest cannot
   be published. The full sequence lives in `WINDOWS-SIGNING.md`.
+
+**Interface: reading the graph, reading a diff, keyboard (stage 15)**
+
+- Every graph row carries its own diffstat — lines added and removed against the commit's first
+  parent (`load_commit_stats` → `Repo::commit_stats` in `crates/gitcore/src/commit_stats.rs`),
+  memoized per commit, dropped when HEAD moves, requested in viewport batches capped at 200
+  hashes. No rename detection (a rename reports its full deletion plus addition); binary files
+  and gitlinks count 0/0 exactly like git's `-` columns; a merge is counted against its first
+  parent — where `git show` prints nothing at all.
+- A lane is named by the line that is at home in it, so a diverged repository reads as
+  `origin/main` and `main` in the legend instead of the same branch twice; the legend shows each
+  lane's colour, and the toolbar carries zoom buttons with a % readout, 100%, Fit and a minimap.
+- Recent commits show relative time ("38m"), the selected commit lays its ancestry path under the
+  lanes, commit dots grow with the diff they carry, and hovering names the author and the time.
+- Diff hunks mark the changed *words* inside a line (shared head and tail trimmed; anything
+  lopsided marks the whole line), each file header shows its own `+n −m` bar, and Copy path /
+  Copy patch put the exact text on the clipboard.
+- The activity log filters to All / Failed / Mutating / Dangerous and every entry has Copy.
+- ⌘K (Ctrl+K on Windows) opens one palette for repositories, actions and commits; every action row
+  shows the Rust-compiled `CommandPlan` command and its risk badge, and a dangerous action still
+  lands in the type-to-confirm gate.
+- The canvas is keyboard-operable (arrows / Home / End / PageUp / PageDown move the selection,
+  Enter inspects, `+`, `-`, `0` zoom); Escape unwinds drawer → graph menu → palette; dialogs trap
+  and restore focus; the selected commit is announced in an `aria-live` region; controls are at
+  least 28 px and `prefers-reduced-motion` is honoured.
+- A window with no repository open shows a first-run panel (`components/EmptyWorkspace.tsx`)
+  instead of an empty graph.
 
 ## Not implemented yet
 

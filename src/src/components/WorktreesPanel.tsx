@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useActivityStore, useRepoStore, useWorktreesStore } from "../store";
 import type { Op } from "../types";
+import { Icon } from "./Icons";
+import { useDialog } from "./useDialog";
 
 /**
  * Worktrees tab (SPEC §10.7): every checkout of the active repo — branch (or
@@ -35,9 +37,17 @@ export function WorktreesPanel() {
   return (
     <div className="refs-panel">
       <div className="refs-head">
-        <h3>Worktrees</h3>
-        <button type="button" className="btn" disabled={running} onClick={() => setAdding(true)}>
-          Add worktree
+        <h3>
+          <Icon name="worktree" size={14} /> Worktrees
+        </h3>
+        <button
+          type="button"
+          className="btn"
+          aria-label="Add worktree"
+          disabled={running}
+          onClick={() => setAdding(true)}
+        >
+          <Icon name="plus" size={13} /> <span className="btn-label">Add worktree</span>
         </button>
       </div>
       {loading && worktrees.length === 0 ? (
@@ -124,6 +134,9 @@ function AddWorktreeDialog({
   const [path, setPath] = useState("");
   const [committish, setCommittish] = useState(start);
   const [newBranch, setNewBranch] = useState("");
+  const dialogRef = useDialog(true, onClose, {
+    blocked: () => useActivityStore.getState().running,
+  });
 
   return (
     <div
@@ -135,16 +148,23 @@ function AddWorktreeDialog({
         }
       }}
     >
-      <div className="dialog" role="dialog" aria-modal="true" aria-label="Add worktree">
+      <div
+        className="dialog"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Add worktree"
+      >
         <div className="dialog-head">
-          <h2>Add worktree</h2>
+          <h2>
+            <Icon name="worktree" size={15} /> Add worktree
+          </h2>
         </div>
         <input
           className="dialog-input"
           placeholder="new directory path"
           value={path}
           onChange={(e) => setPath(e.target.value)}
-          autoFocus
         />
         <input
           className="dialog-input"

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useActivityStore, useRepoStore, useStashesStore } from "../store";
 import type { Op, Stash } from "../types";
+import { Icon } from "./Icons";
 
 /**
  * Stash tab (SPEC §10.6): every `stash@{n}` of the active repo — name, date,
@@ -31,7 +32,9 @@ export function StashPanel() {
   return (
     <div className="refs-panel">
       <div className="refs-head">
-        <h3>Stashes</h3>
+        <h3>
+          <Icon name="stash" size={14} /> Stashes
+        </h3>
         <span className="stash-push">
           <label className="dialog-check">
             <input

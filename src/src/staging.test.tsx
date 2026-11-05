@@ -39,7 +39,7 @@ vi.mock("./api", () => ({
   bisectTest: async () => ({ active: false, current: null, good: [], bad: [], remaining: 0, found: null, log: [] }),
 }));
 
-import { useRepoStore, useStagingStore, useActivityStore } from "./store";
+import { useCommitDraftStore, useRepoStore, useStagingStore, useActivityStore } from "./store";
 import { FilesPanel } from "./components/FilesPanel";
 import { FileDiff } from "./components/FileDiff";
 import { CommitPanel } from "./components/CommitPanel";
@@ -103,6 +103,7 @@ beforeEach(() => {
   loadDiff.mockResolvedValue(null);
   useRepoStore.setState({ repos: [], activeId: null, status: {} });
   useStagingStore.setState({ file: null, diff: null, loading: false, error: null });
+  useCommitDraftStore.setState({ drafts: {} });
   useActivityStore.setState({
     activities: [],
     running: false,
@@ -423,7 +424,7 @@ test("a failed commit keeps the draft message and re-reads the diff from Rust", 
   seedRepo();
   // App registers the op_finished listener; capture it to fire it like Rust does.
   const onOpFinished = (await import("./api")).onOpFinished as ReturnType<typeof vi.fn>;
-  const loadDiffCalls = () => loadDiff.mock.calls.length;
+  const reReads = () => loadDiff.mock.calls.filter(([, path]) => path === "src/a.ts").length;
 
   render(<App />);
   await flush();
@@ -467,7 +468,8 @@ test("a failed commit keeps the draft message and re-reads the diff from Rust", 
 
   // The Rust `op_finished` re-read (not a local guess) refreshes the diff.
   loadDiff.mockResolvedValue(diff);
-  const before = loadDiffCalls();
+  useStagingStore.setState({ diff: null });
+  const before = reReads();
   await act(async () => {
     (onOpFinished.mock.calls[0]?.[0] as (p: unknown) => void)?.({
       id: 3,
@@ -481,7 +483,10 @@ test("a failed commit keeps the draft message and re-reads the diff from Rust", 
       conflicts: [],
     });
   });
-  expect(loadDiffCalls()).toBe(before + 1);
+  // What matters is that the diff for this file was re-read from Rust after the
+  // op finished and the store now holds it — not how many diffs FilesPanel asked
+  // for while it was rendering the list.
+  expect(reReads()).toBeGreaterThan(before);
   expect(useStagingStore.getState().diff).toBe(diff);
 });
 

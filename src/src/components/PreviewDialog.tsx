@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useActivityStore } from "../store";
 import { friendlyGitError } from "../errors";
+import { useDialog } from "./useDialog";
 import type { CommandPlan, Risk } from "../types";
 
 const RISK_ORDER: Risk[] = ["ReadOnly", "Mutating", "Dangerous"];
@@ -19,7 +20,7 @@ export function planRisk(plan: CommandPlan): Risk {
   );
 }
 
-function RiskBadge({ risk }: { risk: Risk }) {
+export function RiskBadge({ risk }: { risk: Risk }) {
   return <span className={`badge risk risk-${risk.toLowerCase()}`}>{RISK_LABEL[risk]}</span>;
 }
 
@@ -32,6 +33,12 @@ function RiskBadge({ risk }: { risk: Risk }) {
 export function PreviewDialog() {
   const { preview, running, busy, error, confirmPreview, dismissPreview } = useActivityStore();
   const [confirmText, setConfirmText] = useState("");
+  const dialogRef = useDialog(!!preview, dismissPreview, {
+    blocked: () => {
+      const s = useActivityStore.getState();
+      return s.running || s.busy;
+    },
+  });
 
   // The component stays mounted with App; clear the typed confirmation
   // whenever a different plan is presented (or the dialog closes).
@@ -59,7 +66,13 @@ export function PreviewDialog() {
         }
       }}
     >
-      <div className="dialog" role="dialog" aria-modal="true" aria-label="Confirm command">
+      <div
+        className="dialog"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Confirm command"
+      >
         <div className="dialog-head">
           <h2>Confirm command</h2>
           <RiskBadge risk={risk} />
@@ -112,7 +125,6 @@ export function PreviewDialog() {
               value={confirmText}
               onChange={(e) => setConfirmText(e.target.value)}
               placeholder="confirm"
-              autoFocus
             />
           </label>
         )}
@@ -139,6 +151,7 @@ export function PreviewDialog() {
           <button
             type="button"
             className={`btn primary risk-${risk.toLowerCase()}`}
+            data-dialog-primary
             onClick={() => {
               setConfirmText("");
               void confirmPreview();

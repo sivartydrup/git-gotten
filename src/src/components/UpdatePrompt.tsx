@@ -1,4 +1,5 @@
 import { useUpdaterStore } from "../store";
+import { useDialog } from "./useDialog";
 
 /**
  * The new-version prompt (SPEC §17): the update feed announced a release
@@ -9,12 +10,17 @@ import { useUpdaterStore } from "../store";
  */
 export function UpdatePrompt() {
   const { available, version, notes, installing, error, install, dismiss } = useUpdaterStore();
+  // Escape dismisses the prompt (but not mid-install); it is a status banner, so
+  // it stays non-modal and keeps the user's focus where it was.
+  const promptRef = useDialog(available, dismiss, {
+    blocked: () => useUpdaterStore.getState().installing,
+  });
   if (!available) {
     return null;
   }
 
   return (
-    <div className="update-prompt" role="status">
+    <div className="update-prompt" role="status" ref={promptRef}>
       <span className="update-prompt-label">
         Update available: <strong>{version}</strong>
         {notes && <em className="update-prompt-notes">{notes}</em>}

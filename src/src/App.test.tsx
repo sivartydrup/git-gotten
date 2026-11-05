@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import App from "./App";
 import { useActivityStore, useGraphStore, useRepoStore } from "./store";
 import type { RepoMeta, Status } from "./types";
@@ -32,6 +32,16 @@ vi.mock("./api", () => ({
   onOpFinished: vi.fn().mockResolvedValue(null),
   loadGraph: vi.fn().mockResolvedValue(null),
   loadCommit: vi.fn().mockResolvedValue(null),
+  loadCommitStats: async () => [],
+  // FilesPanel re-reads each visible path's diff; outside Tauri there is none.
+  loadDiff: vi.fn().mockResolvedValue(null),
+  loadConflict: vi.fn().mockResolvedValue(null),
+  loadBranches: vi.fn().mockResolvedValue(null),
+  loadRemotes: vi.fn().mockResolvedValue(null),
+  loadTags: vi.fn().mockResolvedValue(null),
+  loadWorktrees: async () => [],
+  loadRepoSelection: async () => null,
+  saveRepoSelection: async () => null,
   loadStashes: async () => [],
   loadSubmodules: async () => [],
   loadBisect: async () => ({ active: false, current: null, good: [], bad: [], remaining: 0, found: null, log: [] }),
@@ -76,8 +86,84 @@ test("renders the GitGotten shell (non-Tauri fallback)", async () => {
   // resolve `null`. Flush the microtasks so the fallback branch commits.
   await act(async () => {});
   expect(document.body.textContent).toContain("GitGotten");
-  expect(document.body.textContent).toContain("Files"); // the Files tab
   expect(document.body.textContent).toContain("No repositories open");
+
+  // With no repository open the main area is the guidance card, not a tab strip
+  // (stage 15): it explains the graph and the exact-command contract, and its
+  // action hands the user to the nav's open field.
+  const card = screen.getByRole("region", { name: "Get started" });
+  expect(card.textContent).toContain("branching graph");
+  expect(card.textContent).toContain("git");
+  expect(screen.queryByRole("tab")).toBeNull();
+
+  fireEvent.click(within(card).getByRole("button", { name: /Open a repository/ }));
+  expect(document.activeElement).toBe(
+    document.querySelector(".repo-nav .open-form .open-input"),
+  );
+});
+
+test("an open repo shows the seven main tabs with icon and label", async () => {
+  const meta: RepoMeta = {
+    id: "/repo/alpha",
+    name: "alpha",
+    path: "/repo/alpha",
+    branch: "main",
+    ahead: 0,
+    behind: 0,
+    dirty_count: 0,
+  };
+  useRepoStore.setState({
+    repos: [meta],
+    activeId: meta.id,
+    status: {
+      [meta.id]: {
+        branch: "main",
+        detached_head: null,
+        head: null,
+        ahead: 0,
+        behind: 0,
+        upstream: null,
+        changes: [],
+        in_merge: false,
+        in_rebase: false,
+        in_cherry_pick: false,
+      },
+    },
+    opening: false,
+    error: null,
+  });
+  render(<App />);
+  await act(async () => {});
+
+  expect(screen.queryByRole("region", { name: "Get started" })).toBeNull();
+  // The strip order is also the `1`..`7` shortcut map (App.tsx / TAB_ORDER).
+  const tabs = screen
+    .getAllByRole("tab")
+    .filter((t) => t.closest(".main-tabs"))
+    .map((t) => ({
+      name: t.textContent?.trim() ?? "",
+      icon: t.querySelector("svg") !== null,
+      selected: t.getAttribute("aria-selected"),
+    }));
+  expect(tabs.map((t) => t.name)).toEqual([
+    "Graph",
+    "Files",
+    "Conflicts",
+    "Branches",
+    "Worktrees",
+    "Stash",
+    "Bisect",
+  ]);
+  expect(tabs.every((t) => t.icon)).toBe(true);
+  expect(tabs.map((t) => t.selected)).toEqual([
+    "true",
+    "false",
+    "false",
+    "false",
+    "false",
+    "false",
+    "false",
+  ]);
 });
 
 test("renders a seeded repo: nav entry, top-bar state, and changes", async () => {

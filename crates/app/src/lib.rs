@@ -28,7 +28,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use git_gotten_protocol::{
-    BisectState, BisectVerdict, Branch, CommandPlan, CommitDetail, ConflictFile, FileDiff, Graph,
+    BisectState, BisectVerdict, Branch, CommandPlan, CommitDetail, CommitStat, ConflictFile, FileDiff,
+    Graph,
     GroupId, LogEntry, Op, OpResult, OpStarted, RebaseCommit, Remote, RepoId, RepoMeta,
     RepoSelection, Risk, Stash, Status, StatusChanged, Submodule, Tag, Worktree, Workspace,
     WorkspaceRepo,
@@ -457,6 +458,18 @@ impl Backend {
             .get(id)
             .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
         Ok(repo.diff_file(path)?)
+    }
+
+    /// Per-commit lines added/removed for an open repository (IPC
+    /// `load_commit_stats`, the graph's inline diffstat, SPEC §10.1). See
+    /// [`gitcore::Repo::commit_stats`] for the first-parent / cap / absent-hash rules.
+    pub fn load_commit_stats(&self, id: &str, hashes: &[String]) -> Result<Vec<CommitStat>, AppError> {
+        let repos = self.registry.lock_repos();
+        let repo = repos
+            .get(id)
+            .ok_or_else(|| AppError::RepoNotOpen(id.to_string()))?;
+        let borrowed: Vec<&str> = hashes.iter().map(String::as_str).collect();
+        Ok(repo.commit_stats(&borrowed))
     }
 
     /// The 3-way view of one unmerged file in an open repository (IPC
@@ -958,6 +971,17 @@ fn load_commit(
 fn load_diff(repo: RepoId, path: String, state: State<'_, Backend>) -> Result<FileDiff, AppError> {
     state.load_diff(&repo, &path)
 }
+/// Per-commit lines added/removed for an open repository (IPC
+/// `load_commit_stats`, the graph's inline diffstat, SPEC §10.1).
+#[tauri::command]
+fn load_commit_stats(
+    repo: RepoId,
+    hashes: Vec<String>,
+    state: State<'_, Backend>,
+) -> Result<Vec<CommitStat>, AppError> {
+    state.load_commit_stats(&repo, &hashes)
+}
+
 /// The 3-way view of one unmerged file (IPC `load_conflict`, SPEC §10.5).
 #[tauri::command]
 fn load_conflict(
@@ -1296,6 +1320,7 @@ pub fn run() {
             load_status,
             load_graph,
             load_commit,
+            load_commit_stats,
             load_diff,
             load_conflict,
             load_branches,
