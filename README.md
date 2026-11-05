@@ -1,36 +1,78 @@
-# GitGotten
+<p align="center">
+  <img src="docs/assets/hero.webp" width="100%"
+       alt="GitGotten: wordmark beside the commit graph panel showing lanes, branch pills and tags">
+</p>
 
-A cross-platform, Rust-based visual Git manager. Simple enough that a user does not need
-to know Git, yet fully transparent — every operation shows the exact Git command it runs.
-Built for multiple repositories and full worktree support, with an interactive branching
-graph at its core. Inspired by GitKraken.
+<p align="center">
+  <a href="https://github.com/sivartydrup/git-gotten/actions/workflows/ci.yml">
+    <img src="https://github.com/sivartydrup/git-gotten/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/tests-388%20Rust%20%C2%B7%20214%20web-2f81b7" alt="tests">
+  <img src="https://img.shields.io/badge/platform-macOS%2012%2B%20%C2%B7%20Windows%2010%2B-lightgrey" alt="platforms">
+  <img src="https://img.shields.io/badge/version-0.1.0-lightgrey" alt="version">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license">
+  <img src="https://img.shields.io/badge/telemetry-none-bcd6b4?labelColor=1f2430&color=6fbf8f" alt="no telemetry">
+</p>
 
-GitGotten is a **Tauri v2** desktop app: a React + TypeScript UI over a Rust core that
-reads with [`gix`](https://github.com/GitoxideLabs/gitoxide) and writes with the real
-`git` CLI.
+**GitGotten** is a native Git client for macOS and Windows — Tauri v2 shell, Rust core
+(`gix` for reads, the real `git` CLI for writes), React + TypeScript UI, an interactive lane
+DAG as its centerpiece, and one rule that shapes everything:
 
-> Status: **all 15 stages (0–14) are committed.** The app builds, bundles, installs and
-> self-updates locally — but nothing is published yet: no signed release exists. See
-> [Status](#status), [`PLAN.md`](./PLAN.md) and [`SPEC.md`](./SPEC.md).
+> **Every button shows the exact `git` command it is about to run — and what it will change
+> — before you click, and its real output after.**
+
+Open a repository and the graph appears. Staging, branch switches, sync, rebase todo lists,
+conflict patches: all planned as argv vectors, previewed, then executed against your `git`
+with your `.gitconfig`. Nothing is hidden, nothing is invented.
 
 ---
 
 ## Why it exists
 
 - **Zero Git knowledge required.** Everyday Git tasks (commit, push, switch branches,
-  merge, review history) without typing a command.
-- **Total transparency.** Every mutating action compiles to a `CommandPlan` containing
-  the literal `git` argv; the UI previews it before running, and the activity log records
-  the command, exit code, output, and duration. The app never runs a write it cannot show.
-- **The graph is the product.** A lane-based DAG rendered on canvas: lanes, merge edges,
-  refs, search, follow-HEAD, context actions.
+  stash, resolve a conflict, bisect) should be pointable, not remembered.
+- **But it must stay honest about Git.** A GUI that hides Git teaches nothing. GitGotten
+  shows the exact command behind every action, before you run it and in the activity log
+  after. You learn Git *by using* GitGotten: the UI is the abstraction, the command panel is
+  the textbook.
+- **Built-in auto-update** so it stays current.
 - **Safe failure.** A failed command surfaces its exact output and rolls UI state back; no
   silent half-states. Destructive operations are gated by a type-to-confirm dialog.
 
+## Screens
+
+All captured from the production web bundle driven in headless Chromium against the
+stage fixtures (`cargo test -p git-gotten-app --test docs_fixtures -- --ignored`).
+
+| The commit graph: lanes, branch pills, tags, HEAD | Per-hunk staging with the exact `git apply` plan |
+|---|---|
+| <img src="docs/assets/graph.webp" width="440" alt="commit graph panel"> | <img src="docs/assets/staging.webp" width="440" alt="files panel with hunk checkboxes and diff"> |
+| Branches, remotes and tags | Three-pane conflict resolution (base / ours / theirs) |
+| <img src="docs/assets/branches.webp" width="440" alt="branches panel"> | <img src="docs/assets/conflict.webp" width="440" alt="conflict view with region resolutions"> |
+| All-repositories dashboard | Worktrees: every checkout of a repo |
+| <img src="docs/assets/dashboard.webp" width="440" alt="dashboard table of repositories"> | <img src="docs/assets/worktrees.webp" width="440" alt="worktree tree panel"> |
+| `git bisect run` panel | Update prompt from the release manifest |
+| <img src="docs/assets/bisect.webp" width="440" alt="bisect panel with log"> | <img src="docs/assets/update.webp" width="440" alt="update available prompt with release notes"> |
+
+<details>
+<summary>More screens: whole window, commit preview, type-to-confirm, stash, workspace nav</summary>
+
+| Whole window (dark) | Commit preview: exact plan before it runs |
+|---|---|
+| <img src="docs/assets/app-dark.webp" width="440" alt="whole app window"> | <img src="docs/assets/preview.webp" width="440" alt="commit preview dialog"> |
+| Hard reset needs typed confirmation | Stash push / apply / drop |
+| <img src="docs/assets/danger.webp" width="440" alt="type-to-confirm dangerous dialog"> | <img src="docs/assets/stash.webp" width="440" alt="stash panel"> |
+| Repo nav: groups, pins, dirty badges | |
+| <img src="docs/assets/workspace.webp" width="440" alt="repository nav with groups"> | |
+
+</details>
+
 ## Status
 
-As of **2026-11-04** — all 14 stages are committed and pushed; what remains in stage 14 is signing /
-notarization / release infrastructure, not features. Stage numbers match [`PLAN.md`](./PLAN.md).
+**Stages 0–14 built** (stage numbering matches [`PLAN.md`](./PLAN.md)); what remains is
+signing / notarization / release infrastructure, not features. Measured on macOS 25.6 arm64,
+2026-11-05: `cargo test --workspace` **388 passed** (1 ignored), `pnpm test` **214 passed**
+(18 files), `pnpm build` and `tauri build` both clean. Full dated per-platform records:
+[`STATUS.md`](./STATUS.md).
 
 | Stage | Area | State |
 |---|---|---|
@@ -49,133 +91,6 @@ notarization / release infrastructure, not features. Stage numbers match [`PLAN.
 | 12 | Multi-repo workspace (groups, dashboard), persistence, theming | ✅ committed |
 | 13 | Hardening: performance + reliability | ✅ committed |
 | 14 | Distribution: packaging, signing, auto-updater | ✅ committed (signing/notarization infra missing) |
-
-**Verification (macOS 25.6, arm64, 2026-10-29):**
-
-- `cargo test --workspace` — 304 passed.
-- `pnpm test` — 109 passed (11 files).
-- `pnpm build` — TypeScript + Vite production build passes.
-- Stage-09 flows (reorder / squash / reword / fixup / drop, `edit` pause + Continue,
-  mid-rebase conflict → resolve → complete, cherry-pick onto a branch (clean +
-  conflicting), published-history Danger gate) run against real `git` in fixture tests.
-- Stage-10 flows (list main + linked + detached, add for an existing branch and with a
-  new branch, double-checkout refused by git as a clean error, clean remove, dirty
-  remove refused without force, force-remove as Dangerous type-to-confirm, switching
-  retargets status/graph, per-worktree graph markers) run against real `git` in
-  fixture tests.
-
-**Verification (macOS 25.6, arm64, 2026-11-02):**
-
-- `cargo test --workspace` — 349 passed (includes the new workspace-tree tests:
-  `app.json` round-trip across simulated restarts, corrupt-file recovery, group
-  ops, pin/remove persistence, reopen-on-startup).
-- `pnpm test` — 165 passed (16 files).
-- `pnpm build` — TypeScript + Vite production build passes.
-- `tauri build` — `GitGotten.app` bundle produced.
-- Stage-12 flows driven headlessly in Chromium against the production bundle:
-  nested groups with pinned-first ordering, `+ group` add, group delete hoisting
-  children, pin reorder, search filter, remove-from-workspace, the
-  All-Repositories dashboard (live branch/state/ahead-behind/dirty/last-commit
-  per repo, row click switches the active repo), Light/Dark recoloring the chrome
-  and swapping the canvas lane palette, and theme persistence across reload.
-- Windows gate was not run at that time; later Windows verification is recorded below.
-  The observed workspace path is `%APPDATA%\com.sivartydrup.gitgotten\app.json`.
-
-**Verification (macOS 25.6, arm64, 2026-11-04):**
-
-- `cargo test --workspace` — 368 passed, in both debug **and** release profiles, no warnings.
-- `pnpm test` — 189 passed (17 files). `pnpm build` — production build passes.
-- Stage-13 performance on a 10 120-commit synthetic repository (`--release`): the app's
-  graph pipeline builds DAG + lane layout cold in 116–121 ms (SPEC §18 budget 300 ms),
-  replays it from the per-repo cache in 3 ms, and rebuilds it in ~90 ms after one commit
-  moves the fingerprint. Layout threshold asserted in both profiles.
-- Canvas culling at 10 000 graph rows: the visible window stays under 100 rows at every
-  pan position and at both zoom bounds, a full `renderGraph` pass issues under 2 000
-  canvas calls and finishes in well under 500 ms — a culling regression fails the test,
-  it does not merely slow down. The subjective 60 fps check was not done by hand.
-- Stage-13 concurrency, against real `git`: 24 concurrent mutating ops (commits, branch
-  and tag creates, stash pushes) on one repository all land with exactly the implied
-  history and zero lock diagnostics; 8 good ops survive 9 colliding neighbours that all
-  fail with non-zero exits; 12 ops fired from a main checkout *and* a linked worktree
-  serialize on one turn (same queue key = the common git dir); ops on two repositories
-  measurably overlap; `run_plans` keeps a compound flow atomic against 12 interleaving
-  `git reset -q` attempts.
-- Stage-13 failure paths, against real `git`: a failing middle step stops the rest of its
-  plan and carries git's own stderr verbatim; an interrupted mid-merge stays a
-  recoverable merge with `git merge --continue` refusing until the conflict is really
-  resolved; a push to a dead remote fails cleanly with no remote-tracking ref written;
-  a commit message full of shell metacharacters (plus a file named `-rf`) never reaches a
-  shell. Friendly git-error text renders *above* the raw command + output, and every
-  panel re-reads live state when an op finishes.
-- Per-repo activity log: bounded 500-entry ring mirrored to one JSON file per repository,
-  restored on restart with monotonic ids, rebuilt from a deliberately corrupted file;
-  `Backend` restart recovers workspace and log.
-- Windows gate: not run — no Windows machine available. The new paths are plain `std::fs`
-  over the OS-aware app-data dir already covered by the persistence round-trip tests.
-
-**Verification (macOS 25.6, arm64, 2026-11-04 — stage 14):**
-
-- `cargo test` — 375 passed, including 7 new updater integration tests in
-  `crates/app/tests/updater.rs`. `pnpm test` — 198 passed (18 files). `pnpm build` —
-  TypeScript + Vite production build passes.
-- Update decisions are exercised against a **real local HTTP feed**, not a mock: a feed
-  announcing 9.9.9 yields an update whose version, notes and download URL are the entry
-  for *this* os-arch; a feed announcing the running version (or an older one) yields none;
-  a feed with no endpoints fails loudly instead of silently; a manifest signed with a
-  placeholder signature is rejected against the pinned pubkey. The published manifest
-  template (`updater/latest.json`) is parsed by the plugin's own schema type in a test.
-- `tauri build` with no signing environment set: exit 0, `GitGotten.app` (7.65 MiB) and
-  `GitGotten_0.1.0_aarch64.dmg` (3.93 MiB) under `target/release/bundle`.
-- The `.dmg` was mounted, `GitGotten.app` copied out and launched: the window renders, and
-  the launch-time feed check fired (two `GET /latest.json` hits in the mock feed's access
-  log, 8 s apart) and the prompt appeared on screen — "Update available: **9.9.9**" with
-  the manifest's release notes and Install / Dismiss buttons.
-- Not verified at that time: the Install path end to end (download → signature check →
-  install → relaunch) needs a real signed artifact. Windows MSI verification is below.
-
-**Verification (Windows 11, x64, 2026-10-27):**
-
-- `cargo test --workspace` — 267 passed.
-- `pnpm test` — 88 passed (9 files).
-- `pnpm build` — TypeScript + Vite production build passes.
-- `tauri build` — release binary built; unsigned MSI produced.
-- App launched and was driven end-to-end: opened a repo, live status, per-file staging,
-  `git add`/`git commit` through the preview dialog, external merge conflict detected via
-  the watcher, conflict resolved in-app, `git merge --continue`, and
-  `git push -u origin main` to a local bare remote.
-
-**Verification (Windows 11, x64, 2026-11-04):**
-
-- `cargo test --workspace --no-fail-fast` — 380 passed, including updater integration
-  tests, bisect, interactive rebase, submodules, and worktrees.
-- Node 26.13.0 / pnpm 10.34.9: `pnpm test` — 205 passed; `pnpm build` — passed.
-- The unsigned MSI was built, installed with administrator elevation, and launched.
-  In the installed app, worktrees with spaces in their paths were switched to and
-  removed, including a dirty force-removal. Successful removals disappear from
-  `app.json` and the nav after restart; failed removals preserve workspace entries.
-  Two repositories, a group and the dark theme survived restart. Workspace data was
-  observed at `%APPDATA%\com.sivartydrup.gitgotten\app.json`; the theme is stored by
-  WebView2.
-- A 10,120-commit synthetic repository opened and rendered; automated drag and zoom
-  each yielded about 60 `requestAnimationFrame` callbacks per second, p95 16.8 ms,
-  with no interval over 33.4 ms (4 s drag; 3 s zoom). This measures callback
-  scheduling, not presented-frame timing. A rejected double checkout showed Git's
-  error in the activity log, and the graph remained usable.
-  The installed UI bisected a six-commit history to its known first bad commit, reset
-  the session, initialized a submodule, and restored a drifted submodule checkout.
-- A local feed offered a real updater-signed Windows MSI to an installed 0.1.0 test
-  build. Install downloaded and verified the signed payload, upgraded it to 0.1.1,
-  and relaunched the app at 0.1.1. The test versions and feed were local only; no
-  signed release is published, and the configured GitHub release feed returns 404.
-  The test key was exposed on a guest-readable share and must be rotated before release.
-  Windows Authenticode signing and macOS signing/notarization remain unverified.
-- Git 2.56's bisect result format, Windows rebase editor paths, inherited sequence-editor
-  overrides, submodule fixture paths, Node's storage globals, and the updater test
-  executable's Windows manifest were corrected during this verification. A real
-  interactive rebase through the app dropped the chosen commit.
-- Successful worktree removals now unlink registered checkouts from the persisted
-  workspace; failed removals retain them. Files-panel hooks now remain stable when
-  status loads asynchronously, avoiding a blank window when opening the tab early.
 
 ## Features implemented today
 
@@ -298,14 +213,12 @@ notarization / release infrastructure, not features. Stage numbers match [`PLAN.
   no prompt renders. When a newer release is announced, the prompt shows its version and
   release notes with Install / Dismiss; Install downloads, verifies the signature, installs
   and relaunches.
-
 - A release is built with `pnpm tauri:build --config '{"bundle":{"createUpdaterArtifacts":true}}'`
   while `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` are set (plus the
   `APPLE_*` Developer ID + notarization variables once they exist), and `pnpm release:manifest`
   writes the real signatures into `updater/latest.json` straight from the built `.sig` files —
   `--check` exits non-zero while any platform still holds a placeholder, so a half manifest cannot
   be published. The full sequence lives in `WINDOWS-SIGNING.md`.
-
 
 ## Not implemented yet
 
@@ -338,7 +251,7 @@ flowchart LR
 | `crates/protocol` | Shared Rust ⇄ TypeScript types (`Op`, `CommandPlan`, `Status`, `Graph`, conflict types), serialized by serde and generated to TS with `ts-rs`. |
 | `crates/gitcore` | `gix` read model (open, status, log/graph, refs, diffs, conflicts), the `Op` → `CommandPlan` compiler, and the async executor that runs argv vectors against the real `git` binary. |
 | `crates/graph` | Pure DAG construction and lane layout, plus an SVG debug renderer and oracle tests. |
-| `crates/app` | Tauri v2 shell: commands, backend state/registry, op queue, activity log, file watcher. |
+| `crates/app` | Tauri v2 shell: commands, backend state/registry, op queue, activity log, file watcher, updater + process plugins. |
 | `crates/testutil` | Dev-only real-git fixtures: temp repos, bare remotes, deterministic dates. |
 | `src/` | Web UI (`git-gotten-web`): React 18, TypeScript, Vite, Zustand, Vitest. |
 
@@ -348,12 +261,14 @@ flowchart LR
 git-gotten/
   Cargo.toml                 # Rust workspace
   package.json               # root: @tauri-apps/cli + scripts
-  SPEC.md  PLAN.md  README.md
+  SPEC.md  PLAN.md  README.md  STATUS.md
+  docs/assets/               # screenshots used above
   crates/
     protocol/ graph/ gitcore/ app/ testutil/
   src/                       # Vite root for the web UI
     package.json  vite.config.ts  index.html
     src/                     # React app, components, store, tests, styles
+  updater/latest.json        # release-manifest template (signatures filled per release)
   crates/app/tauri.conf.json # Tauri config (productName GitGotten, identifier com.sivartydrup.gitgotten)
 ```
 
@@ -380,8 +295,8 @@ the command, exit code, stdout/stderr, duration, and conflict handoff to the act
 | macOS | Xcode Command Line Tools. Primary dev/test platform. |
 | Windows | **Visual Studio 2022 Build Tools** with *Desktop development with C++* (MSVC + Windows SDK), **WebView2 runtime** (preinstalled on Windows 11 / current Windows 10), Rust's MSVC toolchain (`stable-x86_64-pc-windows-msvc`). Rust must be on `PATH` (`%USERPROFILE%\.cargo\bin`). |
 
-Verified working set (2026-10-27): Rust 1.99.1 MSVC · VS Build Tools 17.14.42 ·
-Windows SDK 10.0.26100 · WebView2 155.x · Node 24.22.1 · pnpm 10.34.9 · Git 2.56.0.
+Verified working set (2026-11-04, Windows): Rust 1.99.1 MSVC · VS Build Tools 17.14.42 ·
+Windows SDK 10.0.26100 · WebView2 155.x · Node 26.13.0 · pnpm 10.34.9 · Git 2.56.0.
 
 ### Install, run, build
 
@@ -408,8 +323,9 @@ what a signed release needs.
 
 ### Tests
 
-cargo test                  # Rust: 380 tests (unit + integration + real-git fixtures)
-pnpm test                   # Web: 205 tests (Vitest + Testing Library)
+```bash
+cargo test                  # Rust: 388 tests (unit + integration + real-git fixtures)
+pnpm test                   # Web: 214 tests (Vitest + Testing Library)
 pnpm build                  # tsc + Vite production build
 ```
 
@@ -479,6 +395,7 @@ Discovered while getting the first Windows build green:
 | [`SPEC.md`](./SPEC.md) | Product design and decisions — the source of truth for behavior and scope. |
 | [`PLAN.md`](./PLAN.md) | 15-stage implementation plan, per-stage acceptance criteria, platform gates, and build workflow. |
 | `README.md` | This overview: what exists today, how to build/test, and where the project is. |
+| [`STATUS.md`](./STATUS.md) | Dated per-platform verification records — what was actually run, where and when. |
 | [`WINDOWS-SIGNING.md`](./WINDOWS-SIGNING.md) | Windows runbook for the stage-14 signing + updater verification steps. |
 
 Per-stage workflow from `PLAN.md`: write failing tests → implement → `cargo test` +
@@ -487,4 +404,4 @@ are `stage-NN: <kebab-summary>`.
 
 ## License
 
-MIT (see `Cargo.toml`; a license file has not been added yet).
+MIT — see [LICENSE](./LICENSE).
